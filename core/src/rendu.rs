@@ -498,7 +498,7 @@ fn donnees(url: &str) -> Option<Image> {
     Some((type_mime, base64(contenu)?))
 }
 
-fn base64(texte: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64(texte: &str) -> Option<Vec<u8>> {
     let mut sortie = Vec::with_capacity(texte.len() * 3 / 4);
     let mut tampon = 0u32;
     let mut bits = 0;

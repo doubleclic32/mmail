@@ -309,6 +309,26 @@ impl Client {
         }
     }
 
+    /// Abonne la session à un dossier : les logiciels qui n'affichent que les
+    /// dossiers abonnés — webmail, Outlook — le montrent aussi.
+    pub fn abonner(&mut self, chemin: &str) -> Resultat<()> {
+        self.commande(&format!("SUBSCRIBE {}", citer(chemin))).map(|_| ())
+    }
+
+    /// Supprime un dossier : sert aux épreuves contre un vrai serveur, qui
+    /// retirent ce qu'elles ont créé.
+    #[cfg(test)]
+    pub fn supprimer_dossier(&mut self, chemin: &str) -> Resultat<()> {
+        let _ = self.commande(&format!("UNSUBSCRIBE {}", citer(chemin)));
+        self.commande(&format!("DELETE {}", citer(chemin))).map(|_| ())
+    }
+
+    /// Réponse texte d'une commande quelconque, pour les épreuves.
+    #[cfg(test)]
+    pub fn brute(&mut self, commande: &str) -> Resultat<String> {
+        self.commande(commande).map(|(texte, _)| texte)
+    }
+
     /// Message entier, tel que le serveur le conserve (décision 6 du dossier).
     ///
     /// `BODY.PEEK` et non `BODY` : lire un message ne doit pas le marquer comme

@@ -306,6 +306,15 @@ pub mod qobject {
         #[cxx_name = "viderDossier"]
         fn vider_dossier(self: Pin<&mut Boite>, compte: i32, chemin: &QString);
 
+        /// Crée, sur le serveur, le sous-dossier `nom` du dossier `parent`
+        /// (clic droit « Nouveau sous-dossier… »). Rend le motif d'un refus
+        /// immédiat — nom vide ou interdit, dossier existant, compte hors
+        /// ligne —, vide si la demande est partie. Issue : `dossierCree`, ou
+        /// `echec`.
+        #[qinvokable]
+        #[cxx_name = "creerSousDossier"]
+        fn creer_sous_dossier(self: Pin<&mut Boite>, compte: i32, parent: &QString, nom: &QString) -> QString;
+
         /// Relit compteurs et dossier ouvert de chaque compte ; reconnecte les
         /// comptes dont la session est tombée.
         #[qinvokable]
@@ -552,6 +561,12 @@ pub mod qobject {
         #[cxx_name = "corbeillesVidees"]
         fn corbeilles_videes(self: Pin<&mut Boite>, nombre: i32);
 
+        /// Sous-dossier créé : il figure dans l'arborescence, son parent
+        /// déplié.
+        #[qsignal]
+        #[cxx_name = "dossierCree"]
+        fn dossier_cree(self: Pin<&mut Boite>, compte: i32, chemin: &QString, nom: &QString);
+
         /// Une opération a échoué. `etape` : « connexion », « identifiants »,
         /// « dossier », « message », « tri » ou « reseau » (la session du
         /// compte est alors perdue).
@@ -616,6 +631,61 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "invitationRecue"]
         fn invitation_recue(self: Pin<&mut Boite>, uid: i32, invitation: &QString);
+
+        /// Sauvegarde la configuration du profil chez le service de M-Media
+        /// (cf. `sauvegarde`) : une copie par compte connecté, chiffrée par
+        /// sa clé, rangée sous le numéro `poste`. `reglages` : les réglages
+        /// de l'interface, en JSON ; `empreinte` : celle de la dernière
+        /// sauvegarde faite — si rien n'a changé depuis, rien ne part ;
+        /// `mots_de_passe` : faux si l'utilisateur ne garde pas les siens.
+        /// Rend faux si rien n'est lancé. Issue : `configurationSauvegardee`
+        /// ou `sauvegardeEchouee`.
+        #[qinvokable]
+        #[cxx_name = "sauvegarderConfiguration"]
+        fn sauvegarder_configuration(
+            self: Pin<&mut Boite>,
+            reglages: &QString,
+            poste: &QString,
+            empreinte: &QString,
+            mots_de_passe: bool,
+        ) -> bool;
+
+        /// Cherche les sauvegardes que la clé d'un compte connecté ouvre.
+        /// Issue : `sauvegardesTrouvees`.
+        #[qinvokable]
+        #[cxx_name = "chercherSauvegardes"]
+        fn chercher_sauvegardes(self: Pin<&mut Boite>, compte: i32);
+
+        /// Restaure la sauvegarde d'un poste, trouvée par
+        /// `chercherSauvegardes` : comptes, état local des dossiers et des
+        /// agendas, images des signatures. Rend en JSON ce qui revient à
+        /// l'interface — `{"reglages": {…}, "comptes": [{adresse, hote,
+        /// motDePasse?}], "images": n}` —, vide en cas d'échec (`erreur`).
+        #[qinvokable]
+        #[cxx_name = "restaurerConfiguration"]
+        fn restaurer_configuration(self: Pin<&mut Boite>, poste: &QString) -> QString;
+
+        /// Numéro neuf pour un poste qui n'a pas encore sauvegardé.
+        #[qinvokable]
+        #[cxx_name = "nouveauPoste"]
+        fn nouveau_poste(self: &Boite) -> QString;
+
+        /// Sauvegarde déposée : `copies` comptes la portent.
+        #[qsignal]
+        #[cxx_name = "configurationSauvegardee"]
+        fn configuration_sauvegardee(self: Pin<&mut Boite>, empreinte: &QString, copies: i32);
+
+        /// Sauvegarde impossible : une ligne par compte en échec.
+        #[qsignal]
+        #[cxx_name = "sauvegardeEchouee"]
+        fn sauvegarde_echouee(self: Pin<&mut Boite>, message: &QString);
+
+        /// Sauvegardes trouvées pour un compte, en JSON : `[{poste, nom,
+        /// memeNom, date, programme, comptes: [adresse]}]`, la plus récente
+        /// d'abord. `erreur` : le service n'a pas pu répondre.
+        #[qsignal]
+        #[cxx_name = "sauvegardesTrouvees"]
+        fn sauvegardes_trouvees(self: Pin<&mut Boite>, compte: i32, sauvegardes: &QString, erreur: &QString);
     }
 }
 
@@ -680,6 +750,8 @@ enum Commande {
     /// Vider entièrement les dossiers désignés (corbeille, indésirables) de ce
     /// compte : purge définitive côté serveur.
     ViderDossiers { chemins: Vec<String> },
+    /// Créer un dossier — le sous-dossier `nom` de `parent` —, et s'y abonner.
+    CreerDossier { parent: String, chemin: String, nom: String },
     /// Reprendre les déplacements interrompus dont ce compte est la source.
     Reprendre(HashMap<i64, Identifiants>),
     /// Préparer une réponse, un transfert ou la reprise d'un brouillon.
@@ -775,6 +847,7 @@ enum Issue {
     MarquageAbandonne { chemin: String },
     /// Corbeille et indésirables de ce compte vidés : `nombre` messages effacés.
     Vide { nombre: u32 },
+    DossierCree { parent: String, chemin: String, nom: String },
     /// Des déplacements interrompus ont été repris : ni demandés à l'instant,
     /// ni attendus par l'interface, qui n'a qu'à relire ses compteurs.
     Repris { rapport: Rapport },
@@ -842,6 +915,12 @@ pub struct BoiteRust {
     /// Liste envoyée en dernier à l'interface (cf. `ListeEnvoyee`).
     liste: Option<ListeEnvoyee>,
     agenda_occupe: bool,
+    /// Comptes dont le serveur a accepté le mot de passe pendant cette
+    /// session : seule leur clé sert à la sauvegarde.
+    authentifies: HashSet<i64>,
+    sauvegarde_en_cours: bool,
+    /// Sauvegardes lues par `chercher_sauvegardes`, par numéro de poste.
+    sauvegardes_lues: HashMap<String, crate::sauvegarde::Document>,
 }
 
 /// Liste envoyée à l'interface : dossier, et pour chaque message son UID, sa
@@ -879,6 +958,9 @@ impl Default for BoiteRust {
             courant: None,
             liste: None,
             agenda_occupe: false,
+            authentifies: HashSet::new(),
+            sauvegarde_en_cours: false,
+            sauvegardes_lues: HashMap::new(),
         }
     }
 }
@@ -1011,6 +1093,170 @@ impl qobject::Boite {
         if lance.is_err() {
             self.as_mut().set_agenda_occupe(false);
         }
+    }
+
+    pub fn sauvegarder_configuration(
+        mut self: Pin<&mut Self>,
+        reglages: &QString,
+        poste: &QString,
+        empreinte: &QString,
+        mots_de_passe: bool,
+    ) -> bool {
+        let poste = poste.to_string();
+        if self.sauvegarde_en_cours || !crate::sauvegarde::poste_valide(&poste) {
+            return false;
+        }
+        let Some(magasin) = self.magasin.as_ref() else { return false };
+        // La clé de chaque copie : un compte dont le serveur a accepté le mot
+        // de passe.
+        let comptes: Vec<(String, String)> = magasin
+            .comptes()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| self.authentifies.contains(&c.id))
+            .filter_map(|c| self.identites.get(&c.id).map(|i| (c.adresse, i.mot_de_passe.clone())))
+            .collect();
+        if comptes.is_empty() {
+            return false;
+        }
+        let mots: HashMap<String, String> =
+            if mots_de_passe { comptes.iter().cloned().collect() } else { HashMap::new() };
+        let document = crate::sauvegarde::composer(
+            magasin,
+            &dossier_signatures(&self.profil),
+            &mots,
+            &reglages.to_string(),
+            &nom_du_poste(),
+            env!("CARGO_PKG_VERSION"),
+            maintenant(),
+        );
+        let document = match document {
+            Ok(d) => d,
+            Err(e) => {
+                self.as_mut().sauvegarde_echouee(&QString::from(&e.to_string()));
+                return false;
+            }
+        };
+        let neuve = crate::sauvegarde::empreinte(&document);
+        if neuve == empreinte.to_string() {
+            return false;
+        }
+        let clair = serde_json::to_vec(&document).unwrap_or_default();
+        let fil = self.qt_thread();
+        self.as_mut().rust_mut().sauvegarde_en_cours = true;
+        let lance = thread::Builder::new().name("mmail-sauvegarde".into()).spawn(move || {
+            let mut copies = 0;
+            let mut erreurs = Vec::new();
+            for (adresse, mot_de_passe) in &comptes {
+                let cles = crate::sauvegarde::cles(adresse, mot_de_passe);
+                match crate::sauvegarde::chiffrer(&cles, &clair)
+                    .and_then(|copie| crate::sauvegarde::deposer(&cles, &poste, &copie))
+                {
+                    Ok(()) => copies += 1,
+                    Err(e) => erreurs.push(format!("{adresse} : {e}")),
+                }
+            }
+            let _ = fil.queue(move |mut boite: Pin<&mut qobject::Boite>| {
+                boite.as_mut().rust_mut().sauvegarde_en_cours = false;
+                if erreurs.is_empty() {
+                    boite.as_mut().configuration_sauvegardee(&QString::from(&neuve), copies);
+                } else {
+                    boite.as_mut().sauvegarde_echouee(&QString::from(&erreurs.join("\n")));
+                }
+            });
+        });
+        if lance.is_err() {
+            self.as_mut().rust_mut().sauvegarde_en_cours = false;
+            return false;
+        }
+        true
+    }
+
+    pub fn chercher_sauvegardes(mut self: Pin<&mut Self>, compte: i32) {
+        let id = compte as i64;
+        let adresse = self.magasin.as_ref().and_then(|m| m.compte_par_id(id).ok().flatten()).map(|c| c.adresse);
+        let (Some(adresse), Some(identifiants)) = (adresse, self.identites.get(&id).cloned()) else {
+            self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from("compte non connecté"));
+            return;
+        };
+        let fil = self.qt_thread();
+        let lance = thread::Builder::new().name("mmail-sauvegarde".into()).spawn(move || {
+            let cles = crate::sauvegarde::cles(&adresse, &identifiants.mot_de_passe);
+            let mut lus = Vec::new();
+            let erreur = match crate::sauvegarde::lister(&cles) {
+                Ok(copies) => {
+                    for copie in copies {
+                        let document = crate::sauvegarde::lire(&cles, &copie.poste)
+                            .ok()
+                            .and_then(|brut| crate::sauvegarde::dechiffrer(&cles, &brut))
+                            .and_then(|clair| crate::sauvegarde::lire_document(&clair));
+                        if let Some(d) = document {
+                            lus.push((copie.poste, d));
+                        }
+                    }
+                    String::new()
+                }
+                Err(e) => e.to_string(),
+            };
+            let _ = fil.queue(move |mut boite: Pin<&mut qobject::Boite>| {
+                let nom = nom_du_poste();
+                let resume: Vec<serde_json::Value> = lus
+                    .iter()
+                    .map(|(poste, d)| {
+                        serde_json::json!({
+                            "poste": poste,
+                            "nom": d.poste,
+                            "memeNom": d.poste.eq_ignore_ascii_case(&nom),
+                            "date": d.date,
+                            "programme": d.programme,
+                            "comptes": d.comptes.iter().map(|c| c.adresse.clone()).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                boite.as_mut().rust_mut().sauvegardes_lues = lus.into_iter().collect();
+                let resume = serde_json::Value::Array(resume).to_string();
+                boite.as_mut().sauvegardes_trouvees(compte, &QString::from(&resume), &QString::from(&erreur));
+            });
+        });
+        if lance.is_err() {
+            self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from("fil de travail impossible"));
+        }
+    }
+
+    pub fn restaurer_configuration(mut self: Pin<&mut Self>, poste: &QString) -> QString {
+        let Some(document) = self.sauvegardes_lues.get(&poste.to_string()).cloned() else {
+            self.as_mut().set_erreur(QString::from("sauvegarde introuvable : à chercher de nouveau"));
+            return QString::from("");
+        };
+        let Some(magasin) = self.magasin.as_ref() else {
+            self.as_mut().set_erreur(QString::from("le profil n'est pas ouvert"));
+            return QString::from("");
+        };
+        if let Err(e) = crate::sauvegarde::appliquer(magasin, &document) {
+            self.as_mut().set_erreur(QString::from(&format!("restauration : {e}")));
+            return QString::from("");
+        }
+        let signatures = dossier_signatures(&self.profil);
+        let images = match crate::sauvegarde::poser_images(&document, &signatures) {
+            Ok(n) => n,
+            Err(e) => {
+                self.as_mut().set_erreur(QString::from(&format!("images des signatures : {e}")));
+                0
+            }
+        };
+        let reglages: serde_json::Value =
+            serde_json::from_str(&crate::sauvegarde::reglages_pour(&document, &signatures)).unwrap_or_default();
+        let comptes: Vec<serde_json::Value> = document
+            .comptes
+            .iter()
+            .map(|c| serde_json::json!({ "adresse": c.adresse, "hote": c.hote, "motDePasse": c.mot_de_passe }))
+            .collect();
+        self.as_mut().reviser();
+        QString::from(&serde_json::json!({ "reglages": reglages, "comptes": comptes, "images": images }).to_string())
+    }
+
+    pub fn nouveau_poste(&self) -> QString {
+        QString::from(&crate::sauvegarde::nouveau_poste())
     }
 
     pub fn saisie_evenement(&self, objet: i32, occurrence: &QString, serie: bool) -> QString {
@@ -1387,6 +1633,7 @@ impl qobject::Boite {
                 id,
                 Identifiants { hote, utilisateur: adresse, mot_de_passe: mot_de_passe.to_string() },
             );
+            noyau.authentifies.remove(&id);
         }
         self.as_mut().lancer(id, Vec::new())
     }
@@ -1407,6 +1654,7 @@ impl qobject::Boite {
             noyau.identites.remove(&id);
             noyau.etats.remove(&id);
             noyau.nouveaux.remove(&id);
+            noyau.authentifies.remove(&id);
         }
         if let Some(magasin) = self.magasin.as_ref() {
             let _ = magasin.retirer_compte(id);
@@ -1842,6 +2090,31 @@ impl qobject::Boite {
             return;
         }
         self.as_mut().envoyer(compte as i64, Commande::ViderDossiers { chemins: vec![chemin] });
+    }
+
+    pub fn creer_sous_dossier(mut self: Pin<&mut Self>, compte: i32, parent: &QString, nom: &QString) -> QString {
+        let compte = compte as i64;
+        let parent = parent.to_string();
+        let nom = nom.to_string().trim().to_string();
+        let Some(magasin) = self.magasin.as_ref() else {
+            return QString::from("index indisponible");
+        };
+        let dossiers = magasin.dossiers(compte).unwrap_or_default();
+        let Some(separateur) = dossiers.iter().find(|d| d.chemin == parent).map(|d| d.separateur.clone()) else {
+            return QString::from(&format!("dossier inconnu : {parent}"));
+        };
+        let chemin = match crate::protocole::chemin_de_sous_dossier(&parent, &separateur, &nom) {
+            Ok(c) => c,
+            Err(motif) => return QString::from(&motif),
+        };
+        if dossiers.iter().any(|d| d.chemin == chemin) {
+            return QString::from(&format!("« {nom} » existe déjà dans ce dossier"));
+        }
+        if !self.sessions.contains_key(&compte) && !self.identites.contains_key(&compte) {
+            return QString::from("ce compte n'est pas connecté");
+        }
+        self.as_mut().envoyer(compte, Commande::CreerDossier { parent, chemin, nom });
+        QString::from("")
     }
 
     pub fn actualiser(mut self: Pin<&mut Self>) {
@@ -2297,6 +2570,7 @@ impl qobject::Boite {
                     let mut noyau = self.as_mut().rust_mut();
                     noyau.etats.insert(compte, Etat::Pret);
                     noyau.nouveaux.remove(&compte);
+                    noyau.authentifies.insert(compte);
                 }
                 // Ce compte peut être la source ou la cible de déplacements
                 // interrompus : chaque session connectée reprend les siens.
@@ -2439,6 +2713,17 @@ impl qobject::Boite {
                 self.as_mut().rafraichir_attente();
                 self.as_mut().reviser();
                 self.as_mut().corbeilles_videes(nombre as i32);
+            }
+            Issue::DossierCree { parent, chemin, nom } => {
+                // Déplié, le parent montre le dossier qu'on vient de créer.
+                if let Some(magasin) = self.magasin.as_ref() {
+                    if let Ok(id) = magasin.dossier_id(compte, &parent) {
+                        let _ = magasin.replier_dossier(id, false);
+                    }
+                }
+                self.as_mut().rafraichir_attente();
+                self.as_mut().reviser();
+                self.as_mut().dossier_cree(compte_qt, &QString::from(&chemin), &QString::from(&nom));
             }
             Issue::Repris { rapport } => {
                 // Les cibles ont reçu des messages : leurs compteurs aussi.
@@ -3082,6 +3367,21 @@ impl Travail {
                     }
                 })
             }
+            Commande::CreerDossier { parent, chemin, nom } => {
+                Some(match e.client.creer(&chemin) {
+                    Ok(()) => {
+                        // L'abonnement n'est qu'une commodité pour les autres
+                        // logiciels : son refus n'annule pas la création.
+                        let _ = e.client.abonner(&chemin);
+                        let _ = synchro::arborescence(&mut e.client, &e.magasin, compte);
+                        Issue::DossierCree { parent, chemin, nom }
+                    }
+                    Err(err) => {
+                        let echec_imap = Echec::Imap(err);
+                        echec("dossier", format!("création de « {nom} » : {echec_imap}"), &echec_imap)
+                    }
+                })
+            }
             Commande::Reprendre(identites) => {
                 e.identites.extend(identites);
                 self.reprendre(e)
@@ -3707,6 +4007,20 @@ fn nom_d_objet(uid: &str) -> String {
     }
 }
 
+/// Nom du poste, tel que la restauration le propose : celui de l'ordinateur.
+fn nom_du_poste() -> String {
+    if cfg!(target_os = "android") {
+        return "Android".to_string();
+    }
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "poste".to_string())
+}
+
 fn maintenant() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4284,6 +4598,7 @@ mod tests {
                 Commande::EnvoyerDifferes { .. } => "differes".into(),
                 Commande::Deplacer { .. } => "deplacer".into(),
                 Commande::ViderDossiers { .. } => "vider".into(),
+                Commande::CreerDossier { .. } => "creer".into(),
                 Commande::Arborescence => "arborescence".into(),
                 Commande::Reprendre(_) => "reprendre".into(),
                 Commande::Veille => "veille".into(),

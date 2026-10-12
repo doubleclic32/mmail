@@ -126,6 +126,38 @@ fn arborescence_et_roles() {
 
 #[test]
 #[ignore = "exige un serveur IMAP et un compte"]
+fn sous_dossier_cree_et_abonne() {
+    let mut client = session();
+    let dossiers = client.dossiers().expect("LIST");
+    let separateur = dossiers.iter().find(|d| d.chemin == "INBOX").expect("INBOX").separateur.clone();
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nom = format!("Épreuve MMail {unique}");
+    let chemin = crate::protocole::chemin_de_sous_dossier("INBOX", &separateur, &nom).expect("chemin");
+
+    client.creer(&chemin).expect("CREATE");
+    client.abonner(&chemin).expect("SUBSCRIBE");
+    let liste = client.dossiers().expect("LIST après création");
+    let abonnes = client.brute("LSUB \"\" \"*\"").expect("LSUB");
+    let magasin = Magasin::en_memoire().unwrap();
+    let u = variable("MMAIL_UTILISATEUR");
+    let compte = magasin.compte(&u, &variable("MMAIL_HOTE"), 993, &u).unwrap();
+    synchro::arborescence(&mut client, &magasin, compte).expect("arborescence");
+    let dans_l_index = magasin.dossiers(compte).unwrap().into_iter().find(|d| d.chemin == chemin);
+    // Retiré avant tout constat : un échec ne laisse rien dans la boîte.
+    client.supprimer_dossier(&chemin).expect("DELETE");
+    let apres = client.dossiers().expect("LIST après retrait");
+
+    println!("créé puis retiré : {chemin}");
+    assert!(liste.iter().any(|d| d.chemin == chemin), "absent de LIST");
+    assert!(abonnes.lines().any(|l| l.contains(&chemin)), "pas abonné : {abonnes}");
+    let d = dans_l_index.expect("absent de l'index");
+    assert_eq!(d.nom, nom, "nom accentué relu tel quel");
+    assert_eq!(d.profondeur, 1);
+    assert!(!apres.iter().any(|d| d.chemin == chemin), "dossier d'épreuve resté sur le serveur");
+}
+
+#[test]
+#[ignore = "exige un serveur IMAP et un compte"]
 fn index_et_message_accentue() {
     let mut client = session();
     let etat = client.examiner("INBOX").expect("EXAMINE");

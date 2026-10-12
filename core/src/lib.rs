@@ -19,6 +19,7 @@ pub mod presse_papier;
 pub mod redaction;
 pub mod rendu;
 pub mod saisie;
+pub mod sauvegarde;
 pub mod signature;
 pub mod smtp;
 pub mod socle;

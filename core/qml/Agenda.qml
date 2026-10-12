@@ -18,6 +18,8 @@ Pane {
 
     required property var boite
     property bool compact: false
+    // Pour la sauvegarde de la configuration (cf. Main.qml).
+    property alias reglagesAgenda: reglagesAgenda
     // « jour », « semaine » ou « mois » ; la date autour de laquelle la vue
     // est construite.
     property string genre: compact ? "jour" : "semaine"

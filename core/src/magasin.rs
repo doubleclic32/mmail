@@ -539,6 +539,50 @@ impl Magasin {
         Ok(())
     }
 
+    /// Range les comptes dans l'ordre de ces adresses ; ceux qu'elles ne
+    /// nomment pas suivent, dans leur ordre.
+    pub fn ordonner_comptes(&self, adresses: &[String]) -> Resultat<()> {
+        let comptes = self.comptes()?;
+        let mut ordre: Vec<i64> = adresses
+            .iter()
+            .filter_map(|a| comptes.iter().find(|c| &c.adresse == a).map(|c| c.id))
+            .collect();
+        ordre.extend(comptes.iter().map(|c| c.id).filter(|id| !ordre.contains(id)).collect::<Vec<_>>());
+        self.ranger_comptes(&ordre)
+    }
+
+    /// Remet l'état local d'un dossier venu d'une sauvegarde : masqué,
+    /// favori, replié. Un dossier pas encore connu est créé ; la
+    /// synchronisation le complète, ou le retire s'il n'existe plus sur le
+    /// serveur.
+    pub fn restaurer_dossier(&self, compte: i64, d: &DossierLocal) -> Resultat<()> {
+        self.base.execute(
+            "INSERT INTO folders (account_id, chemin, nom, profondeur, role, separateur, selectionnable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(account_id, chemin) DO NOTHING",
+            params![compte, d.chemin, d.nom, d.profondeur, d.role, d.separateur, d.selectionnable as i32],
+        )?;
+        self.base.execute(
+            "UPDATE folders SET hidden_local = ?3, favorite_rank = ?4, replie_local = ?5
+             WHERE account_id = ?1 AND chemin = ?2",
+            params![compte, d.chemin, d.masque as i32, d.favori, d.replie as i32],
+        )?;
+        Ok(())
+    }
+
+    /// Remet la case « affiché » d'un agenda venu d'une sauvegarde. Un agenda
+    /// pas encore connu est créé ; la synchronisation le complète, ou le
+    /// retire si le serveur ne le décrit plus.
+    pub fn restaurer_agenda(&self, a: &AgendaLocal) -> Resultat<()> {
+        self.base.execute(
+            "INSERT INTO agendas (account_id, adresse, nom, couleur, ecriture, affiche)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id, adresse) DO UPDATE SET affiche = ?6",
+            params![a.compte, a.adresse, a.nom, a.couleur, a.ecriture as i32, a.affiche as i32],
+        )?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ dossiers
 
     /// Remplace l'arborescence d'un compte par celle que le serveur annonce.

@@ -448,6 +448,33 @@ pub fn decoder_utf7(nom: &str) -> String {
     sortie
 }
 
+/// Chemin, sur le serveur, du sous-dossier `nom` — tel que l'utilisateur l'a
+/// tapé — de `parent`, chemin du serveur déjà en UTF-7 modifié. L'erreur se
+/// lit telle quelle dans l'interface.
+pub fn chemin_de_sous_dossier(parent: &str, separateur: &str, nom: &str) -> Result<String, String> {
+    let nom = nom.trim();
+    if nom.is_empty() {
+        return Err("indiquez le nom du dossier".into());
+    }
+    // « NIL » : le serveur ne connaît qu'un niveau de dossiers.
+    if separateur.is_empty() || separateur.eq_ignore_ascii_case("NIL") {
+        return Err("ce serveur ne range pas de dossiers dans d'autres".into());
+    }
+    if nom.contains(separateur) {
+        return Err(format!("le nom ne peut pas contenir « {separateur} »"));
+    }
+    // « % » et « * » sont les jokers de LIST : un dossier qui en porte se
+    // relit mal.
+    if let Some(c) = nom.chars().find(|c| c.is_control() || *c == '%' || *c == '*') {
+        return Err(if c.is_control() {
+            "le nom contient un caractère invisible".into()
+        } else {
+            format!("le nom ne peut pas contenir « {c} »")
+        });
+    }
+    Ok(format!("{parent}{separateur}{}", encoder_utf7(nom)))
+}
+
 /// Encode un nom de dossier en UTF-7 modifié, pour le créer sur le serveur :
 /// « Envoi différé » → « Envoi diff&AOk-r&AOk- ».
 pub fn encoder_utf7(nom: &str) -> String {
@@ -645,6 +672,27 @@ mod tests {
         let d = analyser_list(r#"* LIST (\HasNoChildren) "." "INBOX.&AMk-l&AOk-ments envoy&AOk-s""#).unwrap();
         assert_eq!(d.nom(), "Éléments envoyés");
         assert_eq!(d.profondeur(), 1);
+    }
+
+    #[test]
+    fn chemins_de_sous_dossiers() {
+        assert_eq!(chemin_de_sous_dossier("INBOX", "/", " Factures 2026 ").unwrap(), "INBOX/Factures 2026");
+        assert_eq!(
+            chemin_de_sous_dossier("INBOX.&AMk-l&AOk-ments envoy&AOk-s", ".", "Réglés").unwrap(),
+            "INBOX.&AMk-l&AOk-ments envoy&AOk-s.R&AOk-gl&AOk-s"
+        );
+        assert_eq!(chemin_de_sous_dossier("Clients", "/", "A & B").unwrap(), "Clients/A &- B");
+        assert!(chemin_de_sous_dossier("INBOX", "/", "  ").is_err());
+        assert_eq!(
+            chemin_de_sous_dossier("INBOX", ".", "v1.2").unwrap_err(),
+            "le nom ne peut pas contenir « . »"
+        );
+        assert!(chemin_de_sous_dossier("INBOX", "/", "a/b").is_err());
+        assert!(chemin_de_sous_dossier("INBOX", "/", "tout*").is_err());
+        assert!(chemin_de_sous_dossier("INBOX", "/", "50%").is_err());
+        assert!(chemin_de_sous_dossier("INBOX", "/", "a\tb").is_err());
+        assert!(chemin_de_sous_dossier("INBOX", "NIL", "Factures").is_err());
+        assert!(chemin_de_sous_dossier("INBOX", "", "Factures").is_err());
     }
 
     #[test]
