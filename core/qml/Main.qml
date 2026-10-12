@@ -254,7 +254,7 @@ ApplicationWindow {
 
     // ---------------------------------------------------------- apparences
     //
-    // Les trois apparences de MMdedit, reprises à l'identique : c'est la
+    // Les apparences de MMdedit, reprises à l'identique : c'est la
     // palette et la police de la fenêtre qui changent, le style des contrôles
     // restant Fusion, seul à honorer une palette partout (cf. cpp/main.cpp).
     // « systeme » ne pose aucune surcharge : la palette reste celle du bureau.
@@ -280,9 +280,26 @@ ApplicationWindow {
             police: ["Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"], taille: 10,
             mono: ["Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"]
         },
-        "systeme": { libelle: qsTr("Système (aspect natif)") }
+        "systeme": { libelle: qsTr("Système (aspect natif)") },
+        // Charte du site mmedia.fr. La couleur de sélection sert aussi de
+        // couleur de texte (rubriques, non-lus, compteurs) : elle prend le
+        // cyan foncé, lisible sur fond blanc comme sous du texte blanc
+        // (5,5:1), là où le cyan du site n'atteint pas 2,6:1. Au-delà de la
+        // palette, les repères de marque : bandeau de l'en-tête, accent cyan,
+        // rubriques en bleu pétrole, alerte au rouge du logo, titres en
+        // capitales étroites.
+        "mmedia": {
+            libelle: qsTr("MMEDIA"),
+            fond: "#f1f2f2", texte: "#231f20", base: "#ffffff",
+            bouton: "#ffffff", surbrillance: "#0e6f9e", texteSurbrillance: "#ffffff",
+            police: ["Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"], taille: 10,
+            mono: ["Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"],
+            bandeau: "#0b0d2e", texteBandeau: "#ffffff", accent: "#21abe3",
+            rubrique: "#276e8b", alerte: "#e61e29",
+            titres: ["Saira Condensed", "Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"]
+        }
     })
-    readonly property var nomsApparence: ["classique", "moderne", "systeme"]
+    readonly property var nomsApparence: ["classique", "moderne", "systeme", "mmedia"]
 
     // Nul pour « systeme » : c'est ce qui coupe les surcharges ci-dessous.
     readonly property var jeu: apparence === "systeme" || !jeuxApparence[apparence]
@@ -7330,6 +7347,9 @@ ApplicationWindow {
         choisirApparence("moderne")
         if (palette.window.toString() !== "#f6f7f8")
             return "apparence moderne non appliquée : " + palette.window
+        choisirApparence("mmedia")
+        if (palette.window.toString() !== "#f1f2f2" || palette.highlight.toString() !== "#0e6f9e")
+            return "apparence MMEDIA non appliquée : " + palette.window
         choisirApparence("systeme")
         if (palette.window.toString() !== fondSysteme && apparenceAvant === "systeme")
             return "apparence système non rendue"

@@ -125,8 +125,9 @@ de projet interne.
   `.bat`…) ne s'ouvre pas depuis MMail, il s'enregistre ;
 - **zoom propre à chaque colonne** : Ctrl + molette sur la colonne, ou Ctrl +,
   Ctrl − et Ctrl 0 sur la dernière colonne survolée ; pincement au doigt ;
-- **trois apparences**, celles de MMdedit : classique (Windows 9x), moderne
-  (M-Media), système — menu « Affichage » ;
+- **quatre apparences**, celles de MMdedit : classique (Windows 9x), moderne
+  (M-Media), système, et MMEDIA, aux couleurs du site mmedia.fr — menu
+  « Affichage » ;
 - mot de passe confié au **coffre du système**, jamais écrit par MMail ;
 - **synchronisation incrémentale** (QRESYNC) : seul ce qui a changé depuis la
   dernière visite est relu ; le dossier ouvert suit le serveur en temps réel
