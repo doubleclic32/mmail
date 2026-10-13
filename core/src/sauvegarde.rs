@@ -196,6 +196,10 @@ pub struct Document {
 pub struct CompteSauve {
     pub adresse: String,
     pub hote: String,
+    /// Serveur d'envoi, s'il n'est pas celui de la lecture ; absent sinon,
+    /// et dans les sauvegardes antérieures à la 0.5.11.
+    #[serde(default, rename = "hoteEnvoi", skip_serializing_if = "String::is_empty")]
+    pub hote_envoi: String,
     pub port: u16,
     pub utilisateur: String,
     /// Absent quand l'utilisateur ne garde pas ses mots de passe, ou que le
@@ -292,6 +296,7 @@ pub fn composer(
             mot_de_passe: mots_de_passe.get(&c.adresse).cloned(),
             adresse: c.adresse,
             hote: c.hote,
+            hote_envoi: c.hote_envoi,
             port: c.port,
             utilisateur: c.utilisateur,
             replie: c.replie,
@@ -347,7 +352,11 @@ pub fn appliquer(magasin: &Magasin, document: &Document) -> Resultat<()> {
     for c in &document.comptes {
         let id = match magasin.compte_connu(&c.adresse).map_err(local)? {
             Some(id) => id,
-            None => magasin.compte(&c.adresse, &c.hote, c.port, &c.utilisateur).map_err(local)?,
+            None => {
+                let id = magasin.compte(&c.adresse, &c.hote, c.port, &c.utilisateur).map_err(local)?;
+                magasin.poser_serveur_envoi(&c.adresse, &c.hote_envoi).map_err(local)?;
+                id
+            }
         };
         magasin.replier_compte(id, c.replie).map_err(local)?;
         for d in &c.dossiers {
@@ -621,12 +630,16 @@ mod tests {
         })
         .to_string();
 
+        magasin.poser_serveur_envoi("nom@exemple.fr", "smtp.exemple.fr").unwrap();
         let mut mots = HashMap::new();
         mots.insert("nom@exemple.fr".to_string(), "secret".to_string());
         let doc = composer(&magasin, &signatures, &mots, &reglages, "POSTE", "0.5.10", 100).unwrap();
         assert_eq!(doc.comptes.len(), 2);
         assert_eq!(doc.comptes[0].mot_de_passe.as_deref(), Some("secret"));
         assert_eq!(doc.comptes[1].mot_de_passe, None);
+        assert_eq!(doc.comptes[0].hote_envoi, "smtp.exemple.fr");
+        let json = serde_json::to_value(&doc.comptes[1]).unwrap();
+        assert!(json.get("hoteEnvoi").is_none(), "absent quand c'est le serveur de lecture");
         let chemins: Vec<&str> = doc.comptes[0].dossiers.iter().map(|d| d.chemin.as_str()).collect();
         assert_eq!(chemins, ["Archives", "Spam"], "seuls les dossiers à l'état local");
         assert_eq!(doc.images.keys().collect::<Vec<_>>(), ["nom_exemple.fr/logo.png"], "l'image désignée seule");
@@ -662,6 +675,7 @@ mod tests {
         let adresses: Vec<&str> = comptes.iter().map(|c| c.adresse.as_str()).collect();
         assert_eq!(adresses, ["nom@exemple.fr", "autre@exemple.fr"], "l'ordre de la sauvegarde");
         assert_eq!(comptes[1].hote, "ailleurs.exemple.fr");
+        assert_eq!(comptes[0].serveur_envoi(), "smtp.exemple.fr", "le serveur d'envoi revient");
         let restaures = neuf.dossiers(comptes[0].id).unwrap();
         let archives = restaures.iter().find(|d| d.chemin == "Archives").unwrap();
         assert!(archives.favori.is_some() && !archives.masque);

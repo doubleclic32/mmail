@@ -72,7 +72,8 @@ pub mod qobject {
         #[cxx_name = "ouvrirProfil"]
         fn ouvrir_profil(self: Pin<&mut Boite>, chemin: &QString) -> bool;
 
-        /// Comptes du profil, en JSON : `[{id, adresse, hote, etat}]`.
+        /// Comptes du profil, en JSON : `[{id, adresse, hote, hoteEnvoi, etat}]`
+        /// — `hoteEnvoi` vide : l'envoi passe par le serveur de lecture.
         #[qinvokable]
         #[cxx_name = "comptes"]
         fn comptes(&self) -> QString;
@@ -89,6 +90,13 @@ pub mod qobject {
             adresse: &QString,
             mot_de_passe: &QString,
         ) -> bool;
+
+        /// Pose le serveur d'envoi (SMTP, port 465) d'un compte déjà
+        /// enregistré ; vide, c'est le serveur de lecture. Pris en compte dès
+        /// le prochain envoi, sans reconnexion.
+        #[qinvokable]
+        #[cxx_name = "poserServeurEnvoi"]
+        fn poser_serveur_envoi(self: Pin<&mut Boite>, adresse: &QString, hote: &QString) -> bool;
 
         /// Ferme la session d'un compte ; son index reste consultable.
         #[qinvokable]
@@ -712,8 +720,17 @@ const DOSSIER_DIFFERE: &str = "Envoi différé";
 #[derive(Clone)]
 struct Identifiants {
     hote: String,
+    /// Serveur de soumission, s'il n'est pas celui de la lecture ; vide sinon.
+    hote_envoi: String,
     utilisateur: String,
     mot_de_passe: String,
+}
+
+impl Identifiants {
+    /// Serveur auquel remettre les messages.
+    fn serveur_envoi(&self) -> &str {
+        if self.hote_envoi.is_empty() { &self.hote } else { &self.hote_envoi }
+    }
 }
 
 /// Dossier cible d'un déplacement.
@@ -1586,10 +1603,11 @@ impl qobject::Boite {
             .iter()
             .map(|c| {
                 format!(
-                    r#"{{"id":{},"adresse":{},"hote":{},"etat":{}}}"#,
+                    r#"{{"id":{},"adresse":{},"hote":{},"hoteEnvoi":{},"etat":{}}}"#,
                     c.id,
                     texte_json(&c.adresse),
                     texte_json(&c.hote),
+                    texte_json(&c.hote_envoi),
                     texte_json(self.etat(c.id).code())
                 )
             })
@@ -1615,7 +1633,15 @@ impl qobject::Boite {
             };
             let nouveau = matches!(magasin.compte_connu(&adresse), Ok(None));
             match magasin.compte(&adresse, &hote, PORT_IMAPS, &adresse) {
-                Ok(id) => (id, nouveau),
+                Ok(id) => {
+                    let hote_envoi = magasin
+                        .compte_par_id(id)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.hote_envoi)
+                        .unwrap_or_default();
+                    (id, nouveau, hote_envoi)
+                }
                 Err(e) => {
                     let message = QString::from(&format!("index local : {e}"));
                     self.as_mut().set_erreur(message);
@@ -1623,7 +1649,7 @@ impl qobject::Boite {
                 }
             }
         };
-        let (id, nouveau) = compte;
+        let (id, nouveau, hote_envoi) = compte;
         {
             let mut noyau = self.as_mut().rust_mut();
             if nouveau {
@@ -1631,11 +1657,44 @@ impl qobject::Boite {
             }
             noyau.identites.insert(
                 id,
-                Identifiants { hote, utilisateur: adresse, mot_de_passe: mot_de_passe.to_string() },
+                Identifiants { hote, hote_envoi, utilisateur: adresse, mot_de_passe: mot_de_passe.to_string() },
             );
             noyau.authentifies.remove(&id);
         }
         self.as_mut().lancer(id, Vec::new())
+    }
+
+    pub fn poser_serveur_envoi(mut self: Pin<&mut Self>, adresse: &QString, hote: &QString) -> bool {
+        let (adresse, hote) = (adresse.to_string().trim().to_string(), hote.to_string().trim().to_ascii_lowercase());
+        let valide = hote.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+        if !valide {
+            self.as_mut().set_erreur(QString::from(&format!("serveur d'envoi invalide : {hote}")));
+            return false;
+        }
+        let pose = match self.magasin.as_ref() {
+            Some(magasin) => magasin.poser_serveur_envoi(&adresse, &hote),
+            None => {
+                self.as_mut().set_erreur(QString::from("le profil n'est pas ouvert"));
+                return false;
+            }
+        };
+        match pose {
+            Ok(true) => {
+                let mut noyau = self.as_mut().rust_mut();
+                for id in noyau.identites.values_mut().filter(|i| i.utilisateur == adresse) {
+                    id.hote_envoi = hote.clone();
+                }
+                true
+            }
+            Ok(false) => {
+                self.as_mut().set_erreur(QString::from(&format!("compte inconnu : {adresse}")));
+                false
+            }
+            Err(e) => {
+                self.as_mut().set_erreur(QString::from(&format!("index local : {e}")));
+                false
+            }
+        }
     }
 
     pub fn deconnecter(mut self: Pin<&mut Self>, compte: i32) {
@@ -3692,7 +3751,7 @@ impl Travail {
             let (destinataire, rapport) =
                 redaction::confirmation_lecture(&octets, &id.utilisateur, "", maintenant())
                     .ok_or("ce message ne demande pas de confirmation de lecture")?;
-            smtp::envoyer(&id.hote, &id.utilisateur, &id.mot_de_passe, &id.utilisateur, &[destinataire], &rapport, false)
+            smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, &id.utilisateur, &[destinataire], &rapport, false)
                 .map_err(|x| format!("confirmation de lecture : {x}"))?;
         }
         self.ailleurs(e, chemin, |c| c.marquer(&[uid], "$MDNSent", true))
@@ -3741,7 +3800,7 @@ impl Travail {
                     }
                 };
                 if let Err(x) = smtp::envoyer(
-                    &id.hote,
+                    id.serveur_envoi(),
                     &id.utilisateur,
                     &id.mot_de_passe,
                     &envoi.de,
@@ -3917,7 +3976,7 @@ impl Travail {
         };
         let retour = self.retour();
         let lance = thread::Builder::new().name("mmail-smtp".into()).spawn(move || {
-            let erreur = smtp::envoyer(&id.hote, &id.utilisateur, &id.mot_de_passe, &r.de, &f.destinataires, &f.envoi, r.accuse_remise)
+            let erreur = smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, &r.de, &f.destinataires, &f.envoi, r.accuse_remise)
                 .err()
                 .map(|x| format!("envoi : {x}"));
             retour.remettre(Issue::Parti { redaction: r, copie: f.copie, erreur }, true);
@@ -4655,7 +4714,7 @@ mod tests {
         // La minuterie des envois différés écrit à chaque compte toutes les
         // minutes : elle ne doit pas faire sauter la veille.
         let differes = Commande::EnvoyerDifferes {
-            identifiants: Identifiants { hote: "h".into(), utilisateur: "u".into(), mot_de_passe: "p".into() },
+            identifiants: Identifiants { hote: "h".into(), hote_envoi: String::new(), utilisateur: "u".into(), mot_de_passe: "p".into() },
         };
         let (file, _) = regrouper(vec![Commande::Veille, differes]);
         assert_eq!(noms(&file), vec!["veille", "differes"]);

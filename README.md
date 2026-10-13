@@ -27,7 +27,8 @@ de projet interne.
   celles d'un message transféré reprises d'office ; une capture d'écran se
   colle dans le corps (Ctrl+V) et une image glissée sur le corps s'y insère,
   intégrée au message à l'envoi ; envoi par la soumission
-  SMTP du serveur (port 465), dans un fil à part — le compte reste
+  SMTP (port 465) — celle du serveur de lecture, ou un **serveur d'envoi**
+  distinct quand le fournisseur en a un (Orange, Free, SFR) —, dans un fil à part — le compte reste
   utilisable pendant un gros envoi —, copie dans « Éléments envoyés », original
   marqué « répondu » ou « transféré » ; brouillons enregistrés sur le serveur et
   repris d'un double clic ;
@@ -206,6 +207,17 @@ l'identifiant est l'adresse elle-même. Aucun annuaire tiers n'est interrogé.
 Mailcow sert ce document : il suffit que `autoconfig.<domaine>` désigne le
 serveur. Un serveur saisi à la main n'est jamais remplacé.
 
+### Serveur d'envoi
+
+L'envoi passe par défaut par le serveur de lecture, sur le port 465. Quand le
+fournisseur reçoit l'envoi ailleurs — Orange lit sur `imap.orange.fr` et
+reçoit sur `smtp.orange.fr` —, le compte porte un **serveur d'envoi** : champ
+« Serveur d'envoi » à l'ajout d'un compte, ou « Serveur d'envoi… » au clic
+droit sur un compte déjà présent. Même port (465, TLS d'emblée), mêmes
+identifiants que la lecture ; laissé vide, c'est de nouveau le serveur de
+lecture. Il vaut dès l'envoi suivant, sans reconnexion, et suit la sauvegarde
+de la configuration.
+
 ### Lien de configuration
 
 Un administrateur peut préparer un ou plusieurs comptes, mot de passe compris,
@@ -226,12 +238,15 @@ Ce que MMail attend du serveur qui sert le lien :
 {
   "mmail": 1,
   "comptes": [
-    { "adresse": "nom@exemple.fr", "hote": "mail.exemple.fr", "motDePasse": "…" }
+    { "adresse": "nom@exemple.fr", "hote": "mail.exemple.fr", "motDePasse": "…" },
+    { "adresse": "nom@orange.fr", "hote": "imap.orange.fr", "hoteEnvoi": "smtp.orange.fr", "motDePasse": "…" }
   ]
 }
 ```
 
-`port`, facultatif, ne peut valoir que 993. Un compte incomplet est écarté, et
+`port`, facultatif, ne peut valoir que 993. `hoteEnvoi`, facultatif, désigne le
+serveur d'envoi (port 465) ; absent, celui d'un compte déjà présent est
+conservé, celui d'un compte nouveau est le serveur de lecture. Un compte incomplet est écarté, et
 signalé ; les autres sont ajoutés. Comme pour une saisie à la main, un mot de
 passe n'est confié au coffre qu'une fois accepté par le serveur.
 
@@ -354,7 +369,8 @@ reproposées.
 - Agenda : une écriture exige la connexion ; les rappels
   ne s'affichent que MMail ouvert (pas de notification du système, ni sous
   Android en arrière-plan). Les tâches (VTODO) ne s'affichent pas.
-- L'envoi passe par le même serveur que la lecture, sur le port 465.
+- L'envoi se fait sur le port 465 seulement (TLS d'emblée), avec les
+  identifiants de la lecture ; pas de soumission en STARTTLS sur le port 587.
 - Sous Android, les autorités de certification sont celles de Mozilla,
   embarquées dans l'application — et non celles du téléphone.
 

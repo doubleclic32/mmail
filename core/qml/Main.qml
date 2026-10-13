@@ -4234,6 +4234,10 @@ ApplicationWindow {
             text: qsTr("Oublier le mot de passe")
             onTriggered: coffre.effacer(fenetre.cle(menuCompte.adresse, menuCompte.hote))
         }
+        MenuItem {
+            text: qsTr("Serveur d'envoi…")
+            onTriggered: dlgServeurEnvoi.ouvrir(menuCompte.compte, menuCompte.adresse, menuCompte.hote)
+        }
         MenuSeparator {}
         // L'ordre des comptes se règle aussi en glissant leur en-tête.
         MenuItem {
@@ -4412,6 +4416,16 @@ ApplicationWindow {
                 font.pixelSize: 11
                 text: dlgCompte.infoServeur
             }
+            // Facultatif : la plupart des serveurs reçoivent l'envoi sur le
+            // nom de la lecture ; Orange, Free, SFR ont un serveur à part.
+            Label { text: qsTr("Serveur d'envoi :") }
+            TextField {
+                id: champHoteEnvoi
+                placeholderText: qsTr("identique au serveur IMAP")
+                enabled: dlgCompte.compteId === 0
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                Layout.fillWidth: true
+            }
             Label { text: qsTr("Mot de passe :") }
             TextField {
                 id: champMotDePasse
@@ -4431,7 +4445,7 @@ ApplicationWindow {
                 wrapMode: Text.Wrap
                 opacity: 0.75
                 font.pixelSize: 11
-                text: qsTr("Le mot de passe n'est jamais écrit par MMail : il est confié au coffre du système (Gestionnaire d'identifiants sous Windows, Secret Service ou KWallet sous Linux, Keystore sous Android). Connexion en IMAPS, port 993.")
+                text: qsTr("Le mot de passe n'est jamais écrit par MMail : il est confié au coffre du système (Gestionnaire d'identifiants sous Windows, Secret Service ou KWallet sous Linux, Keystore sous Android). Connexion en IMAPS, port 993 ; envoi en SMTP sur TLS, port 465.")
             }
         }
     }
@@ -5045,6 +5059,52 @@ ApplicationWindow {
                 opacity: 0.7
                 text: fenetre.noyau + " · Qt " + versionQt
             }
+        }
+    }
+
+    // Serveur d'envoi d'un compte déjà enregistré : il se change sans retirer
+    // le compte, et vaut dès le prochain envoi.
+    Dialog {
+        id: dlgServeurEnvoi
+        property string adresse: ""
+        property string hote: ""
+        function ouvrir(c, a, h) {
+            adresse = a
+            hote = h
+            var present = JSON.parse(boite.comptes()).filter(function(x) { return x.id === c })[0]
+            champServeurEnvoi.text = present ? present.hoteEnvoi : ""
+            open()
+        }
+        title: qsTr("Serveur d'envoi")
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(460, fenetre.width - 24)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: champServeurEnvoi.forceActiveFocus()
+        ColumnLayout {
+            width: dlgServeurEnvoi.availableWidth
+            spacing: 6
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Serveur auquel MMail remet les messages de %1, en SMTP sur TLS (port 465), avec les mêmes identifiants que la lecture. Laissé vide : %2.").arg(dlgServeurEnvoi.adresse).arg(dlgServeurEnvoi.hote)
+            }
+            TextField {
+                id: champServeurEnvoi
+                Layout.fillWidth: true
+                placeholderText: dlgServeurEnvoi.hote
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                onAccepted: dlgServeurEnvoi.accept()
+            }
+        }
+        onAccepted: {
+            var hote = champServeurEnvoi.text.trim()
+            if (boite.poserServeurEnvoi(adresse, hote))
+                messageEtat.texte = hote.length > 0
+                        ? qsTr("Envoi de %1 par %2.").arg(adresse).arg(hote)
+                        : qsTr("Envoi de %1 par son serveur de lecture.").arg(adresse)
+            else
+                messageEtat.texte = qsTr("Serveur d'envoi refusé : %1").arg(boite.erreur)
         }
     }
 
@@ -5897,7 +5957,7 @@ ApplicationWindow {
     }
 
     function dialogueOuvert() {
-        return dlgCompte.visible || dlgDeplacer.visible || dlgRetrait.visible
+        return dlgCompte.visible || dlgDeplacer.visible || dlgRetrait.visible || dlgServeurEnvoi.visible
             || dlgAide.visible || dlgAPropos.visible || dlgLien.visible || dlgIdentite.visible
             || dlgNouveauDossier.visible
             // Sur téléphone, la rédaction couvre la fenêtre principale.
@@ -5915,6 +5975,7 @@ ApplicationWindow {
         dlgCompte.compteId = compte && compte.id ? compte.id : 0
         champAdresse.text = compte ? compte.adresse : ""
         champHote.text = compte ? compte.hote : ""
+        champHoteEnvoi.text = compte && compte.hoteEnvoi ? compte.hoteEnvoi : ""
         champMotDePasse.text = ""
         caseMemoriser.checked = reglages.memoriser
         noteCompte.text = note
@@ -5954,7 +6015,7 @@ ApplicationWindow {
     }
 
     /// Document d'un lien de configuration (cf. README) :
-    /// `{"mmail": 1, "comptes": [{"adresse", "hote", "motDePasse"}]}`.
+    /// `{"mmail": 1, "comptes": [{"adresse", "hote", "motDePasse", "hoteEnvoi"?}]}`.
     function appliquerLien(contenu) {
         var lien = lienEnCours
         lienEnCours = ""
@@ -5975,11 +6036,13 @@ ApplicationWindow {
                     && typeof c.hote === "string" && c.hote.trim().length > 0
                     && typeof c.motDePasse === "string" && c.motDePasse.length > 0
                     && (c.port === undefined || c.port === 993)
+                    && (c.hoteEnvoi === undefined || typeof c.hoteEnvoi === "string")
             if (!valide) {
                 ecartes.push(c && typeof c.adresse === "string" ? c.adresse : "?")
                 continue
             }
             retenus.push({ adresse: c.adresse.trim(), hote: c.hote.trim().toLowerCase(),
+                           hoteEnvoi: c.hoteEnvoi === undefined ? null : c.hoteEnvoi.trim().toLowerCase(),
                            motDePasse: c.motDePasse })
         }
         if (retenus.length === 0) {
@@ -5994,7 +6057,10 @@ ApplicationWindow {
         for (var j = 0; j < retenus.length; ++j) {
             var r = retenus[j]
             secretsAConserver[r.adresse] = { cle: cle(r.adresse, r.hote), motDePasse: r.motDePasse }
-            boite.connecter(r.hote, r.adresse, r.motDePasse)
+            // Absent du document : le serveur d'envoi d'un compte déjà connu
+            // reste tel qu'il est.
+            if (boite.connecter(r.hote, r.adresse, r.motDePasse) && r.hoteEnvoi !== null)
+                boite.poserServeurEnvoi(r.adresse, r.hoteEnvoi)
         }
         var texte = qsTr("Lien de configuration : connexion de %1.")
                 .arg(retenus.map(function(r) { return r.adresse }).join(", "))
@@ -6013,6 +6079,8 @@ ApplicationWindow {
     function validerCompte() {
         var adresse = champAdresse.text.trim()
         var hote = champHote.text.trim()
+        var hoteEnvoi = champHoteEnvoi.text.trim()
+        var nouveau = dlgCompte.compteId === 0
         var motDePasse = champMotDePasse.text
         champMotDePasse.text = ""
         reglages.memoriser = caseMemoriser.checked
@@ -6022,7 +6090,9 @@ ApplicationWindow {
         else
             coffre.effacer(cle(adresse, hote))
         messageEtat.texte = qsTr("Connexion de %1…").arg(adresse)
-        boite.connecter(hote, adresse, motDePasse)
+        // Le compte est enregistré dès l'appel : son serveur d'envoi suit.
+        if (boite.connecter(hote, adresse, motDePasse) && nouveau)
+            boite.poserServeurEnvoi(adresse, hoteEnvoi)
         demandeSuivante()
     }
 
@@ -7383,6 +7453,11 @@ ApplicationWindow {
                 var attenteEnvoi = Qt.createQmlObject('import QtQuick; Timer { interval: 8000 }', fenetre)
                 attenteEnvoi.triggered.connect(function() {
                     var c = comptesConnus[0]
+                    // MMAIL_HOTE_ENVOI : l'envoi passe par ce serveur-là.
+                    if (identifiantsEssai.hoteEnvoi && identifiantsEssai.hoteEnvoi.length > 0)
+                        console.log("scenario: serveur d'envoi", identifiantsEssai.hoteEnvoi,
+                                    boite.poserServeurEnvoi(c.adresse, identifiantsEssai.hoteEnvoi),
+                                    "|", JSON.stringify(JSON.parse(boite.comptes()).map(function(x) { return x.hoteEnvoi })))
                     var n = ouvrirRedaction(c.compte)
                     n.pret()
                     essai.sujet = "Essai envoi en fond " + Date.now()

@@ -224,6 +224,8 @@ int main(int argc, char* argv[])
     essai.insert(QStringLiteral("motDePasse2"), QString::fromUtf8(qgetenv("MMAIL_MOTDEPASSE2")));
     essai.insert(QStringLiteral("scenario"), QString::fromUtf8(qgetenv("MMAIL_SCENARIO")));
     essai.insert(QStringLiteral("dossier"), QString::fromUtf8(qgetenv("MMAIL_DOSSIER")));
+    // Serveur d'envoi du premier compte, pour le scénario « envoi-fond ».
+    essai.insert(QStringLiteral("hoteEnvoi"), QString::fromUtf8(qgetenv("MMAIL_HOTE_ENVOI")));
     essai.insert(QStringLiteral("sortie"),
                  QUrl::fromLocalFile(QString::fromUtf8(qgetenv("MMAIL_SORTIE"))).toString());
   }

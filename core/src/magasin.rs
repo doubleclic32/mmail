@@ -25,7 +25,7 @@ pub type Resultat<T> = Result<T, Erreur>;
 const LOT_ECRITURE: usize = 500;
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 11;
+const VERSION_SCHEMA: i32 = 12;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -88,8 +88,19 @@ pub struct CompteLocal {
     pub hote: String,
     pub port: u16,
     pub utilisateur: String,
+    /// Serveur de soumission SMTP, quand il n'est pas celui de la lecture
+    /// (Orange : `imap.orange.fr` et `smtp.orange.fr`). Vide : le même.
+    pub hote_envoi: String,
     /// Replié dans l'arborescence : ses dossiers ne s'affichent pas.
     pub replie: bool,
+}
+
+impl CompteLocal {
+    /// Serveur auquel remettre les messages : celui de l'envoi s'il est
+    /// donné, sinon celui de la lecture.
+    pub fn serveur_envoi(&self) -> &str {
+        if self.hote_envoi.is_empty() { &self.hote } else { &self.hote_envoi }
+    }
 }
 
 /// Un dossier tel qu'il est rangé dans l'index.
@@ -423,6 +434,11 @@ impl Magasin {
         if version < 11 {
             self.ajouter_colonne("messages", "repondu_tous", "INTEGER NOT NULL DEFAULT 0")?;
         }
+        // Version 12 : un serveur d'envoi distinct de celui de la lecture,
+        // vide pour tous les comptes déjà enregistrés — ils gardent le même.
+        if version < 12 {
+            self.ajouter_colonne("accounts", "hote_envoi", "TEXT NOT NULL DEFAULT ''")?;
+        }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
     }
@@ -469,11 +485,21 @@ impl Magasin {
         )?)
     }
 
+    /// Pose le serveur d'envoi d'un compte ; vide, c'est celui de la lecture.
+    /// Le compte doit exister : rien n'est créé.
+    pub fn poser_serveur_envoi(&self, adresse: &str, hote: &str) -> Resultat<bool> {
+        let n = self.base.execute(
+            "UPDATE accounts SET hote_envoi = ?2 WHERE adresse = ?1",
+            params![adresse, hote.trim().to_ascii_lowercase()],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Comptes du profil, dans l'ordre choisi par l'utilisateur — à défaut,
     /// celui où ils ont été ajoutés.
     pub fn comptes(&self) -> Resultat<Vec<CompteLocal>> {
         let mut requete = self.base.prepare(
-            "SELECT id, adresse, hote, port, utilisateur, replie FROM accounts
+            "SELECT id, adresse, hote, port, utilisateur, replie, hote_envoi FROM accounts
              ORDER BY rang IS NULL, rang, id",
         )?;
         let comptes = requete
@@ -485,6 +511,7 @@ impl Magasin {
                     port: l.get(3)?,
                     utilisateur: l.get(4)?,
                     replie: l.get::<_, i32>(5)? != 0,
+                    hote_envoi: l.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1987,6 +2014,34 @@ mod tests {
         assert_eq!(m.dossier(id).unwrap().unwrap().highest_mod_seq, 99, "rien à relire");
         let m1 = m.message(id, 1).unwrap().unwrap();
         assert!(m1.transfere && !m1.repondu_tous);
+    }
+
+    #[test]
+    fn serveur_d_envoi_distinct() {
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@orange.fr", "imap.orange.fr", 993, "a@orange.fr").unwrap();
+        let c = &m.comptes().unwrap()[0];
+        assert_eq!(c.hote_envoi, "");
+        assert_eq!(c.serveur_envoi(), "imap.orange.fr", "vide : le serveur de lecture");
+        assert!(m.poser_serveur_envoi("a@orange.fr", " SMTP.Orange.fr ").unwrap());
+        let c = &m.comptes().unwrap()[0];
+        assert_eq!(c.serveur_envoi(), "smtp.orange.fr");
+        // Une reconnexion réécrit le serveur de lecture, pas celui de l'envoi.
+        m.compte("a@orange.fr", "imap.orange.fr", 993, "a@orange.fr").unwrap();
+        assert_eq!(m.comptes().unwrap()[0].hote_envoi, "smtp.orange.fr");
+        assert!(m.poser_serveur_envoi("a@orange.fr", "").unwrap());
+        assert_eq!(m.comptes().unwrap()[0].serveur_envoi(), "imap.orange.fr");
+        assert!(!m.poser_serveur_envoi("inconnu@b.fr", "h").unwrap(), "rien n'est créé");
+    }
+
+    #[test]
+    fn migration_version_12_serveur_d_envoi_vide() {
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        m.base.execute_batch("ALTER TABLE accounts DROP COLUMN hote_envoi; PRAGMA user_version = 11;").unwrap();
+        m.migrer().unwrap();
+        let c = &m.comptes().unwrap()[0];
+        assert_eq!((c.hote_envoi.as_str(), c.serveur_envoi()), ("", "h"));
     }
 
     #[test]
