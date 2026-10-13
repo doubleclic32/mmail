@@ -246,7 +246,7 @@ ApplicationWindow {
     // Fond de la rubrique Favoris : un cran plus soutenu que celui des
     // comptes, pour qu'elle s'en détache (retour de Manu, 01/10).
     readonly property color fondFavoris: palette.base.hslLightness > 0.5
-            ? Qt.tint(Qt.darker(palette.base, 1.07), Qt.rgba(palette.highlight.r, palette.highlight.g, palette.highlight.b, 0.10))
+            ? Qt.tint(Qt.darker(palette.base, 1.07), Qt.rgba(accent.r, accent.g, accent.b, 0.10))
             : Qt.tint(palette.base, Qt.rgba(1, 1, 1, 0.08))
 
     // Rédaction : identité et signature de chaque compte, en JSON
@@ -325,21 +325,22 @@ ApplicationWindow {
             mono: ["Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"]
         },
         "systeme": { libelle: qsTr("Système (aspect natif)") },
-        // Charte du site mmedia.fr. La couleur de sélection sert aussi de
-        // couleur de texte (rubriques, non-lus, compteurs) : elle prend le
-        // cyan foncé, lisible sur fond blanc comme sous du texte blanc
-        // (5,5:1), là où le cyan du site n'atteint pas 2,6:1. Au-delà de la
-        // palette, les repères de marque : bandeau de l'en-tête, accent cyan,
+        // Charte du site mmedia.fr : sélection en cyan pâle, texte nuit dessus.
+        // Le texte qui prenait la couleur de sélection (objets non lus, jour
+        // courant, lien survolé) prend « texteAccent », le cyan foncé, lisible
+        // sur fond blanc (5,5:1) là où le cyan du site n'atteint pas 2,6:1.
+        // Au-delà de la palette, les repères de marque (cf. « marque ») :
+        // bandeau de l'en-tête, accent cyan des filets et des pastilles,
         // rubriques en bleu pétrole, alerte au rouge du logo, titres en
         // capitales étroites.
         "mmedia": {
             libelle: qsTr("MMEDIA"),
             fond: "#f1f2f2", texte: "#231f20", base: "#ffffff",
-            bouton: "#ffffff", surbrillance: "#0e6f9e", texteSurbrillance: "#ffffff",
+            bouton: "#ffffff", surbrillance: "#d6eefa", texteSurbrillance: "#0b0d2e",
             police: ["Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"], taille: 10,
             mono: ["Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"],
             bandeau: "#0b0d2e", texteBandeau: "#ffffff", accent: "#21abe3",
-            rubrique: "#276e8b", alerte: "#e61e29",
+            texteAccent: "#0e6f9e", rubrique: "#276e8b", alerte: "#e61e29",
             titres: ["Saira Condensed", "Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"]
         }
     })
@@ -348,6 +349,127 @@ ApplicationWindow {
     // Nul pour « systeme » : c'est ce qui coupe les surcharges ci-dessous.
     readonly property var jeu: apparence === "systeme" || !jeuxApparence[apparence]
                                ? null : jeuxApparence[apparence]
+
+    // Repères de marque : nul hors d'une apparence qui porte un bandeau. Les
+    // couleurs qui suivent reprennent alors la couleur de sélection et le
+    // rouge d'importance d'avant, si bien que les autres apparences restent
+    // telles quelles.
+    readonly property var marque: jeu && jeu.bandeau ? jeu : null
+    // Filets, cadres, pastilles : ce qui signale sans être du texte.
+    readonly property color accent: marque ? marque.accent : palette.highlight
+    // Texte mis en valeur : objets non lus, jour courant, lien survolé.
+    readonly property color texteAccent: marque ? marque.texteAccent : palette.highlight
+    readonly property color couleurRubrique: marque ? marque.rubrique : palette.highlight
+    readonly property color couleurAlerte: marque ? marque.alerte : "#c42b1c"
+    readonly property string policeTitres: marque ? premierePolice(marque.titres) : font.family
+    // Les titres en capitales étroites prennent un cran de plus ; la police de
+    // repli, plus large, en reste à la taille des autres apparences.
+    readonly property bool titresEtroits: marque !== null && policeTitres === marque.titres[0]
+
+    // Surcharge qui ne vaut que sous une apparence de marque : hors d'elle,
+    // la propriété retrouve sa valeur d'origine, celle du style.
+    component SiMarque: Binding {
+        when: fenetre.marque !== null
+        restoreMode: Binding.RestoreBindingOrValue
+    }
+
+    // Bouton de l'en-tête. Sous une apparence de marque, une pastille sur le
+    // bandeau, comme les onglets du site : pleine en cyan pour le module
+    // affiché et l'action principale, cernée pour les autres boutons à
+    // bascule, nue pour le reste ; les non-lus en pastille rouge. Ailleurs,
+    // le bouton d'outil du style, intact : son fond et sa couleur ne sont
+    // recouverts que le temps de l'apparence.
+    component BoutonEntete: ToolButton {
+        id: be
+        // Action principale : pleine même sans être choisie.
+        property bool plein: false
+        property bool cerne: false
+        property int compteur: 0
+        readonly property bool actif: be.checked || be.plein
+        readonly property bool avecCompteur: fenetre.marque !== null && be.compteur > 0
+
+        Rectangle {
+            visible: fenetre.marque !== null
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 3
+            anchors.bottomMargin: 3
+            radius: height / 2
+            color: be.actif ? fenetre.accent
+                 : be.hovered || be.down ? Qt.rgba(1, 1, 1, 0.14) : "transparent"
+            border.width: be.cerne && !be.actif ? 1 : 0
+            border.color: Qt.rgba(1, 1, 1, 0.35)
+        }
+        CompteurNonLus {
+            id: compteurEntete
+            visible: be.avecCompteur
+            nombre: be.compteur
+            taille: fenetre.tailleBase
+            anchors.right: parent.right
+            anchors.rightMargin: be.marge - 4
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        SiMarque { target: be.background; property: "visible"; value: false }
+        SiMarque {
+            target: be.contentItem
+            property: "color"
+            value: fenetre.marque ? (be.actif ? fenetre.marque.bandeau : fenetre.marque.texteBandeau) : "black"
+        }
+        // Plus serrées sur un écran étroit, où l'en-tête manque déjà de place.
+        readonly property real marge: fenetre.compact ? 8 : 14
+        SiMarque { target: be; property: "leftPadding"; value: be.marge }
+        SiMarque {
+            target: be
+            property: "rightPadding"
+            value: be.avecCompteur ? compteurEntete.implicitWidth + be.marge + 4 : be.marge
+        }
+    }
+
+    // Bouton d'action du volet de lecture. Sous une apparence de marque, une
+    // pastille blanche cernée de bleu pétrole, pleine au survol ; ailleurs,
+    // le bouton du style.
+    component BoutonAction: Button {
+        id: ba
+        Rectangle {
+            visible: fenetre.marque !== null
+            z: -1
+            anchors.fill: parent
+            radius: height / 2
+            color: ba.down ? Qt.darker(fenetre.couleurRubrique, 1.2)
+                 : ba.hovered ? fenetre.couleurRubrique : fenetre.palette.base
+            border.width: 1
+            border.color: fenetre.couleurRubrique
+        }
+        SiMarque { target: ba.background; property: "visible"; value: false }
+        SiMarque {
+            target: ba.contentItem
+            property: "color"
+            value: ba.hovered || ba.down ? "#ffffff" : fenetre.palette.buttonText
+        }
+        SiMarque { target: ba; property: "leftPadding"; value: 14 }
+        SiMarque { target: ba; property: "rightPadding"; value: 14 }
+    }
+
+    // Nombre de non-lus en pastille rouge, chiffre blanc.
+    component CompteurNonLus: Rectangle {
+        id: cn
+        property int nombre: 0
+        property real taille: fenetre.tailleArborescence
+        radius: height / 2
+        color: fenetre.couleurAlerte
+        implicitHeight: chiffreCompteur.implicitHeight + 2
+        implicitWidth: Math.max(implicitHeight, chiffreCompteur.implicitWidth + 10)
+        width: implicitWidth
+        height: implicitHeight
+        Label {
+            id: chiffreCompteur
+            anchors.centerIn: parent
+            text: cn.nombre
+            color: "#ffffff"
+            font.bold: true
+            font.pointSize: cn.taille * 0.88
+        }
+    }
 
     // Surcharges conditionnelles plutôt qu'affectations directes : quand
     // « when » redevient faux, RestoreBindingOrValue rend la valeur d'origine —
@@ -452,13 +574,60 @@ ApplicationWindow {
 
     // ------------------------------------------------------------- en-tête
     header: ToolBar {
+        id: entete
+        // Sous une apparence de marque : bandeau nuit, filet cyan dessous qui
+        // s'éteint vers la droite, comme l'en-tête du site.
+        Rectangle {
+            parent: entete
+            visible: fenetre.marque !== null
+            z: -1
+            anchors.fill: parent
+            color: fenetre.marque ? fenetre.marque.bandeau : "transparent"
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 3
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: fenetre.accent }
+                    GradientStop { position: 0.7; color: fenetre.accent }
+                    GradientStop { position: 1.0; color: "transparent" }
+                }
+            }
+        }
+        SiMarque { target: entete.background; property: "visible"; value: false }
+        SiMarque { target: entete; property: "topPadding"; value: 4 }
+        SiMarque { target: entete; property: "bottomPadding"; value: 7 }
+
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 6
             anchors.rightMargin: 6
             spacing: 6
 
-            ToolButton {
+            // Le signe et le nom du logiciel, en tête du bandeau.
+            Image {
+                visible: fenetre.marque !== null && !fenetre.compact && status === Image.Ready
+                source: Qt.platform.os === "android" ? "" : "qrc:/assets/mmail.png"
+                sourceSize.height: 28
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                Layout.preferredHeight: 28
+                Layout.preferredWidth: 28
+                Layout.leftMargin: 4
+            }
+            Label {
+                visible: fenetre.marque !== null && !fenetre.compact
+                text: "MMail"
+                color: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
+                font.family: fenetre.policeTitres
+                font.weight: Font.DemiBold
+                font.pointSize: fenetre.tailleBase * 1.5
+                Layout.rightMargin: 12
+            }
+
+            BoutonEntete {
                 visible: fenetre.compact && fenetre.vue > 0 && fenetre.module === "courrier"
                 text: "‹"
                 font.pixelSize: 22
@@ -466,14 +635,15 @@ ApplicationWindow {
             }
             // Courrier ou agenda : deux boutons, un seul qui bascule sur un
             // écran étroit.
-            ToolButton {
+            BoutonEntete {
                 visible: fenetre.compact
                 text: fenetre.module === "agenda" ? qsTr("Courrier") : qsTr("Agenda")
                 onClicked: fenetre.module = fenetre.module === "agenda" ? "courrier" : "agenda"
             }
             ButtonGroup { id: groupeModule }
-            ToolButton {
+            BoutonEntete {
                 visible: !fenetre.compact
+                cerne: true
                 text: qsTr("Courrier")
                 checkable: true
                 checked: fenetre.module === "courrier"
@@ -482,8 +652,9 @@ ApplicationWindow {
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("Courrier (Ctrl+1)")
             }
-            ToolButton {
+            BoutonEntete {
                 visible: !fenetre.compact
+                cerne: true
                 text: qsTr("Agenda")
                 checkable: true
                 checked: fenetre.module === "agenda"
@@ -492,17 +663,26 @@ ApplicationWindow {
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("Agenda (Ctrl+2)")
             }
-            ToolSeparator { visible: !fenetre.compact }
-            ToolButton {
-                text: qsTr("Nouveau message")
+            ToolSeparator { visible: !fenetre.compact && fenetre.marque === null }
+            Item {
+                visible: !fenetre.compact && fenetre.marque !== null
+                Layout.preferredWidth: 8
+            }
+            BoutonEntete {
+                plein: true
+                text: fenetre.marque ? qsTr("+  Nouveau message") : qsTr("Nouveau message")
                 font.bold: true
                 onClicked: fenetre.rediger("nouveau")
             }
             // Boîte de réception unifiée : les réceptions de tous les comptes,
-            // avec leurs non-lus (emplacement choisi par Manu le 10/10).
-            ToolButton {
+            // avec leurs non-lus (emplacement choisi par Manu le 10/10) — en
+            // pastille rouge sous une apparence de marque.
+            BoutonEntete {
+                cerne: true
+                compteur: fenetre.nonLusReceptions
                 text: (fenetre.compact ? qsTr("BàL") : qsTr("Toutes les BàL"))
-                      + (fenetre.nonLusReceptions > 0 ? "  (" + fenetre.nonLusReceptions + ")" : "")
+                      + (fenetre.marque === null && fenetre.nonLusReceptions > 0
+                         ? "  (" + fenetre.nonLusReceptions + ")" : "")
                 checkable: true
                 checked: fenetre.vueUnifiee
                 font.bold: fenetre.nonLusReceptions > 0
@@ -514,17 +694,17 @@ ApplicationWindow {
                 ToolTip.delay: 500
                 ToolTip.text: qsTr("Les boîtes de réception de tous les comptes, en une liste")
             }
-            ToolButton {
+            BoutonEntete {
                 id: boutonComptes
                 text: qsTr("Comptes")
                 visible: !fenetre.compact || fenetre.vue === 0
                 onClicked: menuComptes.popup(boutonComptes, 0, boutonComptes.height)
             }
-            ToolButton {
+            BoutonEntete {
                 text: qsTr("Actualiser")
                 onClicked: fenetre.module === "agenda" ? boite.synchroniserAgendas(true) : boite.actualiser()
             }
-            ToolButton {
+            BoutonEntete {
                 visible: (!fenetre.compact || fenetre.vue === 0) && fenetre.module === "courrier"
                 checkable: true
                 checked: reglages.afficherMasques
@@ -534,12 +714,12 @@ ApplicationWindow {
                     fenetre.rafraichirArborescence()
                 }
             }
-            ToolButton {
+            BoutonEntete {
                 id: boutonAffichage
                 text: qsTr("Affichage")
                 onClicked: menuAffichage.popup(boutonAffichage, 0, boutonAffichage.height)
             }
-            ToolButton {
+            BoutonEntete {
                 id: boutonAide
                 text: "?"
                 font.bold: true
@@ -547,15 +727,23 @@ ApplicationWindow {
             }
             Label {
                 text: fenetre.compact && fenetre.vue > 0 && fenetre.module === "courrier" ? fenetre.libelleCourant() : ""
+                color: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
                 elide: Text.ElideRight
                 font.bold: true
                 Layout.fillWidth: true
             }
             BusyIndicator {
+                id: indicateurActivite
                 running: boite.occupe || boite.agendaOccupe
                 visible: running
                 Layout.preferredHeight: 26
                 Layout.preferredWidth: 26
+                // Le style le dessine dans la teinte sombre : blanc sur le bandeau.
+                SiMarque {
+                    target: indicateurActivite
+                    property: "palette.dark"
+                    value: fenetre.marque ? fenetre.marque.texteBandeau : "black"
+                }
             }
         }
     }
@@ -671,6 +859,8 @@ ApplicationWindow {
         visible: fenetre.module === "agenda"
         boite: boite
         compact: fenetre.compact
+        accent: fenetre.accent
+        texteAccent: fenetre.texteAccent
         onAnnoncer: function(texte, erreur) { fenetre.annoncer(texte, erreur) }
     }
 
@@ -824,7 +1014,7 @@ ApplicationWindow {
                         Layout.alignment: Qt.AlignTop
                         Layout.topMargin: 5
                         radius: 3
-                        color: ligneRappel.modelData.couleur || palette.highlight
+                        color: ligneRappel.modelData.couleur || fenetre.accent
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -1089,12 +1279,11 @@ ApplicationWindow {
                     leftPadding: loupe.width + 13
                     background: Rectangle {
                         implicitHeight: 30
-                        radius: 4
+                        radius: fenetre.marque ? height / 2 : 4
                         color: champRecherche.activeFocus ? fenetre.palette.base
-                               : Qt.rgba(fenetre.palette.highlight.r, fenetre.palette.highlight.g,
-                                         fenetre.palette.highlight.b, 0.08)
+                               : Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b, 0.08)
                         border.width: champRecherche.activeFocus ? 2 : 1
-                        border.color: fenetre.palette.highlight
+                        border.color: fenetre.accent
                     }
                     Canvas {
                         id: loupe
@@ -1103,7 +1292,7 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                         height: Math.round(parent.height * 0.5)
                         width: height
-                        property color encre: fenetre.palette.highlight
+                        property color encre: fenetre.accent
                         onEncreChanged: requestPaint()
                         onWidthChanged: requestPaint()
                         onPaint: fenetre.dessinerLoupe(getContext("2d"), width, height, encre)
@@ -1144,7 +1333,7 @@ ApplicationWindow {
                         onAboutToShow: vueHistorique.currentIndex = -1
                         background: Rectangle {
                             color: fenetre.palette.base
-                            border.color: fenetre.palette.highlight
+                            border.color: fenetre.accent
                             radius: 3
                         }
                         contentItem: ListView {
@@ -1315,33 +1504,33 @@ ApplicationWindow {
                         Layout.bottomMargin: 6
                         spacing: 6
                         // Un brouillon se reprend ; un message reçu reçoit une réponse.
-                        Button {
+                        BoutonAction {
                             visible: fenetre.dossierDeReprise
                             text: qsTr("Reprendre")
                             onClicked: fenetre.rediger("brouillon")
                         }
-                        Button {
+                        BoutonAction {
                             visible: !fenetre.dossierDeReprise
                             text: qsTr("Répondre")
                             onClicked: fenetre.rediger("repondre")
                         }
-                        Button {
+                        BoutonAction {
                             visible: !fenetre.dossierDeReprise
                             text: qsTr("Répondre à tous")
                             onClicked: fenetre.rediger("repondre_tous")
                         }
-                        Button {
+                        BoutonAction {
                             visible: !fenetre.dossierDeReprise
                             text: qsTr("Transférer")
                             onClicked: fenetre.rediger("transferer")
                         }
                         ToolSeparator { height: boutonDeplacer.height }
-                        Button {
+                        BoutonAction {
                             id: boutonDeplacer
                             text: qsTr("Déplacer…")
                             onClicked: fenetre.ouvrirDeplacer()
                         }
-                        Button {
+                        BoutonAction {
                             visible: !fenetre.dossierDeReprise
                             text: fenetre.roleCourant === "Junk" ? qsTr("Pas indésirable") : qsTr("Indésirable")
                             onClicked: fenetre.signalerIndesirable()
@@ -1351,22 +1540,28 @@ ApplicationWindow {
                                           ? qsTr("Remettre en boîte de réception ; le filtre du serveur apprend que le message est légitime (Ctrl+Alt+J).")
                                           : qsTr("Classer en courrier indésirable ; le filtre du serveur l'apprend (Ctrl+Alt+J).")
                         }
-                        Button {
+                        BoutonAction {
                             text: qsTr("Supprimer")
                             onClicked: fenetre.supprimerSelection()
                         }
                         ToolSeparator { height: boutonDeplacer.height }
                         // Décision 6 : voir le message brut, en-têtes compris, en un geste.
-                        Button {
+                        BoutonAction {
                             text: fenetre.sourceVisible ? qsTr("Message") : qsTr("Source")
                             onClicked: fenetre.basculerSource()
                         }
                     }
+                    // L'objet, en titre dans la police des titres sous une
+                    // apparence de marque.
                     Label {
                         id: sujetAffiche
                         font.bold: true
+                        font.family: fenetre.marque ? fenetre.policeTitres : fenetre.font.family
+                        font.pointSize: fenetre.tailleMessage * (fenetre.titresEtroits ? 1.4
+                                                                 : fenetre.marque ? 1.2 : 1)
                         elide: Text.ElideRight
                         Layout.fillWidth: true
+                        Layout.topMargin: fenetre.marque ? 2 : 0
                     }
                     Label {
                         id: auteurAffiche
@@ -1377,7 +1572,7 @@ ApplicationWindow {
                     Label {
                         visible: fenetre.uidCourant > 0 && fenetre.importanceCourante !== 0
                         text: fenetre.importanceCourante > 0 ? qsTr("Importance haute") : qsTr("Importance basse")
-                        color: fenetre.importanceCourante > 0 ? "#c42b1c" : "#1a4480"
+                        color: fenetre.importanceCourante > 0 ? fenetre.couleurAlerte : "#1a4480"
                         font.bold: true
                     }
                 }
@@ -1712,7 +1907,7 @@ ApplicationWindow {
             spacing: 14
             Label {
                 text: fenetre.lienSurvole.length > 0 ? fenetre.lienSurvole : fenetre.infoDossier
-                color: fenetre.lienSurvole.length > 0 ? fenetre.palette.highlight : fenetre.palette.windowText
+                color: fenetre.lienSurvole.length > 0 ? fenetre.texteAccent : fenetre.palette.windowText
                 elide: Text.ElideRight
                 maximumLineCount: 1
                 Layout.fillWidth: true
@@ -2669,7 +2864,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     visible: redac.resumeOptions.length > 0
                     text: redac.resumeOptions
-                    color: redac.importance > 0 ? "#c42b1c" : fenetre.palette.windowText
+                    color: redac.importance > 0 ? fenetre.couleurAlerte : fenetre.palette.windowText
                     elide: Text.ElideRight
                 }
 
@@ -3216,7 +3411,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 visible: ligne.survol
                 color: "transparent"
-                border.color: fenetre.palette.highlight
+                border.color: fenetre.accent
                 border.width: 2
                 radius: 3
             }
@@ -3309,14 +3504,20 @@ ApplicationWindow {
                     opacity: 0.7
                 }
                 Label {
+                    readonly property bool entete: model.genre === "compte" || model.genre === "rubrique"
                     text: fenetre.libelleLigne(model)
                     color: ligne.highlighted ? fenetre.palette.highlightedText
-                         : model.genre === "rubrique" ? fenetre.palette.highlight
+                         : model.genre === "rubrique" ? fenetre.couleurRubrique
                          : fenetre.palette.windowText
-                    font.bold: model.genre === "compte" || model.genre === "rubrique" || model.nonLus > 0
-                    // Les en-têtes, rubrique et comptes, un cran au-dessus des dossiers.
-                    font.pointSize: model.genre === "compte" || model.genre === "rubrique"
-                                    ? fenetre.tailleArborescence * 1.12 : fenetre.tailleArborescence
+                    font.bold: entete || model.nonLus > 0
+                    // Les en-têtes, rubrique et comptes, un cran au-dessus des
+                    // dossiers ; sous une apparence de marque, dans la police
+                    // des titres, la rubrique en capitales espacées.
+                    font.pointSize: entete ? fenetre.tailleArborescence * (fenetre.titresEtroits ? 1.25 : 1.12)
+                                           : fenetre.tailleArborescence
+                    font.family: fenetre.marque && entete ? fenetre.policeTitres : fenetre.font.family
+                    font.capitalization: fenetre.marque && model.genre === "rubrique" ? Font.AllUppercase : Font.MixedCase
+                    font.letterSpacing: fenetre.marque && model.genre === "rubrique" ? 0.8 : 0
                     font.italic: model.masque || model.genre === "favori-vide"
                     opacity: model.masque || model.genre === "favori-vide"
                              || (ligne.estDossier && !model.selectionnable) ? 0.5 : 1
@@ -3337,11 +3538,25 @@ ApplicationWindow {
                     ToolTip.text: model.motif
                 }
                 Label {
-                    visible: ligne.estDossier && model.nonLus > 0
+                    visible: ligne.estDossier && model.nonLus > 0 && fenetre.marque === null
                     text: model.nonLus
                     font.bold: true
-                    color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.palette.highlight
+                    color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.texteAccent
                 }
+                CompteurNonLus {
+                    visible: ligne.estDossier && model.nonLus > 0 && fenetre.marque !== null
+                    nombre: model.nonLus
+                    Layout.rightMargin: 2
+                }
+            }
+
+            // Dossier ouvert, sous une apparence de marque : un filet cyan à
+            // gauche de la ligne.
+            Rectangle {
+                visible: fenetre.marque !== null && ligne.highlighted
+                width: 4
+                height: parent.height
+                color: fenetre.accent
             }
         }
     }
@@ -3359,12 +3574,13 @@ ApplicationWindow {
             highlighted: choisi
             padding: 0
 
-            // Bandeau des non-lus, comme Outlook.
+            // Bandeau des non-lus, comme Outlook ; sous une apparence de
+            // marque, le message choisi porte aussi un filet, pétrole s'il est lu.
             Rectangle {
-                width: 3
+                width: fenetre.marque ? 4 : 3
                 height: parent.height
-                visible: !model.lu
-                color: fenetre.palette.highlight
+                visible: !model.lu || (fenetre.marque !== null && ligne.highlighted)
+                color: fenetre.marque && model.lu ? fenetre.couleurRubrique : fenetre.accent
             }
 
             // Des lignes plus aérées, séparées d'un trait (retour de Fabienne,
@@ -3424,7 +3640,7 @@ ApplicationWindow {
                         text: model.importance > 0 ? "!" : "↓"
                         font.bold: true
                         color: ligne.highlighted ? fenetre.palette.highlightedText
-                             : model.importance > 0 ? "#c42b1c" : "#1a4480"
+                             : model.importance > 0 ? fenetre.couleurAlerte : "#1a4480"
                     }
                     // Répondu, répondu à tous, transféré — par MMail ou par un
                     // autre logiciel, le serveur porte les drapeaux : des
@@ -3449,7 +3665,7 @@ ApplicationWindow {
                         text: model.sujet
                         font.bold: !model.lu
                         color: ligne.highlighted ? fenetre.palette.highlightedText
-                             : model.lu ? fenetre.palette.windowText : fenetre.palette.highlight
+                             : model.lu ? fenetre.palette.windowText : fenetre.texteAccent
                         elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
@@ -3464,7 +3680,7 @@ ApplicationWindow {
                     Layout.rightMargin: 8
                     elide: Text.ElideMiddle
                     font.pointSize: fenetre.tailleListe * 0.9
-                    color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.palette.highlight
+                    color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.texteAccent
                     text: model.cheminAffiche || ""
                 }
             }
@@ -3560,7 +3776,7 @@ ApplicationWindow {
                 width: Math.round(height * 0.8)
                 visible: model.suivi === true || ligne.hovered || survolDrapeau.containsMouse
                 property color encre: model.suivi === true
-                                      ? (ligne.highlighted ? fenetre.palette.highlightedText : "#c42b1c")
+                                      ? (ligne.highlighted ? fenetre.palette.highlightedText : fenetre.couleurAlerte)
                                       : (ligne.highlighted ? fenetre.palette.highlightedText : fenetre.palette.windowText)
                 property bool plein: model.suivi === true
                 opacity: plein ? 1 : 0.45
@@ -7924,8 +8140,17 @@ ApplicationWindow {
         if (palette.window.toString() !== "#f6f7f8")
             return "apparence moderne non appliquée : " + palette.window
         choisirApparence("mmedia")
-        if (palette.window.toString() !== "#f1f2f2" || palette.highlight.toString() !== "#0e6f9e")
+        if (palette.window.toString() !== "#f1f2f2" || palette.highlight.toString() !== "#d6eefa")
             return "apparence MMEDIA non appliquée : " + palette.window
+        // Les repères de marque sont lus : bandeau à la place du fond du
+        // style, texte mis en valeur en cyan foncé…
+        if (marque === null || entete.background.visible || texteAccent.toString() !== "#0e6f9e")
+            return "repères de l'apparence MMEDIA non appliqués"
+        // … et rendus en la quittant : fond du style, couleur de sélection.
+        choisirApparence("moderne")
+        if (marque !== null || !entete.background.visible
+                || accent.toString() !== palette.highlight.toString())
+            return "repères de l'apparence MMEDIA non rendus"
         choisirApparence("systeme")
         if (palette.window.toString() !== fondSysteme && apparenceAvant === "systeme")
             return "apparence système non rendue"

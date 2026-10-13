@@ -133,8 +133,9 @@ de projet interne.
 - **zoom propre à chaque colonne** : Ctrl + molette sur la colonne, ou Ctrl +,
   Ctrl − et Ctrl 0 sur la dernière colonne survolée ; pincement au doigt ;
 - **quatre apparences**, celles de MMdedit : classique (Windows 9x), moderne
-  (M-Media), système, et MMEDIA, aux couleurs du site mmedia.fr — menu
-  « Affichage » ;
+  (M-Media), système, et MMEDIA, aux couleurs du site mmedia.fr — en-tête en
+  bandeau nuit, boutons en pastilles, non-lus en pastilles rouges, dossier et
+  message choisis sur un cyan pâle, marqués d'un filet — menu « Affichage » ;
 - mot de passe confié au **coffre du système**, jamais écrit par MMail ;
 - **synchronisation incrémentale** (QRESYNC) : seul ce qui a changé depuis la
   dernière visite est relu ; le dossier ouvert suit le serveur en temps réel

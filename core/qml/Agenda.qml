@@ -40,6 +40,11 @@ Pane {
     // Message passager, montré par la fenêtre principale.
     signal annoncer(string texte, bool erreur)
 
+    // Mise en valeur, donnée par la fenêtre (cf. « accent » et « texteAccent »
+    // dans Main.qml) : la couleur de sélection, hors apparence de marque.
+    property color accent: palette.highlight
+    property color texteAccent: palette.highlight
+
     readonly property color trait: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.13)
     readonly property color traitLeger: Qt.rgba(palette.windowText.r, palette.windowText.g, palette.windowText.b, 0.06)
 
@@ -317,11 +322,11 @@ Pane {
                     font.pixelSize: 12
                     font.bold: model.today
                     opacity: model.month === miniMois.month ? 1 : 0.4
-                    color: model.today ? agenda.palette.highlight : agenda.palette.windowText
+                    color: model.today ? agenda.texteAccent : agenda.palette.windowText
                     background: Rectangle {
                         radius: height / 2
-                        color: parent.choisi ? Qt.rgba(agenda.palette.highlight.r, agenda.palette.highlight.g,
-                                                       agenda.palette.highlight.b, 0.22) : "transparent"
+                        color: parent.choisi ? Qt.rgba(agenda.accent.r, agenda.accent.g,
+                                                       agenda.accent.b, 0.22) : "transparent"
                     }
                 }
                 onClicked: function(date) { agenda.jour = date }
@@ -600,7 +605,7 @@ Pane {
                             width: Math.max(20, numero.implicitWidth + 8)
                             height: 20
                             radius: 10
-                            color: caseMois.info.aujourdhui ? agenda.palette.highlight : "transparent"
+                            color: caseMois.info.aujourdhui ? agenda.accent : "transparent"
                             Label {
                                 id: numero
                                 anchors.centerIn: parent
@@ -668,7 +673,7 @@ Pane {
                                 readonly property int reste: caseMois.entrees.length - caseMois.montrees
                                 text: reste > 1 ? qsTr("+ %1 autres").arg(reste) : qsTr("+ 1 autre")
                                 font.pixelSize: 11
-                                color: agenda.palette.highlight
+                                color: agenda.texteAccent
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
@@ -710,7 +715,7 @@ Pane {
                         verticalAlignment: Text.AlignVCenter
                         text: info.semaine + " " + info.jour
                         font.bold: info.aujourdhui
-                        color: info.aujourdhui ? agenda.palette.highlight : agenda.palette.windowText
+                        color: info.aujourdhui ? agenda.texteAccent : agenda.palette.windowText
                         MouseArea {
                             anchors.fill: parent
                             enabled: grille.nbJours > 1
@@ -838,7 +843,7 @@ Pane {
                         width: grille.largeurJour
                         height: defilement.contentHeight
                         color: agenda.donnees.jours[index].aujourdhui
-                               ? Qt.rgba(agenda.palette.highlight.r, agenda.palette.highlight.g, agenda.palette.highlight.b, 0.05)
+                               ? Qt.rgba(agenda.accent.r, agenda.accent.g, agenda.accent.b, 0.05)
                                : "transparent"
                         Rectangle {
                             width: 1
@@ -1469,7 +1474,7 @@ Pane {
                         background: Rectangle {
                             color: agenda.palette.base
                             border.width: 1
-                            border.color: champDescription.activeFocus ? agenda.palette.highlight : agenda.palette.mid
+                            border.color: champDescription.activeFocus ? agenda.accent : agenda.palette.mid
                             radius: 2
                         }
                     }

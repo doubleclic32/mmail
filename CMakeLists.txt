@@ -136,11 +136,12 @@ qt_add_executable(mmail ${MMAIL_SOURCES})
 # Pas de ressource Qt sous Android : le rcc de l'hote compresse en zstd, absent
 # du Qt officiel pour Android, et l'edition de liens s'arrete sur « undefined
 # symbol: qt_resourceFeatureZstd » (--no-zstd n'y a rien change). L'icone ne sert
-# de toute facon qu'au bureau ; sous Android, c'est le manifeste qui la porte.
+# de toute facon qu'au bureau ; sous Android, c'est le manifeste qui la porte. Le
+# PNG est le signe du bandeau de l'apparence MMEDIA, qui s'en passe sous Android.
 if(NOT ANDROID)
   qt_add_resources(mmail "ressources"
     PREFIX "/"
-    FILES assets/mmail.ico)
+    FILES assets/mmail.ico assets/mmail.png)
 endif()
 target_link_libraries(mmail PRIVATE mmail_qml_module Qt::Network Qt::Quick Qt::QuickControls2
                                       Qt::QuickDialogs2 Qt::LabsSettings coffre)
