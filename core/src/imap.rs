@@ -161,6 +161,13 @@ impl Client {
             .filter_map(|l| l.trim().strip_prefix("* CAPABILITY "))
             .flat_map(|l| l.split_whitespace().map(str::to_string))
             .collect();
+        // Présentation au serveur (RFC 2971) : de quoi compter, dans son
+        // journal, les postes où MMail fonctionne. Après l'authentification —
+        // avant, Dovecot la journalise sans l'utilisateur. Un refus n'empêche
+        // pas la session.
+        if self.sait("ID") {
+            let _ = self.commande(&format!("ID {}", presentation()));
+        }
         // QRESYNC n'est actif qu'une fois demandé (RFC 7162 § 3.2.3). Il
         // emporte CONDSTORE, et fait rendre `VANISHED` plutôt que des
         // `EXPUNGE` numérotés, qu'un index par UID ne sait pas appliquer.
@@ -705,6 +712,34 @@ fn citer(valeur: &str) -> String {
     format!("\"{echappe}\"")
 }
 
+/// Liste de la commande `ID` : programme, version, système, poste. `x-poste`
+/// n'est pas un champ de la RFC 2971, qui en admet d'autres que les siens.
+fn presentation() -> String {
+    let champs = [
+        ("name", "MMail".to_string()),
+        ("version", env!("CARGO_PKG_VERSION").to_string()),
+        ("os", crate::poste::famille().to_string()),
+        ("os-version", crate::poste::systeme()),
+        ("x-poste", crate::poste::nom()),
+    ];
+    let paires: Vec<String> = champs
+        .iter()
+        .map(|(nom, valeur)| format!("{} {}", citer(nom), citer(&valeur_id(valeur))))
+        .collect();
+    format!("({})", paires.join(" "))
+}
+
+/// Valeur admise dans une chaîne entre guillemets : ASCII imprimable, 1 024
+/// octets au plus (RFC 2971 § 3.3).
+fn valeur_id(valeur: &str) -> String {
+    let propre: String = valeur
+        .chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .take(1024)
+        .collect();
+    if propre.is_empty() { "?".to_string() } else { propre }
+}
+
 fn trouver(foin: &[u8], aiguille: &[u8]) -> Option<usize> {
     foin.windows(aiguille.len()).position(|f| f == aiguille)
 }
@@ -712,6 +747,16 @@ fn trouver(foin: &[u8], aiguille: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valeurs_de_presentation() {
+        assert_eq!(valeur_id("Windows 11 Version 24H2"), "Windows 11 Version 24H2");
+        assert_eq!(valeur_id("PC-ÉLODIE\r\n"), "PC-?LODIE??");
+        assert_eq!(valeur_id(""), "?");
+        assert_eq!(valeur_id(&"x".repeat(2000)).len(), 1024);
+        // Guillemets et barres obliques passent, protégés par `citer`.
+        assert_eq!(citer(&valeur_id("a\"b\\c")), "\"a\\\"b\\\\c\"");
+    }
 
     #[test]
     fn litteraux_reconnus() {

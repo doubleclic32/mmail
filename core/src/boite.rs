@@ -1143,7 +1143,7 @@ impl qobject::Boite {
             &dossier_signatures(&self.profil),
             &mots,
             &reglages.to_string(),
-            &nom_du_poste(),
+            &crate::poste::nom(),
             env!("CARGO_PKG_VERSION"),
             maintenant(),
         );
@@ -1216,7 +1216,7 @@ impl qobject::Boite {
                 Err(e) => e.to_string(),
             };
             let _ = fil.queue(move |mut boite: Pin<&mut qobject::Boite>| {
-                let nom = nom_du_poste();
+                let nom = crate::poste::nom();
                 let resume: Vec<serde_json::Value> = lus
                     .iter()
                     .map(|(poste, d)| {
@@ -4064,20 +4064,6 @@ fn nom_d_objet(uid: &str) -> String {
     } else {
         crate::saisie::nouvel_uid()
     }
-}
-
-/// Nom du poste, tel que la restauration le propose : celui de l'ordinateur.
-fn nom_du_poste() -> String {
-    if cfg!(target_os = "android") {
-        return "Android".to_string();
-    }
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "poste".to_string())
 }
 
 fn maintenant() -> i64 {

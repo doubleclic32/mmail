@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.5.11 LANGUAGES CXX)
+project(mmail VERSION 0.5.12 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -148,9 +148,10 @@ target_link_libraries(mmail PRIVATE mmail_qml_module Qt::Network Qt::Quick Qt::Q
 target_compile_definitions(mmail PRIVATE MMAIL_VERSION="${PROJECT_VERSION}")
 
 # Liste de raccourcis de la barre des tâches (cf. cpp/fenetre.h) : COM et
-# interfaces du shell.
+# interfaces du shell. shlwapi : associations des types de fichiers (cf.
+# cpp/lanceur.h).
 if(WIN32)
-  target_link_libraries(mmail PRIVATE ole32 shell32 uuid)
+  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid)
 endif()
 
 # Compteur du lanceur sous Linux (cf. cpp/pastille.h) : un signal D-Bus.

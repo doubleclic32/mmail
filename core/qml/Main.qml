@@ -130,6 +130,22 @@ ApplicationWindow {
         // presse-papier, sauf ce qu'un autre logiciel vient d'y déposer.
         property bool copieAuto: true
     }
+
+    // Android : Qt montre la barre d'Android (Copier, Tout sélectionner) tant
+    // qu'un texte en lecture seule garde le focus et une sélection, et ne la
+    // retire sur aucune autre demande (qandroidinputcontext.cpp, Qt 6.8). Un
+    // toucher n'importe où dans la fenêtre — le corps du message comme la
+    // liste, dont les lignes ne prennent pas le focus — retire donc la
+    // sélection, et la barre avec. Gestionnaire passif : il voit le toucher
+    // sans le prendre à l'élément touché. L'appui long n'est pas un toucher.
+    TapHandler {
+        id: androidSansSelection
+        parent: fenetre.contentItem
+        enabled: Qt.platform.os === "android" && vueCorps.selectedText.length > 0
+        acceptedDevices: PointerDevice.TouchScreen
+        gesturePolicy: TapHandler.DragThreshold
+        onTapped: vueCorps.deselect()
+    }
     readonly property string noyau: socle.noyau
     // Comptes du profil, pour le menu « Comptes » : { compte, adresse, hote }.
     property var comptesConnus: []
@@ -1721,8 +1737,11 @@ ApplicationWindow {
                                                                : fenetre.logicielPour(modelData.nom)
                             Layout.fillWidth: true
                             spacing: 8
+                            // Au doigt, c'est l'appui long ci-dessous : le
+                            // toucher ne doit pas passer pour un clic droit.
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
+                                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
                                 onTapped: menuPiece.ouvrir(lignePiece.modelData, lignePiece)
                             }
                             TapHandler {
@@ -1823,6 +1842,15 @@ ApplicationWindow {
                 clip: true
                 contentWidth: fenetre.sourceVisible ? -1 : availableWidth
 
+                // Android : faire défiler le message retire la sélection, et
+                // avec elle la barre d'Android (cf. fenetre.androidSansSelection).
+                Connections {
+                    target: cadreCorps.contentItem
+                    ignoreUnknownSignals: true
+                    enabled: Qt.platform.os === "android"
+                    function onMovementStarted() { vueCorps.deselect() }
+                }
+
                 TextArea {
                     id: vueCorps
                     readOnly: true
@@ -1869,13 +1897,25 @@ ApplicationWindow {
                         if (touche.matches(StandardKey.Copy) && selectedText.length > 0) {
                             fenetre.copierTexte(selectedText, fenetre.sourceVisible ? "source" : "message")
                             touche.accepted = true
+                            // « Copier » de la barre d'Android passe par ici :
+                            // la copie faite, la sélection et la barre s'en vont.
+                            if (Qt.platform.os === "android")
+                                deselect()
                         }
                     }
+                    // Clic droit de la souris seulement : un TapHandler ne trie
+                    // les boutons que pour la souris, et le simple toucher d'un
+                    // doigt ouvrait ce menu (constaté le 13/10 sous Android).
                     TapHandler {
                         acceptedButtons: Qt.RightButton
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
                         onTapped: menuCorps.popup()
                     }
-                    onPressAndHold: if (fenetre.compact) menuCorps.popup()
+                    // Sous Android, l'appui long est à Android : il choisit le mot
+                    // et ouvre sa barre (Copier, Tout sélectionner). Le menu de
+                    // MMail, ouvert par-dessus, lui prenait le focus et le
+                    // rendait au texte, ce qui rouvrait la barre.
+                    onPressAndHold: if (fenetre.compact && Qt.platform.os !== "android") menuCorps.popup()
 
                     WheelHandler {
                         acceptedModifiers: Qt.ControlModifier
@@ -2156,8 +2196,10 @@ ApplicationWindow {
         return Date.now() / 1000
     }
 
+    /// Pas de copie automatique sous Android : la barre d'Android a « Copier »,
+    /// et chaque dépôt au presse-papier y fait paraître un aperçu (Android 13).
     function selectionChangee() {
-        if (reglagesEdition.copieAuto)
+        if (reglagesEdition.copieAuto && Qt.platform.os !== "android")
             minuteurSelection.restart()
     }
 
@@ -3929,10 +3971,7 @@ ApplicationWindow {
             visible: Qt.platform.os !== "android"
             height: visible ? implicitHeight : 0
             enabled: menuPiece.piece !== null && !menuPiece.piece.risquee
-            onTriggered: {
-                dlgChoisirLogiciel.piece = menuPiece.piece
-                dlgChoisirLogiciel.open()
-            }
+            onTriggered: dlgChoisirLogiciel.choisir(menuPiece.piece, false)
         }
         MenuItem {
             text: qsTr("Enregistrer sous…")
@@ -3970,14 +4009,22 @@ ApplicationWindow {
     }
 
     // « Ouvrir avec… » : un logiciel du poste, pour cette fois ou pour toutes
-    // les pièces de la même extension (décision 9).
+    // les pièces de la même extension (décision 9). `sansLogiciel` : le
+    // système n'en connaît aucun pour ce type, le choix est alors retenu
+    // d'avance (cf. ouvrirPiece).
     FileDialog {
         id: dlgChoisirLogiciel
         property var piece: null
+        property bool sansLogiciel: false
+        function choisir(p, sans) {
+            piece = p
+            sansLogiciel = sans
+            open()
+        }
         title: qsTr("Ouvrir « %1 » avec…").arg(piece ? piece.nom : "")
         fileMode: FileDialog.OpenFile
         nameFilters: Qt.platform.os === "windows" ? [qsTr("Programmes (*.exe)"), qsTr("Tous les fichiers (*)")] : []
-        onAccepted: dlgOuvrirAvec.ouvrir(piece, selectedFile.toString())
+        onAccepted: dlgOuvrirAvec.ouvrir(piece, selectedFile.toString(), sansLogiciel)
     }
 
     Dialog {
@@ -3985,10 +4032,10 @@ ApplicationWindow {
         property var piece: null
         property string programme: ""
         readonly property string extension: piece ? fenetre.extensionDe(piece.nom) : ""
-        function ouvrir(p, prog) {
+        function ouvrir(p, prog, toujours) {
             piece = p
             programme = prog
-            toujoursAvec.checked = false
+            toujoursAvec.checked = toujours === true
             open()
         }
         title: qsTr("Ouvrir avec %1").arg(lanceur.nom(programme))
@@ -4996,12 +5043,14 @@ ApplicationWindow {
                     + "s'affiche dans la barre du bas. "
                     + "Le bouton « Source » affiche le message brut, en-têtes compris. Un texte "
                     + "sélectionné part au presse-papier, sauf ce qu'un autre logiciel vient d'y "
-                    + "déposer, protégé une minute.<br><br>"
+                    + "déposer, protégé une minute. Sous Android, l'appui long choisit un mot et ouvre "
+                    + "la barre d'Android (Copier, Tout sélectionner) ; un toucher la referme.<br><br>"
                     + "<b>Pièces jointes</b><br>"
                     + "Une ligne par pièce sous l'en-tête du message : son type, son nom, sa taille, "
                     + "« Ouvrir » et « Enregistrer sous… ». Clic droit sur une pièce : « Ouvrir avec… » un "
                     + "autre logiciel, pour cette fois ou pour tous les fichiers du même type (menu "
-                    + "Affichage, « Logiciels d'ouverture… », pour les revoir) ; « Joindre au message en "
+                    + "Affichage, « Logiciels d'ouverture… », pour les revoir) ; un type que le système ne "
+                    + "sait pas ouvrir fait choisir le logiciel, retenu d'emblée ; « Joindre au message en "
                     + "cours » ou « Joindre à un nouveau message ». Un programme ou un script ne s'ouvre "
                     + "pas depuis MMail, il s'enregistre.")
             }
@@ -6737,12 +6786,70 @@ ApplicationWindow {
             vue = 1
     }
 
+    /// Pose ou met à jour la boîte unifiée, ligne à ligne : elle se relit à
+    /// chaque changement d'un compte — un message marqué lu au clic suffit —,
+    /// et la vider pour la remplir ramenait la liste en haut quand on était
+    /// descendu (constaté le 14/10). Les lignes restées en place gardent la
+    /// leur, et la vue sa position.
     function poserBoitesUnifiees() {
-        poserListe(JSON.parse(boite.boitesDeReception()).map(function(r) {
+        arreterSuite()
+        var lignes = JSON.parse(boite.boitesDeReception()).map(function(r) {
             r.cheminAffiche = cheminResultat(r)
             delete r.segments
             return r
-        }))
+        }).filter(function(r) {
+            return fenetre.enDeplacement[r.compte + "|" + r.chemin + "|" + r.uid] !== true
+        })
+        var cle = function(m) { return fenetre.cleResultat(m.compte, m.chemin, m.uid) }
+        var voulues = {}
+        for (var i = 0; i < lignes.length; ++i)
+            voulues[cle(lignes[i])] = true
+        if (modeleMessages.count === 0) {
+            modeleMessages.append(lignes)
+        } else {
+            var dansLaListe = {}
+            for (var k = modeleMessages.count - 1; k >= 0; --k) {
+                var c = cle(modeleMessages.get(k))
+                if (voulues[c])
+                    dansLaListe[c] = true
+                else
+                    modeleMessages.remove(k)
+            }
+            // Le noyau rend les lignes dans l'ordre de la liste : chacune est
+            // à son rang, à mettre à jour, à insérer, ou plus bas — deux
+            // messages de même date peuvent changer d'ordre d'une lecture à
+            // l'autre.
+            for (var j = 0; j < lignes.length; ++j) {
+                var l = lignes[j]
+                var cl = cle(l)
+                if (j < modeleMessages.count && cle(modeleMessages.get(j)) === cl) {
+                    modeleMessages.set(j, l)
+                } else if (!dansLaListe[cl]) {
+                    modeleMessages.insert(j, l)
+                } else {
+                    for (var a = j + 1; a < modeleMessages.count; ++a) {
+                        if (cle(modeleMessages.get(a)) === cl) {
+                            modeleMessages.move(a, j, 1)
+                            break
+                        }
+                    }
+                    modeleMessages.set(j, l)
+                }
+            }
+        }
+        // Même règle que poserListe : la sélection ne garde que les messages
+        // encore là.
+        var presents = {}
+        for (var p = 0; p < lignes.length; ++p)
+            presents[lignes[p].uid] = true
+        var absents = {}
+        for (var uid in selection)
+            if (!presents[uid])
+                absents[uid] = true
+        if (uidCourant > 0 && !presents[uidCourant])
+            absents[uidCourant] = true
+        oublierAbsents(absents)
+        majInfoDossier()
     }
 
     function cleResultat(compte, chemin, uid) {
@@ -7229,6 +7336,16 @@ ApplicationWindow {
     function ouvrirPiece(piece, programme) {
         if (!piece || piece.risquee)
             return
+        // Un type que Windows ne sait pas ouvrir : il demanderait lui-même
+        // quel logiciel prendre, et ce choix échappait à MMail (constaté le
+        // 14/10). MMail le fait donc choisir, « Toujours… » coché d'avance.
+        if (!programme && !essai && Qt.platform.os === "windows"
+                && logicielPour(piece.nom).length === 0 && !lanceur.associe(extensionDe(piece.nom))) {
+            messageEtat.texte = qsTr("Aucun logiciel n'ouvre les fichiers « %1 » sur ce poste : choisissez-en un.")
+                                .arg(piece.nom)
+            dlgChoisirLogiciel.choisir(piece, true)
+            return
+        }
         ouvertureAvec = programme ? { extension: extensionDe(piece.nom), programme: programme } : null
         if (boite.ouvrirPiece(uidCourant, piece.indice))
             messageEtat.texte = qsTr("Préparation de %1…").arg(piece.nom)
@@ -7441,6 +7558,42 @@ ApplicationWindow {
                     Qt.quit()
                 })
                 attenteUnifiee.start()
+            }
+            // Scénario « unifiee-position » : la boîte unifiée descendue en bas,
+            // le dernier message choisi — au téléphone, la liste cède la place
+            // au message —, marqué lu par le serveur, puis non lu et lu : autant
+            // de relectures de la liste. Revenue à l'écran, elle doit être où
+            // elle était.
+            if (essai.scenario === "unifiee-position") {
+                var pas = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+                var etat = { n: 0, avant: 0, bas: 0, uid: "" }
+                pas.triggered.connect(function() {
+                    etat.n += 1
+                    if (etat.n === 12) {
+                        ouvrirBoitesUnifiees()
+                    } else if (etat.n === 13) {
+                        vueMessages.positionViewAtEnd()
+                    } else if (etat.n === 14) {
+                        etat.avant = vueMessages.contentY
+                        etat.bas = modeleMessages.count - 1
+                        etat.uid = String(modeleMessages.get(etat.bas).uid)
+                        choisir(etat.bas, 0)
+                    } else if (etat.n === 19) {
+                        boite.marquerLu(etat.uid, false)
+                    } else if (etat.n === 20) {
+                        boite.marquerLu(etat.uid, true)
+                    } else if (etat.n === 22) {
+                        if (compact)
+                            vue = 1
+                    } else if (etat.n === 23) {
+                        pas.stop()
+                        console.log("scenario: unifiée", modeleMessages.count, "messages | compacte", compact,
+                                    "| position avant", Math.round(etat.avant), "après", Math.round(vueMessages.contentY),
+                                    "| ligne choisie", vueMessages.currentIndex, "sur", etat.bas)
+                        Qt.quit()
+                    }
+                })
+                pas.start()
             }
             if (essai.scenario.indexOf("mise-a-jour") === 0) {
                 reglagesMiseAJour.version = ""
@@ -8202,6 +8355,12 @@ ApplicationWindow {
             return "règle du presse-papier : protection contre sa propre copie"
         if (premierePolice(["police-inexistante", "autre-inexistante"]) !== "autre-inexistante")
             return "repli de police"
+        // Associations des types de fichiers : un texte s'ouvre, une
+        // extension inventée non (MMail fait alors choisir le logiciel).
+        if (!lanceur.associe("txt"))
+            return "aucun logiciel associé aux fichiers .txt"
+        if (Qt.platform.os === "windows" && lanceur.associe("mmailessai"))
+            return "un logiciel associé à une extension inexistante"
         // La rubrique Favoris est toujours là, même vide.
         if (arborescence.length === 0 || arborescence[0].genre !== "rubrique")
             return "rubrique Favoris absente"

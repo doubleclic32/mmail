@@ -9,6 +9,7 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
+#include <QtCore/QSysInfo>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtCore/QVariant>
@@ -128,6 +129,10 @@ int main(int argc, char* argv[])
   const QString joursCache = reglageMachine("MMAIL_JOURS_CACHE", QStringLiteral("JoursCache"));
   if (!joursCache.isEmpty())
     qputenv("MMAIL_JOURS_CACHE", joursCache.toUtf8());
+
+  // Système du poste et sa version, que le noyau donne au serveur IMAP en se
+  // présentant (commande ID) : Qt les nomme sur toutes les cibles, Rust non.
+  qputenv("MMAIL_SYSTEME", QSysInfo::prettyProductName().toUtf8());
 
   // Fusion : le seul style qui honore une palette sur les trois cibles livrées.
   QQuickStyle::setStyle(QStringLiteral("Fusion"));

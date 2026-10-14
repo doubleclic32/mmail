@@ -16,6 +16,13 @@
 #include <QtCore/QStringList>
 #include <QtCore/QUrl>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shlwapi.h>
+
+#include <string>
+#endif
+
 class Lanceur : public QObject
 {
   Q_OBJECT
@@ -45,6 +52,33 @@ public:
 
   /// Chemin local d'une adresse `file:` (un chemin est rendu tel quel).
   Q_INVOKABLE QString chemin(const QString& adresse) const { return chemin_(adresse); }
+
+  /// Vrai si le système sait ouvrir seul les fichiers de cette extension.
+  /// Sous Windows, faux quand il demanderait « Comment voulez-vous ouvrir ce
+  /// fichier ? » : le logiciel choisi dans cette fenêtre échappe à MMail, qui
+  /// ne peut donc pas le retenir. Ailleurs, toujours vrai : le système décide.
+  Q_INVOKABLE bool associe(const QString& extension) const
+  {
+#ifdef Q_OS_WIN
+    if (extension.isEmpty())
+      return false;
+    const std::wstring ext = L"." + extension.toStdWString();
+    // Une commande, ou un verbe délégué : c'est ainsi que s'ouvrent les
+    // applications du Store (Photos, par exemple). Sans pszOut, l'appel rend
+    // S_FALSE et la taille du texte quand l'association existe.
+    for (const ASSOCSTR quoi : { ASSOCSTR_COMMAND, ASSOCSTR_DELEGATEEXECUTE }) {
+      DWORD taille = 0;
+      if (AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, quoi, ext.c_str(), nullptr, nullptr,
+                            &taille) == S_FALSE
+          && taille > 1)
+        return true;
+    }
+    return false;
+#else
+    Q_UNUSED(extension);
+    return true;
+#endif
+  }
 
 private:
   static QString chemin_(const QString& adresse)

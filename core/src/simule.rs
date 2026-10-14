@@ -161,11 +161,22 @@ impl Write for FluxSimule {
 /// Session ouverte sur le faux serveur, qui annonce `capacites` après
 /// connexion, puis attend les `echanges` dans l'ordre.
 pub fn session(capacites: &str, echanges: Vec<Echange>) -> (Client, Journal) {
+    let (client, journal) = ouverture(capacites, "OK", echanges);
+    journal.lock().unwrap().clear();
+    (client, journal)
+}
+
+/// Comme `session`, le journal gardant l'ouverture ; `fin_id` : la réponse à
+/// la présentation (`ID`), si le serveur l'annonce.
+fn ouverture(capacites: &str, fin_id: &str, echanges: Vec<Echange>) -> (Client, Journal) {
     let mut attendus = VecDeque::from(vec![echange(
         "LOGIN",
         "",
         "OK connecté",
     ), echange("CAPABILITY", &format!("* CAPABILITY IMAP4rev1 {capacites}\r\n"), "OK")]);
+    if capacites.split_whitespace().any(|c| c == "ID") {
+        attendus.push_back(echange("ID (\"name\" \"MMail\"", "* ID (\"name\" \"Dovecot\")\r\n", fin_id));
+    }
     if capacites.split_whitespace().any(|c| c == "QRESYNC") {
         attendus.push_back(echange("ENABLE QRESYNC", "* ENABLED QRESYNC\r\n", "OK"));
     }
@@ -182,16 +193,44 @@ pub fn session(capacites: &str, echanges: Vec<Echange>) -> (Client, Journal) {
     };
     let mut client = Client::sur(Box::new(flux)).expect("salutation");
     client.ouvrir_session("essai@exemple.fr", "secret").expect("session");
-    journal.lock().unwrap().clear();
     (client, journal)
 }
 
 /// Capacités d'un Dovecot récent, celles que vise MMail.
-pub const DOVECOT: &str = "QRESYNC CONDSTORE UIDPLUS MOVE SPECIAL-USE LIST-STATUS IDLE";
+pub const DOVECOT: &str = "ID QRESYNC CONDSTORE UIDPLUS MOVE SPECIAL-USE LIST-STATUS IDLE";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_apres_connexion() {
+        let (client, journal) = ouverture(DOVECOT, "OK", vec![]);
+        let journal = journal.lock().unwrap();
+        assert!(journal[0].starts_with("LOGIN "), "{journal:?}");
+        assert_eq!(journal[1], "CAPABILITY");
+        let id = &journal[2];
+        let attendu = format!("ID (\"name\" \"MMail\" \"version\" \"{}\" \"os\" \"", env!("CARGO_PKG_VERSION"));
+        assert!(id.starts_with(&attendu), "{id}");
+        assert!(id.contains("\"os-version\" \"") && id.contains("\"x-poste\" \""), "{id}");
+        assert!(id.ends_with("\")"), "{id}");
+        assert_eq!(journal[3], "ENABLE QRESYNC");
+        assert!(client.qresync());
+    }
+
+    #[test]
+    fn presentation_refusee_sans_effet() {
+        let (mut client, journal) = ouverture(DOVECOT, "BAD pas compris", vec![echange("NOOP", "", "OK")]);
+        assert!(client.qresync(), "la session continue après le refus");
+        client.brute("NOOP").expect("NOOP");
+        assert_eq!(journal.lock().unwrap().last().unwrap(), "NOOP");
+    }
+
+    #[test]
+    fn sans_id_pas_de_presentation() {
+        let (_, journal) = ouverture("UIDPLUS MOVE", "OK", vec![]);
+        assert!(!journal.lock().unwrap().iter().any(|c| c.starts_with("ID ")));
+    }
 
     #[test]
     fn depot_avec_litteral() {

@@ -121,7 +121,9 @@ de projet interne.
   sélectionné dans un message part au presse-papier, sauf ce qu'un autre
   logiciel vient d'y déposer, protégé une minute ; clic droit sur le message :
   « Copier », « Tout sélectionner » ; sur une ligne de la liste : copier
-  l'adresse de l'expéditeur ou l'objet ;
+  l'adresse de l'expéditeur ou l'objet. Sous Android, ni copie automatique ni
+  menu : l'appui long choisit le mot et ouvre la barre d'Android (Copier, Tout
+  sélectionner), qu'un toucher ou le défilement referme ;
 - **barre d'information** : compte et dossier ouverts, nombre de messages et de
   non-lus, sélection, état de la synchronisation, déplacements en attente ;
 - **pièces jointes** mises en valeur sous l'en-tête du message, une ligne par
@@ -129,8 +131,10 @@ de projet interne.
   « Enregistrer sous… » ; clic droit, « Ouvrir avec… » un logiciel choisi, pour
   cette fois ou pour tous les fichiers du même type — retenu sur ce poste
   seulement, revu par « Logiciels d'ouverture… » (menu « Affichage ») ; sans
-  choix, le logiciel du système. Un programme ou un script (`.exe`, `.js`,
-  `.bat`…) ne s'ouvre pas depuis MMail, il s'enregistre ;
+  choix, le logiciel du système. Sous Windows, un type que le système ne sait
+  pas ouvrir fait choisir le logiciel par MMail, qui le retient d'emblée :
+  choisi dans la fenêtre de Windows, il lui échappait. Un programme ou un
+  script (`.exe`, `.js`, `.bat`…) ne s'ouvre pas depuis MMail, il s'enregistre ;
 - **zoom propre à chaque colonne** : Ctrl + molette sur la colonne, ou Ctrl +,
   Ctrl − et Ctrl 0 sur la dernière colonne survolée ; pincement au doigt ;
 - **quatre apparences**, celles de MMdedit : classique (Windows 9x), moderne
@@ -307,6 +311,13 @@ jour, arrêt du poste), il est proposé à la reprise au démarrage suivant.
 | Profil (index, messages gardés, rédactions en cours, images des signatures) | `%APPDATA%\M-Media\MMail` | `~/.local/share/M-Media/MMail` |
 | Réglages (comptes, signatures, apparence) | `HKCU\Software\M-Media\MMail` | `~/.config/M-Media/MMail.conf` |
 | Mots de passe | Gestionnaire d'identification | Secret Service |
+
+**Présentation au serveur.** Après la connexion, MMail se présente au serveur
+IMAP qui l'accepte (commande `ID`, RFC 2971) : `name` (MMail), `version`, `os`
+(Windows, Linux, Android, macOS), `os-version` (le système et sa version, tels
+que Qt les nomme) et `x-poste` (le nom de l'ordinateur ; « Android » sur un
+téléphone). Le serveur peut l'inscrire à son journal : c'est ce qui permet de
+compter les postes où MMail fonctionne.
 
 **Serveur partagé (RDS).** Deux réglages valent pour toute la machine, dans
 `HKLM\Software\M-Media\MMail` (ou `/etc/xdg/M-Media/MMail.conf`), ou par

@@ -15,6 +15,7 @@ pub mod magasin;
 pub mod mise_a_jour;
 pub mod mise_en_page;
 pub mod pont_presse_papier;
+pub mod poste;
 pub mod presse_papier;
 pub mod redaction;
 pub mod rendu;
