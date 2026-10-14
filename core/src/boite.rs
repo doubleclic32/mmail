@@ -72,8 +72,10 @@ pub mod qobject {
         #[cxx_name = "ouvrirProfil"]
         fn ouvrir_profil(self: Pin<&mut Boite>, chemin: &QString) -> bool;
 
-        /// Comptes du profil, en JSON : `[{id, adresse, hote, hoteEnvoi, etat}]`
-        /// — `hoteEnvoi` vide : l'envoi passe par le serveur de lecture.
+        /// Comptes du profil, en JSON : `[{id, adresse, hote, hoteEnvoi, auth,
+        /// etat}]` — `hoteEnvoi` vide : l'envoi passe par le serveur de
+        /// lecture ; `auth` : `microsoft` pour un compte Microsoft, vide pour
+        /// un mot de passe.
         #[qinvokable]
         #[cxx_name = "comptes"]
         fn comptes(&self) -> QString;
@@ -97,6 +99,28 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "poserServeurEnvoi"]
         fn poser_serveur_envoi(self: Pin<&mut Boite>, adresse: &QString, hote: &QString) -> bool;
+
+        /// Vrai si MMail a un identifiant d'application Microsoft : sans lui,
+        /// pas de compte Microsoft.
+        #[qinvokable]
+        #[cxx_name = "microsoftDisponible"]
+        fn microsoft_disponible(&self) -> bool;
+
+        /// Lien que l'administrateur d'une organisation ouvre une fois pour
+        /// autoriser MMail à tous ses utilisateurs.
+        #[qinvokable]
+        #[cxx_name = "consentementMicrosoft"]
+        fn consentement_microsoft(&self) -> QString;
+
+        /// Connexion d'un compte Microsoft (Office 365, Outlook.com) : rend
+        /// l'adresse de la page de connexion de Microsoft, à ouvrir dans le
+        /// navigateur, et attend son retour en arrière-plan ; vide si rien n'a
+        /// pu se préparer (cf. `erreur`). `indice` : l'adresse d'un compte à
+        /// reconnecter, vide pour un nouveau. Issue : `microsoftConnecte`, ou
+        /// `microsoftRefuse`.
+        #[qinvokable]
+        #[cxx_name = "connecterMicrosoft"]
+        fn connecter_microsoft(self: Pin<&mut Boite>, indice: &QString) -> QString;
 
         /// Ferme la session d'un compte ; son index reste consultable.
         #[qinvokable]
@@ -582,6 +606,25 @@ pub mod qobject {
         #[cxx_name = "echec"]
         fn echec(self: Pin<&mut Boite>, compte: i32, etape: &QString, message: &QString);
 
+        /// Compte Microsoft autorisé, enregistré et en cours de connexion.
+        /// `jeton` — le jeton de rafraîchissement — va au coffre sous la clé
+        /// du compte, une fois la connexion acceptée.
+        #[qsignal]
+        #[cxx_name = "microsoftConnecte"]
+        fn microsoft_connecte(self: Pin<&mut Boite>, adresse: &QString, hote: &QString, jeton: &QString);
+
+        /// Connexion Microsoft non aboutie. `consentement` : l'organisation
+        /// veut que son administrateur autorise MMail (`consentementMicrosoft`).
+        #[qsignal]
+        #[cxx_name = "microsoftRefuse"]
+        fn microsoft_refuse(self: Pin<&mut Boite>, message: &QString, consentement: bool);
+
+        /// Microsoft a renouvelé le jeton de rafraîchissement d'un compte : il
+        /// remplace l'ancien au coffre.
+        #[qsignal]
+        #[cxx_name = "jetonRenouvele"]
+        fn jeton_renouvele(self: Pin<&mut Boite>, adresse: &QString, hote: &QString, jeton: &QString);
+
         /// Rédaction préparée (JSON, cf. `redaction::Preparation`) pour la
         /// fenêtre désignée par `jeton`.
         #[qsignal]
@@ -723,7 +766,11 @@ struct Identifiants {
     /// Serveur de soumission, s'il n'est pas celui de la lecture ; vide sinon.
     hote_envoi: String,
     utilisateur: String,
+    /// Vide pour un compte Microsoft.
     mot_de_passe: String,
+    /// Compte Microsoft : ses jetons OAuth2, partagés par toutes ses
+    /// sessions ; `None` pour un mot de passe.
+    microsoft: Option<crate::microsoft::Partage>,
 }
 
 impl Identifiants {
@@ -731,6 +778,58 @@ impl Identifiants {
     fn serveur_envoi(&self) -> &str {
         if self.hote_envoi.is_empty() { &self.hote } else { &self.hote_envoi }
     }
+}
+
+/// Ouvre une session IMAP authentifiée sur un compte.
+fn ouvrir_imap(p: &Identifiants) -> Result<Client, Erreur> {
+    let mut client = Client::connecter(&p.hote, PORT_IMAPS)?;
+    authentifier(&mut client, p)?;
+    Ok(client)
+}
+
+/// Authentifie une session : mot de passe, ou jeton OAuth2 d'un compte
+/// Microsoft — redemandé une fois si le serveur le refuse (révoqué, ou
+/// périmé avant l'heure annoncée).
+fn authentifier(client: &mut Client, p: &Identifiants) -> Result<(), Erreur> {
+    let Some(jetons) = &p.microsoft else {
+        return client.ouvrir_session(&p.utilisateur, &p.mot_de_passe);
+    };
+    let jeton = crate::microsoft::jeton_acces(jetons, crate::microsoft::PORTEE_IMAP)?;
+    match client.ouvrir_session_jeton(&p.utilisateur, &jeton) {
+        Err(Erreur::Refuse(_)) => {
+            crate::microsoft::oublier(jetons, crate::microsoft::PORTEE_IMAP);
+            let jeton = crate::microsoft::jeton_acces(jetons, crate::microsoft::PORTEE_IMAP)?;
+            client.ouvrir_session_jeton(&p.utilisateur, &jeton)
+        }
+        autre => autre,
+    }
+}
+
+/// Remet un message : par SMTP, ou par Graph pour un compte Microsoft (le
+/// SMTP authentifié y est coupé par défaut).
+fn remettre_message(id: &Identifiants, de: &str, destinataires: &[String], octets: &[u8], accuse: bool) -> Result<(), Erreur> {
+    use crate::microsoft::{self as ms, ErreurOAuth};
+    let Some(jetons) = &id.microsoft else {
+        return smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, de, destinataires, octets, accuse);
+    };
+    let jeton = ms::jeton_acces(jetons, ms::PORTEE_ENVOI)?;
+    match ms::envoyer(&jeton, octets, destinataires) {
+        Err(ErreurOAuth::Refus { code, .. }) if code == "InvalidAuthenticationToken" => {
+            ms::oublier(jetons, ms::PORTEE_ENVOI);
+            let jeton = ms::jeton_acces(jetons, ms::PORTEE_ENVOI)?;
+            ms::envoyer(&jeton, octets, destinataires).map_err(Erreur::from)
+        }
+        autre => autre.map_err(Erreur::from),
+    }
+}
+
+/// Ce que rend une connexion Microsoft aboutie : l'adresse du compte, ses
+/// jetons.
+struct ConnexionMicrosoft {
+    adresse: String,
+    rafraichissement: String,
+    acces: String,
+    duree: u64,
 }
 
 /// Dossier cible d'un déplacement.
@@ -1074,12 +1173,14 @@ impl qobject::Boite {
             return;
         }
         let Some(magasin) = self.magasin.as_ref() else { return };
-        // Les comptes dont on a le mot de passe : ceux qui sont connectés.
+        // Les comptes dont on a le mot de passe : ceux qui sont connectés. Un
+        // compte Microsoft n'a pas d'agenda CalDAV.
         let comptes: Vec<(i64, String, Identifiants)> = magasin
             .comptes()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|c| self.identites.get(&c.id).map(|id| (c.id, c.adresse, id.clone())))
+            .filter(|(_, _, id)| id.microsoft.is_none())
             .collect();
         if comptes.is_empty() {
             return;
@@ -1130,7 +1231,7 @@ impl qobject::Boite {
             .comptes()
             .unwrap_or_default()
             .into_iter()
-            .filter(|c| self.authentifies.contains(&c.id))
+            .filter(|c| self.authentifies.contains(&c.id) && !c.microsoft())
             .filter_map(|c| self.identites.get(&c.id).map(|i| (c.adresse, i.mot_de_passe.clone())))
             .collect();
         if comptes.is_empty() {
@@ -1196,6 +1297,11 @@ impl qobject::Boite {
             self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from("compte non connecté"));
             return;
         };
+        if identifiants.microsoft.is_some() {
+            let motif = "compte Microsoft : une sauvegarde se retrouve par un compte à mot de passe";
+            self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from(motif));
+            return;
+        }
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-sauvegarde".into()).spawn(move || {
             let cles = crate::sauvegarde::cles(&adresse, &identifiants.mot_de_passe);
@@ -1266,7 +1372,7 @@ impl qobject::Boite {
         let comptes: Vec<serde_json::Value> = document
             .comptes
             .iter()
-            .map(|c| serde_json::json!({ "adresse": c.adresse, "hote": c.hote, "motDePasse": c.mot_de_passe }))
+            .map(|c| serde_json::json!({ "adresse": c.adresse, "hote": c.hote, "motDePasse": c.mot_de_passe, "auth": c.auth }))
             .collect();
         self.as_mut().reviser();
         QString::from(&serde_json::json!({ "reglages": reglages, "comptes": comptes, "images": images }).to_string())
@@ -1550,6 +1656,10 @@ impl qobject::Boite {
             self.as_mut().evenement_enregistre(false, &QString::from("cette boîte n'est pas connectée"));
             return;
         };
+        if id.microsoft.is_some() {
+            self.as_mut().evenement_enregistre(false, &QString::from("pas d'agenda pour un compte Microsoft dans MMail"));
+            return;
+        }
         let profil = self.profil.clone();
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-agenda-ecriture".into()).spawn(move || {
@@ -1603,11 +1713,12 @@ impl qobject::Boite {
             .iter()
             .map(|c| {
                 format!(
-                    r#"{{"id":{},"adresse":{},"hote":{},"hoteEnvoi":{},"etat":{}}}"#,
+                    r#"{{"id":{},"adresse":{},"hote":{},"hoteEnvoi":{},"auth":{},"etat":{}}}"#,
                     c.id,
                     texte_json(&c.adresse),
                     texte_json(&c.hote),
                     texte_json(&c.hote_envoi),
+                    texte_json(&c.auth),
                     texte_json(self.etat(c.id).code())
                 )
             })
@@ -1634,13 +1745,10 @@ impl qobject::Boite {
             let nouveau = matches!(magasin.compte_connu(&adresse), Ok(None));
             match magasin.compte(&adresse, &hote, PORT_IMAPS, &adresse) {
                 Ok(id) => {
-                    let hote_envoi = magasin
-                        .compte_par_id(id)
-                        .ok()
-                        .flatten()
-                        .map(|c| c.hote_envoi)
-                        .unwrap_or_default();
-                    (id, nouveau, hote_envoi)
+                    let present = magasin.compte_par_id(id).ok().flatten();
+                    let hote_envoi = present.as_ref().map(|c| c.hote_envoi.clone()).unwrap_or_default();
+                    let microsoft = present.is_some_and(|c| c.microsoft());
+                    (id, nouveau, hote_envoi, microsoft)
                 }
                 Err(e) => {
                     let message = QString::from(&format!("index local : {e}"));
@@ -1649,7 +1757,111 @@ impl qobject::Boite {
                 }
             }
         };
-        let (id, nouveau, hote_envoi) = compte;
+        let (id, nouveau, hote_envoi, microsoft) = compte;
+        // Compte Microsoft : ce que l'interface tient du coffre est le jeton de
+        // rafraîchissement, pas un mot de passe.
+        let (mot_de_passe, microsoft) = if microsoft {
+            (String::new(), Some(crate::microsoft::partager(&mot_de_passe.to_string())))
+        } else {
+            (mot_de_passe.to_string(), None)
+        };
+        {
+            let mut noyau = self.as_mut().rust_mut();
+            if nouveau {
+                noyau.nouveaux.insert(id);
+            }
+            noyau.identites.insert(id, Identifiants { hote, hote_envoi, utilisateur: adresse, mot_de_passe, microsoft });
+            noyau.authentifies.remove(&id);
+        }
+        self.as_mut().lancer(id, Vec::new())
+    }
+
+    pub fn microsoft_disponible(&self) -> bool {
+        crate::microsoft::disponible()
+    }
+
+    pub fn consentement_microsoft(&self) -> QString {
+        QString::from(&crate::microsoft::url_consentement(&crate::microsoft::identifiant_client()))
+    }
+
+    pub fn connecter_microsoft(mut self: Pin<&mut Self>, indice: &QString) -> QString {
+        use crate::microsoft::{self as ms, ErreurOAuth};
+        let client = ms::identifiant_client();
+        if client.is_empty() {
+            self.as_mut().set_erreur(QString::from(
+                "connexion Microsoft indisponible : MMail n'a pas d'identifiant d'application Microsoft",
+            ));
+            return QString::default();
+        }
+        let ecoute = match ms::ecouter() {
+            Ok(e) => e,
+            Err(e) => {
+                self.as_mut().set_erreur(QString::from(&format!("écoute locale : {e}")));
+                return QString::default();
+            }
+        };
+        let pkce = ms::pkce();
+        let etat = ms::etat();
+        let url = ms::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice.to_string());
+        let fil = self.qt_thread();
+        let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
+            let refus = |code: &str, description: &str| ErreurOAuth::Refus { code: code.into(), description: description.into() };
+            let issue = ms::attendre_code(&ecoute, &etat, ms::DELAI_CONNEXION)
+                .and_then(|code| ms::echanger_code(&client, &code, &pkce.verificateur, &ecoute.redirection))
+                .and_then(|r| {
+                    let adresse = r
+                        .id_token
+                        .as_deref()
+                        .and_then(ms::adresse_id_token)
+                        .ok_or_else(|| refus("adresse", "Microsoft n'a pas donné l'adresse du compte"))?;
+                    let rafraichissement = r
+                        .rafraichissement
+                        .clone()
+                        .ok_or_else(|| refus("offline_access", "Microsoft n'a pas rendu de jeton de rafraîchissement"))?;
+                    Ok(ConnexionMicrosoft { adresse, rafraichissement, acces: r.acces, duree: r.duree })
+                });
+            let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
+        });
+        if let Err(e) = lance {
+            self.as_mut().set_erreur(QString::from(&format!("connexion Microsoft : {e}")));
+            return QString::default();
+        }
+        self.as_mut().set_erreur(QString::from(""));
+        QString::from(&url)
+    }
+
+    /// Issue de la connexion Microsoft, sur le fil Qt : le compte est
+    /// enregistré — ou converti, s'il existait avec un mot de passe — puis
+    /// connecté.
+    fn accueillir_microsoft(mut self: Pin<&mut Self>, issue: Result<ConnexionMicrosoft, crate::microsoft::ErreurOAuth>) {
+        use crate::microsoft as ms;
+        let c = match issue {
+            Ok(c) => c,
+            Err(e) => {
+                self.as_mut().microsoft_refuse(&QString::from(&e.to_string()), e.consentement());
+                return;
+            }
+        };
+        let enregistre = match self.magasin.as_ref() {
+            None => Err("le profil n'est pas ouvert".to_string()),
+            Some(magasin) => {
+                let nouveau = matches!(magasin.compte_connu(&c.adresse), Ok(None));
+                magasin
+                    .compte(&c.adresse, ms::HOTE_IMAP, PORT_IMAPS, &c.adresse)
+                    .and_then(|id| magasin.poser_auth(&c.adresse, crate::magasin::AUTH_MICROSOFT).map(|_| id))
+                    .map(|id| (id, nouveau))
+                    .map_err(|e| format!("index local : {e}"))
+            }
+        };
+        let (id, nouveau) = match enregistre {
+            Ok(r) => r,
+            Err(message) => {
+                self.as_mut().microsoft_refuse(&QString::from(&message), false);
+                return;
+            }
+        };
+        let jetons = ms::partager(&c.rafraichissement);
+        ms::retenir(&jetons, ms::PORTEE_IMAP, &c.acces, c.duree);
         {
             let mut noyau = self.as_mut().rust_mut();
             if nouveau {
@@ -1657,11 +1869,38 @@ impl qobject::Boite {
             }
             noyau.identites.insert(
                 id,
-                Identifiants { hote, hote_envoi, utilisateur: adresse, mot_de_passe: mot_de_passe.to_string() },
+                Identifiants {
+                    hote: ms::HOTE_IMAP.into(),
+                    hote_envoi: String::new(),
+                    utilisateur: c.adresse.clone(),
+                    mot_de_passe: String::new(),
+                    microsoft: Some(jetons),
+                },
             );
             noyau.authentifies.remove(&id);
         }
-        self.as_mut().lancer(id, Vec::new())
+        self.as_mut().lancer(id, Vec::new());
+        self.as_mut().microsoft_connecte(
+            &QString::from(&c.adresse),
+            &QString::from(ms::HOTE_IMAP),
+            &QString::from(&c.rafraichissement),
+        );
+    }
+
+    /// Jetons de rafraîchissement que Microsoft a renouvelés pendant le
+    /// travail des fils : l'interface les confie au coffre.
+    fn conserver_jetons(mut self: Pin<&mut Self>) {
+        let renouveles: Vec<(String, String, String)> = self
+            .identites
+            .values()
+            .filter_map(|i| {
+                let jeton = crate::microsoft::a_conserver(i.microsoft.as_ref()?)?;
+                Some((i.utilisateur.clone(), i.hote.clone(), jeton))
+            })
+            .collect();
+        for (adresse, hote, jeton) in renouveles {
+            self.as_mut().jeton_renouvele(&QString::from(&adresse), &QString::from(&hote), &QString::from(&jeton));
+        }
     }
 
     pub fn poser_serveur_envoi(mut self: Pin<&mut Self>, adresse: &QString, hote: &QString) -> bool {
@@ -2620,6 +2859,7 @@ impl qobject::Boite {
 
     /// Applique sur le fil Qt ce que le fil de travail d'un compte a rendu.
     fn recevoir(mut self: Pin<&mut Self>, compte: i64, issue: Issue) {
+        self.as_mut().conserver_jetons();
         let compte_qt = compte as i32;
         match issue {
             Issue::Precharge { .. } => {}
@@ -3303,7 +3543,7 @@ impl Travail {
             .map_err(|e| perdue("connexion", format!("index local : {e}")))?;
         let mut client = Client::connecter(&p.hote, PORT_IMAPS)
             .map_err(|e| perdue("connexion", format!("connexion à {} : {e}", p.hote)))?;
-        client.ouvrir_session(&p.utilisateur, &p.mot_de_passe).map_err(|e| match e {
+        authentifier(&mut client, p).map_err(|e| match e {
             Erreur::Reseau(_) => perdue("connexion", format!("connexion à {} : {e}", p.hote)),
             _ => perdue("identifiants", format!("{} : identifiants refusés ({e})", p.utilisateur)),
         })?;
@@ -3677,9 +3917,7 @@ fn annexe(e: &mut Etabli, compte: i64) -> Result<Client, Echec> {
         .get(&compte)
         .cloned()
         .ok_or_else(|| Echec::Imap(Erreur::Refuse("boîte cible non connectée".into())))?;
-    let mut client = Client::connecter(&identifiants.hote, PORT_IMAPS)?;
-    client.ouvrir_session(&identifiants.utilisateur, &identifiants.mot_de_passe)?;
-    Ok(client)
+    Ok(ouvrir_imap(&identifiants)?)
 }
 
 // ------------------------------------------------------------- rédaction
@@ -3751,7 +3989,7 @@ impl Travail {
             let (destinataire, rapport) =
                 redaction::confirmation_lecture(&octets, &id.utilisateur, "", maintenant())
                     .ok_or("ce message ne demande pas de confirmation de lecture")?;
-            smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, &id.utilisateur, &[destinataire], &rapport, false)
+            remettre_message(&id, &id.utilisateur, &[destinataire], &rapport, false)
                 .map_err(|x| format!("confirmation de lecture : {x}"))?;
         }
         self.ailleurs(e, chemin, |c| c.marquer(&[uid], "$MDNSent", true))
@@ -3799,15 +4037,7 @@ impl Travail {
                         continue;
                     }
                 };
-                if let Err(x) = smtp::envoyer(
-                    id.serveur_envoi(),
-                    &id.utilisateur,
-                    &id.mot_de_passe,
-                    &envoi.de,
-                    &envoi.destinataires,
-                    &envoi.envoi,
-                    envoi.accuse,
-                ) {
+                if let Err(x) = remettre_message(id, &envoi.de, &envoi.destinataires, &envoi.envoi, envoi.accuse) {
                     // Pas parti : la réservation est levée, il repartira à la
                     // prochaine minute.
                     let _ = e.client.marquer(&[uid], "\\Deleted", false);
@@ -3815,7 +4045,8 @@ impl Travail {
                     continue;
                 }
                 nombre += 1;
-                if let Some(envoyes) = &envoyes {
+                // Graph range lui-même la copie d'un compte Microsoft.
+                if let (Some(envoyes), None) = (&envoyes, &id.microsoft) {
                     let _ = e.client.deposer(envoyes, &["\\Seen".into()], "", &envoi.copie);
                 }
                 // Parti : il quitte « Envoi différé ». S'il y reste, il garde
@@ -3976,7 +4207,7 @@ impl Travail {
         };
         let retour = self.retour();
         let lance = thread::Builder::new().name("mmail-smtp".into()).spawn(move || {
-            let erreur = smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, &r.de, &f.destinataires, &f.envoi, r.accuse_remise)
+            let erreur = remettre_message(&id, &r.de, &f.destinataires, &f.envoi, r.accuse_remise)
                 .err()
                 .map(|x| format!("envoi : {x}"));
             retour.remettre(Issue::Parti { redaction: r, copie: f.copie, erreur }, true);
@@ -3998,7 +4229,10 @@ impl Travail {
             .collect();
         let _ = e.magasin.noter_correspondants(&destinataires, maintenant());
         let mut avertissements = Vec::new();
+        // Envoyé par Graph : Microsoft a déjà rangé la copie.
+        let par_graph = e.magasin.compte_par_id(self.compte).ok().flatten().is_some_and(|c| c.microsoft());
         match self.dossier_de_role(e, "Sent") {
+            _ if par_graph => {}
             Some(envoyes) => {
                 if let Err(x) = e.client.deposer(&envoyes, &["\\Seen".into()], "", copie) {
                     avertissements.push(format!("copie dans « {envoyes} » : {x}"));
@@ -4700,7 +4934,13 @@ mod tests {
         // La minuterie des envois différés écrit à chaque compte toutes les
         // minutes : elle ne doit pas faire sauter la veille.
         let differes = Commande::EnvoyerDifferes {
-            identifiants: Identifiants { hote: "h".into(), hote_envoi: String::new(), utilisateur: "u".into(), mot_de_passe: "p".into() },
+            identifiants: Identifiants {
+                hote: "h".into(),
+                hote_envoi: String::new(),
+                utilisateur: "u".into(),
+                mot_de_passe: "p".into(),
+                microsoft: None,
+            },
         };
         let (file, _) = regrouper(vec![Commande::Veille, differes]);
         assert_eq!(noms(&file), vec!["veille", "differes"]);

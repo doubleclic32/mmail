@@ -24,8 +24,11 @@ pub type Resultat<T> = Result<T, Erreur>;
 /// libère. Une transaction sur tout un dossier le tenait plusieurs secondes.
 const LOT_ECRITURE: usize = 500;
 
+/// Mode d'authentification d'un compte Microsoft (`accounts.auth`).
+pub const AUTH_MICROSOFT: &str = "microsoft";
+
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 12;
+const VERSION_SCHEMA: i32 = 13;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -93,9 +96,18 @@ pub struct CompteLocal {
     pub hote_envoi: String,
     /// Replié dans l'arborescence : ses dossiers ne s'affichent pas.
     pub replie: bool,
+    /// Mode d'authentification : vide pour un mot de passe, `microsoft` pour
+    /// un compte Microsoft (OAuth2, cf. `crate::microsoft`).
+    pub auth: String,
 }
 
 impl CompteLocal {
+    /// Compte Microsoft : jeton OAuth2 au lieu d'un mot de passe, envoi par
+    /// Graph.
+    pub fn microsoft(&self) -> bool {
+        self.auth == AUTH_MICROSOFT
+    }
+
     /// Serveur auquel remettre les messages : celui de l'envoi s'il est
     /// donné, sinon celui de la lecture.
     pub fn serveur_envoi(&self) -> &str {
@@ -439,6 +451,11 @@ impl Magasin {
         if version < 12 {
             self.ajouter_colonne("accounts", "hote_envoi", "TEXT NOT NULL DEFAULT ''")?;
         }
+        // Version 13 : le mode d'authentification — vide, le mot de passe,
+        // pour tous les comptes déjà enregistrés.
+        if version < 13 {
+            self.ajouter_colonne("accounts", "auth", "TEXT NOT NULL DEFAULT ''")?;
+        }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
     }
@@ -495,11 +512,18 @@ impl Magasin {
         Ok(n > 0)
     }
 
+    /// Pose le mode d'authentification d'un compte (`AUTH_MICROSOFT`, ou
+    /// vide pour un mot de passe). Le compte doit exister : rien n'est créé.
+    pub fn poser_auth(&self, adresse: &str, auth: &str) -> Resultat<bool> {
+        let n = self.base.execute("UPDATE accounts SET auth = ?2 WHERE adresse = ?1", params![adresse, auth])?;
+        Ok(n > 0)
+    }
+
     /// Comptes du profil, dans l'ordre choisi par l'utilisateur — à défaut,
     /// celui où ils ont été ajoutés.
     pub fn comptes(&self) -> Resultat<Vec<CompteLocal>> {
         let mut requete = self.base.prepare(
-            "SELECT id, adresse, hote, port, utilisateur, replie, hote_envoi FROM accounts
+            "SELECT id, adresse, hote, port, utilisateur, replie, hote_envoi, auth FROM accounts
              ORDER BY rang IS NULL, rang, id",
         )?;
         let comptes = requete
@@ -512,6 +536,7 @@ impl Magasin {
                     utilisateur: l.get(4)?,
                     replie: l.get::<_, i32>(5)? != 0,
                     hote_envoi: l.get(6)?,
+                    auth: l.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2042,6 +2067,29 @@ mod tests {
         m.migrer().unwrap();
         let c = &m.comptes().unwrap()[0];
         assert_eq!((c.hote_envoi.as_str(), c.serveur_envoi()), ("", "h"));
+    }
+
+    #[test]
+    fn migration_version_13_authentification() {
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        m.base.execute_batch("ALTER TABLE accounts DROP COLUMN auth; PRAGMA user_version = 12;").unwrap();
+        m.migrer().unwrap();
+        let c = &m.comptes().unwrap()[0];
+        assert_eq!(c.auth, "", "mot de passe pour les comptes déjà là");
+        assert!(!c.microsoft());
+    }
+
+    #[test]
+    fn compte_microsoft() {
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@contoso.fr", crate::microsoft::HOTE_IMAP, 993, "a@contoso.fr").unwrap();
+        assert!(m.poser_auth("a@contoso.fr", AUTH_MICROSOFT).unwrap());
+        assert!(m.comptes().unwrap()[0].microsoft());
+        // Une reconnexion réécrit le serveur, pas le mode d'authentification.
+        m.compte("a@contoso.fr", crate::microsoft::HOTE_IMAP, 993, "a@contoso.fr").unwrap();
+        assert!(m.comptes().unwrap()[0].microsoft());
+        assert!(!m.poser_auth("inconnu@b.fr", AUTH_MICROSOFT).unwrap(), "rien n'est créé");
     }
 
     #[test]

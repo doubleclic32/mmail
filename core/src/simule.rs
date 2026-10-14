@@ -69,6 +69,12 @@ impl FluxSimule {
             };
             let ligne: Vec<u8> = self.entree.drain(..fin + 2).collect();
             let ligne = String::from_utf8_lossy(&ligne[..fin]).into_owned();
+            // Ligne vide : la réponse du client à une invite d'`AUTHENTICATE`
+            // refusé — ce n'est pas une commande.
+            if ligne.is_empty() && self.commande.is_empty() {
+                self.journal.lock().unwrap().push("(ligne vide)".into());
+                continue;
+            }
             // « … {12} » : littéral synchronisé, le client attend l'invite ;
             // « … {12+} » (LITERAL+) : il envoie la suite sans attendre.
             if let Some((taille, synchronise)) = taille_litteral(&ligne) {
@@ -181,6 +187,14 @@ fn ouverture(capacites: &str, fin_id: &str, echanges: Vec<Echange>) -> (Client, 
         attendus.push_back(echange("ENABLE QRESYNC", "* ENABLED QRESYNC\r\n", "OK"));
     }
     attendus.extend(echanges);
+    let (mut client, journal) = connexion(attendus);
+    client.ouvrir_session("essai@exemple.fr", "secret").expect("session");
+    (client, journal)
+}
+
+/// Connexion au faux serveur, salutation lue, rien d'autre : le dialogue
+/// attendu commence à l'authentification.
+fn connexion(attendus: VecDeque<Echange>) -> (Client, Journal) {
     let journal = Journal::default();
     let flux = FluxSimule {
         attendus,
@@ -191,9 +205,7 @@ fn ouverture(capacites: &str, fin_id: &str, echanges: Vec<Echange>) -> (Client, 
         litteral: None,
         idle: None,
     };
-    let mut client = Client::sur(Box::new(flux)).expect("salutation");
-    client.ouvrir_session("essai@exemple.fr", "secret").expect("session");
-    (client, journal)
+    (Client::sur(Box::new(flux)).expect("salutation"), journal)
 }
 
 /// Capacités d'un Dovecot récent, celles que vise MMail.
@@ -202,6 +214,7 @@ pub const DOVECOT: &str = "ID QRESYNC CONDSTORE UIDPLUS MOVE SPECIAL-USE LIST-ST
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::imap::Erreur;
 
     #[test]
     fn presentation_apres_connexion() {
@@ -230,6 +243,35 @@ mod tests {
     fn sans_id_pas_de_presentation() {
         let (_, journal) = ouverture("UIDPLUS MOVE", "OK", vec![]);
         assert!(!journal.lock().unwrap().iter().any(|c| c.starts_with("ID ")));
+    }
+
+    #[test]
+    fn session_par_jeton_microsoft() {
+        let chaine = crate::microsoft::xoauth2("jean@exemple.fr", "JETON");
+        let (mut client, journal) = connexion(VecDeque::from(vec![
+            echange("AUTHENTICATE XOAUTH2 ", "", "OK AUTHENTICATE completed."),
+            echange("CAPABILITY", "* CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS CHILDREN\r\n", "OK"),
+        ]));
+        client.ouvrir_session_jeton("jean@exemple.fr", "JETON").expect("session");
+        let journal = journal.lock().unwrap();
+        assert_eq!(journal[0], format!("AUTHENTICATE XOAUTH2 {chaine}"));
+        assert_eq!(journal[1], "CAPABILITY");
+        assert!(!client.qresync(), "Office 365 n'annonce pas QRESYNC");
+    }
+
+    #[test]
+    fn jeton_refuse_apres_invite() {
+        // Refus à la façon de Gmail : le motif en invite, puis `NO` une fois
+        // la ligne vide reçue.
+        let motif = crate::smtp::base64(br#"{"status":"401","schemes":"Bearer"}"#);
+        let (mut client, journal) = connexion(VecDeque::from(vec![echange(
+            "AUTHENTICATE XOAUTH2 ",
+            &format!("+ {motif}\r\n"),
+            "NO AUTHENTICATE failed.",
+        )]));
+        let erreur = client.ouvrir_session_jeton("jean@exemple.fr", "PERIME").unwrap_err();
+        assert!(matches!(&erreur, Erreur::Refuse(m) if m.contains("AUTHENTICATE failed") && m.contains("401")), "{erreur}");
+        assert_eq!(journal.lock().unwrap().last().unwrap(), "(ligne vide)");
     }
 
     #[test]

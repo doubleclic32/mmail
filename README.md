@@ -216,11 +216,59 @@ serveur. Un serveur saisi à la main n'est jamais remplacé.
 L'envoi passe par défaut par le serveur de lecture, sur le port 465. Quand le
 fournisseur reçoit l'envoi ailleurs — Orange lit sur `imap.orange.fr` et
 reçoit sur `smtp.orange.fr` —, le compte porte un **serveur d'envoi** : champ
-« Serveur d'envoi » à l'ajout d'un compte, ou « Serveur d'envoi… » au clic
-droit sur un compte déjà présent. Même port (465, TLS d'emblée), mêmes
+« Serveur d'envoi » à l'ajout d'un compte, ou « Modifier le compte… » pour un
+compte déjà présent. Même port (465, TLS d'emblée), mêmes
 identifiants que la lecture ; laissé vide, c'est de nouveau le serveur de
 lecture. Il vaut dès l'envoi suivant, sans reconnexion, et suit la sauvegarde
 de la configuration.
+
+### Modifier un compte
+
+« Comptes › Modifier un compte », ou « Modifier ce compte… » au clic droit sur
+le compte, rouvre la fenêtre de l'ajout pour un compte présent : serveur de
+lecture, serveur d'envoi, mot de passe (laissé vide, il ne change pas), et de
+là « Nom et signature… ». L'adresse ne change pas : c'est elle qui désigne le
+compte, son index et ses réglages. Un nouveau serveur de lecture reprend le
+mot de passe mémorisé, qui change de clé dans le coffre avec lui ; s'il est
+injoignable, la fenêtre revient avec le motif.
+
+### Comptes Microsoft (Office 365, Outlook.com)
+
+Office 365 n'accepte plus de mot de passe en IMAP : « Comptes › Ajouter un
+compte Microsoft (Office 365, Outlook.com)… » ouvre la page de connexion de
+Microsoft dans le navigateur. La personne s'y connecte — mot de passe, double
+authentification, tout se passe chez Microsoft — et consent ; MMail reçoit le
+retour sur une écoute locale (`http://localhost`, flux « code
+d'autorisation » avec PKCE) et ne voit jamais le mot de passe. Il garde, dans
+le coffre du système, le **jeton de rafraîchissement** que Microsoft lui
+délivre, à la place du mot de passe ; les jetons d'accès, valables une heure,
+ne vivent qu'en mémoire.
+
+- **Une seule application pour tous** : MMail est une application publique
+  (sans secret), ouverte à toutes les organisations et aux comptes
+  personnels. Rien n'est à inscrire chez le client.
+- **Consentement** : l'utilisateur consent lui-même si son organisation le
+  permet. Sinon, MMail affiche un lien de consentement à transmettre à
+  l'administrateur du Microsoft 365 de l'organisation
+  (`https://login.microsoftonline.com/organizations/adminconsent?client_id=…`) :
+  ouvert une fois, il autorise MMail pour tous les utilisateurs.
+- **Lecture** en IMAPS sur `outlook.office365.com` (`AUTHENTICATE XOAUTH2`) ;
+  **envoi par Microsoft Graph** (`Mail.Send`) et non par SMTP, coupé par
+  défaut dans Office 365. Microsoft range lui-même la copie dans « Éléments
+  envoyés ». Un message trop lourd pour une seule requête Graph (4 Mo) passe
+  par un brouillon (`Mail.ReadWrite`) : MMail le crée sans ses plus grosses
+  pièces jointes, les y ajoute une à une — par morceaux au-delà de 3 Mo —,
+  puis l'envoie. La limite est alors celle de la boîte : 35 Mo par message
+  par défaut dans Office 365, 150 Mo par pièce jointe au plus.
+- « Modifier le compte… » n'y propose ni serveur ni mot de passe, mais « Se
+  reconnecter à Microsoft… ».
+
+Limites : IMAP doit être permis pour la boîte (c'est le réglage par défaut
+d'Office 365) ; le texte et les images du corps d'un message tiennent en
+3 Mo — les pièces jointes, à part, n'y comptent pas ; pas d'accusé de remise ; pas d'agenda (Office 365 ne parle pas
+CalDAV) ; la sauvegarde de la configuration garde le compte, mais pas son
+jeton — il se reconnecte à Microsoft sur le poste où elle est remise — et ne
+se chiffre que par les comptes à mot de passe.
 
 ### Lien de configuration
 

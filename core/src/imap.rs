@@ -155,6 +155,53 @@ impl Client {
             citer(utilisateur),
             citer(mot_de_passe)
         ))?;
+        self.apres_authentification()
+    }
+
+    /// Comme `ouvrir_session`, par un jeton d'accès OAuth2 (`AUTHENTICATE
+    /// XOAUTH2`, comptes Microsoft) : la chaîne SASL part avec la commande
+    /// (SASL-IR, que les serveurs de Microsoft annoncent).
+    pub fn ouvrir_session_jeton(&mut self, utilisateur: &str, jeton: &str) -> Resultat<()> {
+        self.authentifier("XOAUTH2", &crate::microsoft::xoauth2(utilisateur, jeton))?;
+        self.apres_authentification()
+    }
+
+    /// `AUTHENTICATE` avec réponse initiale. Un refus peut d'abord venir en
+    /// invite (« + » suivi du motif en base64), à laquelle le client répond
+    /// par une ligne vide pour recevoir le `NO` final (RFC 7628 § 3.2.3).
+    fn authentifier(&mut self, mecanisme: &str, reponse: &str) -> Resultat<()> {
+        self.compteur += 1;
+        let etiquette = format!("m{:04}", self.compteur);
+        self.flux
+            .write_all(format!("{etiquette} AUTHENTICATE {mecanisme} {reponse}\r\n").as_bytes())?;
+        self.flux.flush()?;
+        let mut motif = String::new();
+        loop {
+            let ligne = self.lire_ligne()?;
+            if let Some(invite) = ligne.strip_prefix('+') {
+                motif = crate::rendu::base64(invite.trim())
+                    .map(|o| String::from_utf8_lossy(&o).into_owned())
+                    .unwrap_or_default();
+                self.flux.write_all(b"\r\n")?;
+                self.flux.flush()?;
+                continue;
+            }
+            if let Some(fin) = ligne.strip_prefix(&etiquette) {
+                let fin = fin.trim_start();
+                return if fin.starts_with("OK") {
+                    Ok(())
+                } else if motif.is_empty() {
+                    Err(Erreur::Refuse(fin.to_string()))
+                } else {
+                    Err(Erreur::Refuse(format!("{fin} ({motif})")))
+                };
+            }
+        }
+    }
+
+    /// Ce qui suit l'authentification, quelle qu'elle soit : capacités,
+    /// présentation, QRESYNC.
+    fn apres_authentification(&mut self) -> Resultat<()> {
         let (texte, _) = self.commande("CAPABILITY")?;
         self.capacites = texte
             .lines()

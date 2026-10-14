@@ -200,6 +200,12 @@ pub struct CompteSauve {
     /// et dans les sauvegardes antérieures à la 0.5.11.
     #[serde(default, rename = "hoteEnvoi", skip_serializing_if = "String::is_empty")]
     pub hote_envoi: String,
+    /// Mode d'authentification : `microsoft` pour un compte Microsoft, absent
+    /// pour un mot de passe (et dans les sauvegardes antérieures à la 0.5.13).
+    /// Un compte Microsoft ne garde ni mot de passe ni jeton : il se reconnecte
+    /// à Microsoft sur le poste où la configuration est remise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
     pub port: u16,
     pub utilisateur: String,
     /// Absent quand l'utilisateur ne garde pas ses mots de passe, ou que le
@@ -297,6 +303,7 @@ pub fn composer(
             adresse: c.adresse,
             hote: c.hote,
             hote_envoi: c.hote_envoi,
+            auth: c.auth,
             port: c.port,
             utilisateur: c.utilisateur,
             replie: c.replie,
@@ -355,6 +362,7 @@ pub fn appliquer(magasin: &Magasin, document: &Document) -> Resultat<()> {
             None => {
                 let id = magasin.compte(&c.adresse, &c.hote, c.port, &c.utilisateur).map_err(local)?;
                 magasin.poser_serveur_envoi(&c.adresse, &c.hote_envoi).map_err(local)?;
+                magasin.poser_auth(&c.adresse, &c.auth).map_err(local)?;
                 id
             }
         };
@@ -602,6 +610,8 @@ mod tests {
         let magasin = Magasin::ouvrir(index.to_str().unwrap()).unwrap();
         let compte = magasin.compte("nom@exemple.fr", "mail.exemple.fr", 993, "nom@exemple.fr").unwrap();
         magasin.compte("autre@exemple.fr", "mail.exemple.fr", 993, "autre@exemple.fr").unwrap();
+        magasin.compte("jean@contoso.fr", crate::microsoft::HOTE_IMAP, 993, "jean@contoso.fr").unwrap();
+        magasin.poser_auth("jean@contoso.fr", crate::magasin::AUTH_MICROSOFT).unwrap();
         magasin
             .poser_dossiers(
                 compte,
@@ -634,12 +644,15 @@ mod tests {
         let mut mots = HashMap::new();
         mots.insert("nom@exemple.fr".to_string(), "secret".to_string());
         let doc = composer(&magasin, &signatures, &mots, &reglages, "POSTE", "0.5.10", 100).unwrap();
-        assert_eq!(doc.comptes.len(), 2);
+        assert_eq!(doc.comptes.len(), 3);
+        assert_eq!(doc.comptes[2].auth, "microsoft");
+        assert_eq!(doc.comptes[2].mot_de_passe, None, "ni mot de passe ni jeton");
         assert_eq!(doc.comptes[0].mot_de_passe.as_deref(), Some("secret"));
         assert_eq!(doc.comptes[1].mot_de_passe, None);
         assert_eq!(doc.comptes[0].hote_envoi, "smtp.exemple.fr");
         let json = serde_json::to_value(&doc.comptes[1]).unwrap();
         assert!(json.get("hoteEnvoi").is_none(), "absent quand c'est le serveur de lecture");
+        assert!(json.get("auth").is_none(), "absent pour un mot de passe");
         let chemins: Vec<&str> = doc.comptes[0].dossiers.iter().map(|d| d.chemin.as_str()).collect();
         assert_eq!(chemins, ["Archives", "Spam"], "seuls les dossiers à l'état local");
         assert_eq!(doc.images.keys().collect::<Vec<_>>(), ["nom_exemple.fr/logo.png"], "l'image désignée seule");
@@ -673,7 +686,8 @@ mod tests {
         appliquer(&neuf, &doc).unwrap();
         let comptes = neuf.comptes().unwrap();
         let adresses: Vec<&str> = comptes.iter().map(|c| c.adresse.as_str()).collect();
-        assert_eq!(adresses, ["nom@exemple.fr", "autre@exemple.fr"], "l'ordre de la sauvegarde");
+        assert_eq!(adresses, ["nom@exemple.fr", "autre@exemple.fr", "jean@contoso.fr"], "l'ordre de la sauvegarde");
+        assert!(comptes[2].microsoft() && !comptes[0].microsoft(), "le mode d'authentification revient");
         assert_eq!(comptes[1].hote, "ailleurs.exemple.fr");
         assert_eq!(comptes[0].serveur_envoi(), "smtp.exemple.fr", "le serveur d'envoi revient");
         let restaures = neuf.dossiers(comptes[0].id).unwrap();

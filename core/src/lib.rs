@@ -13,6 +13,7 @@ pub mod index;
 pub mod invitation;
 pub mod magasin;
 pub mod mise_a_jour;
+pub mod microsoft;
 pub mod mise_en_page;
 pub mod pont_presse_papier;
 pub mod poste;
