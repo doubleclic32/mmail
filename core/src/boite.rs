@@ -74,8 +74,8 @@ pub mod qobject {
 
         /// Comptes du profil, en JSON : `[{id, adresse, hote, hoteEnvoi, auth,
         /// etat}]` — `hoteEnvoi` vide : l'envoi passe par le serveur de
-        /// lecture ; `auth` : `microsoft` pour un compte Microsoft, vide pour
-        /// un mot de passe.
+        /// lecture ; `auth` : `microsoft` pour un compte Microsoft, `google`
+        /// pour un compte Google, vide pour un mot de passe.
         #[qinvokable]
         #[cxx_name = "comptes"]
         fn comptes(&self) -> QString;
@@ -121,6 +121,23 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "connecterMicrosoft"]
         fn connecter_microsoft(self: Pin<&mut Boite>, indice: &QString) -> QString;
+
+        /// Vrai si MMail a un client Google : sans lui, pas de compte Google.
+        #[qinvokable]
+        #[cxx_name = "googleDisponible"]
+        fn google_disponible(&self) -> bool;
+
+        /// Vrai si l'ajout d'un compte Google s'affiche : l'application Google
+        /// de MMail est publiée, ou `MMAIL_GOOGLE_ESSAI` est posée.
+        #[qinvokable]
+        #[cxx_name = "googleAjoutOuvert"]
+        fn google_ajout_ouvert(&self) -> bool;
+
+        /// Connexion d'un compte Google (Gmail) : comme `connecterMicrosoft`.
+        /// Issue : `googleConnecte`, ou `googleRefuse`.
+        #[qinvokable]
+        #[cxx_name = "connecterGoogle"]
+        fn connecter_google(self: Pin<&mut Boite>, indice: &QString) -> QString;
 
         /// Ferme la session d'un compte ; son index reste consultable.
         #[qinvokable]
@@ -232,6 +249,21 @@ pub mod qobject {
         #[cxx_name = "chercherSurLeServeur"]
         fn chercher_sur_le_serveur(self: Pin<&mut Boite>, texte: &QString) -> bool;
 
+        /// Cherche aussi sur le serveur, dans chaque dossier de chaque compte
+        /// connecté, un dossier à la fois et après ce que l'utilisateur
+        /// demande. Rend le nombre de dossiers à interroger ; un texte vide
+        /// arrête la recherche en cours. Issue : `resultatsPartout`, par
+        /// dossier.
+        #[qinvokable]
+        #[cxx_name = "chercherPartoutSurLeServeur"]
+        fn chercher_partout_sur_le_serveur(self: Pin<&mut Boite>, texte: &QString) -> i32;
+
+        /// Lignes d'un dossier quelconque pour des UID (« 3,5,7 »), comme
+        /// `chercher(texte, true)` : compte, chemin et dossier compris.
+        #[qinvokable]
+        #[cxx_name = "trouvesParUid"]
+        fn trouves_par_uid(&self, compte: i32, chemin: &QString, uids: &QString) -> QString;
+
         /// Lignes du dossier ouvert pour des UID (« 3,5,7 »), en JSON.
         #[qinvokable]
         #[cxx_name = "messagesParUid"]
@@ -314,6 +346,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "supprimer"]
         fn supprimer(self: Pin<&mut Boite>, uids: &QString) -> bool;
+
+        /// Envoie des messages d'un dossier donné à la corbeille de son
+        /// compte, sans en faire le dossier ouvert : le bouton corbeille d'une
+        /// ligne, dans un dossier comme dans « Toutes les BàL ». Issue :
+        /// `deplacementTermine`.
+        #[qinvokable]
+        #[cxx_name = "supprimerDans"]
+        fn supprimer_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString) -> bool;
 
         /// Signale des messages du dossier ouvert comme indésirables : ils vont
         /// dans le dossier d'indésirables de leur compte, et le filtre du
@@ -619,6 +659,17 @@ pub mod qobject {
         #[cxx_name = "microsoftRefuse"]
         fn microsoft_refuse(self: Pin<&mut Boite>, message: &QString, consentement: bool);
 
+        /// Compte Google autorisé, enregistré et en cours de connexion : comme
+        /// `microsoftConnecte`.
+        #[qsignal]
+        #[cxx_name = "googleConnecte"]
+        fn google_connecte(self: Pin<&mut Boite>, adresse: &QString, hote: &QString, jeton: &QString);
+
+        /// Connexion Google non aboutie : le motif, à montrer tel quel.
+        #[qsignal]
+        #[cxx_name = "googleRefuse"]
+        fn google_refuse(self: Pin<&mut Boite>, message: &QString);
+
         /// Microsoft a renouvelé le jeton de rafraîchissement d'un compte : il
         /// remplace l'ancien au coffre.
         #[qsignal]
@@ -653,6 +704,20 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "resultatsServeur"]
         fn resultats_serveur(self: Pin<&mut Boite>, compte: i32, chemin: &QString, texte: &QString, uids: &QString);
+
+        /// Recherche sur toutes les boîtes : UID trouvés par le serveur dans
+        /// un dossier (« 3,5,7 », déjà rangés dans l'index), et nombre de
+        /// dossiers qui restent à interroger pour ce compte.
+        #[qsignal]
+        #[cxx_name = "resultatsPartout"]
+        fn resultats_partout(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            texte: &QString,
+            uids: &QString,
+            restants: i32,
+        );
 
         /// Messages différés partis ; `erreurs` non vide si certains ont échoué.
         #[qsignal]
@@ -766,11 +831,11 @@ struct Identifiants {
     /// Serveur de soumission, s'il n'est pas celui de la lecture ; vide sinon.
     hote_envoi: String,
     utilisateur: String,
-    /// Vide pour un compte Microsoft.
+    /// Vide pour un compte à jetons (Microsoft, Google).
     mot_de_passe: String,
-    /// Compte Microsoft : ses jetons OAuth2, partagés par toutes ses
+    /// Compte à jetons : ses jetons OAuth2, partagés par toutes ses
     /// sessions ; `None` pour un mot de passe.
-    microsoft: Option<crate::microsoft::Partage>,
+    oauth: Option<crate::oauth::Partage>,
 }
 
 impl Identifiants {
@@ -788,30 +853,46 @@ fn ouvrir_imap(p: &Identifiants) -> Result<Client, Erreur> {
 }
 
 /// Authentifie une session : mot de passe, ou jeton OAuth2 d'un compte
-/// Microsoft — redemandé une fois si le serveur le refuse (révoqué, ou
-/// périmé avant l'heure annoncée).
+/// Microsoft ou Google — redemandé une fois si le serveur le refuse (révoqué,
+/// ou périmé avant l'heure annoncée).
 fn authentifier(client: &mut Client, p: &Identifiants) -> Result<(), Erreur> {
-    let Some(jetons) = &p.microsoft else {
+    let Some(jetons) = &p.oauth else {
         return client.ouvrir_session(&p.utilisateur, &p.mot_de_passe);
     };
-    let jeton = crate::microsoft::jeton_acces(jetons, crate::microsoft::PORTEE_IMAP)?;
+    let service = crate::oauth::fournisseur(jetons);
+    let portee = service.portee_imap();
+    let jeton = crate::oauth::jeton_acces(jetons, portee).map_err(|e| e.vers_erreur(service.nom()))?;
     match client.ouvrir_session_jeton(&p.utilisateur, &jeton) {
         Err(Erreur::Refuse(_)) => {
-            crate::microsoft::oublier(jetons, crate::microsoft::PORTEE_IMAP);
-            let jeton = crate::microsoft::jeton_acces(jetons, crate::microsoft::PORTEE_IMAP)?;
+            crate::oauth::oublier(jetons, portee);
+            let jeton = crate::oauth::jeton_acces(jetons, portee).map_err(|e| e.vers_erreur(service.nom()))?;
             client.ouvrir_session_jeton(&p.utilisateur, &jeton)
         }
         autre => autre,
     }
 }
 
-/// Remet un message : par SMTP, ou par Graph pour un compte Microsoft (le
-/// SMTP authentifié y est coupé par défaut).
+/// Remet un message : par SMTP, par Graph pour un compte Microsoft (le SMTP
+/// authentifié y est coupé par défaut), par SMTP avec un jeton pour un compte
+/// Google.
 fn remettre_message(id: &Identifiants, de: &str, destinataires: &[String], octets: &[u8], accuse: bool) -> Result<(), Erreur> {
     use crate::microsoft::{self as ms, ErreurOAuth};
-    let Some(jetons) = &id.microsoft else {
+    use crate::oauth::Fournisseur;
+    let Some(jetons) = &id.oauth else {
         return smtp::envoyer(id.serveur_envoi(), &id.utilisateur, &id.mot_de_passe, de, destinataires, octets, accuse);
     };
+    if crate::oauth::fournisseur(jetons) == Fournisseur::Google {
+        use crate::google::{HOTE_SMTP, PORTEE_MAIL};
+        let jeton = crate::oauth::jeton_acces(jetons, PORTEE_MAIL).map_err(|e| e.vers_erreur("Google"))?;
+        return match smtp::envoyer_jeton(HOTE_SMTP, &id.utilisateur, &jeton, de, destinataires, octets, accuse) {
+            Err(Erreur::Refuse(m)) if m.starts_with("authentification") => {
+                crate::oauth::oublier(jetons, PORTEE_MAIL);
+                let jeton = crate::oauth::jeton_acces(jetons, PORTEE_MAIL).map_err(|e| e.vers_erreur("Google"))?;
+                smtp::envoyer_jeton(HOTE_SMTP, &id.utilisateur, &jeton, de, destinataires, octets, accuse)
+            }
+            autre => autre,
+        };
+    }
     let jeton = ms::jeton_acces(jetons, ms::PORTEE_ENVOI)?;
     match ms::envoyer(&jeton, octets, destinataires) {
         Err(ErreurOAuth::Refus { code, .. }) if code == "InvalidAuthenticationToken" => {
@@ -823,13 +904,30 @@ fn remettre_message(id: &Identifiants, de: &str, destinataires: &[String], octet
     }
 }
 
-/// Ce que rend une connexion Microsoft aboutie : l'adresse du compte, ses
-/// jetons.
-struct ConnexionMicrosoft {
+/// Ce que rend une connexion OAuth2 aboutie (Microsoft, Google) : l'adresse
+/// du compte, ses jetons.
+struct ConnexionOAuth {
     adresse: String,
     rafraichissement: String,
     acces: String,
     duree: u64,
+}
+
+/// Ce que le service doit rendre à l'échange du code : l'adresse du compte
+/// (`id_token`) et un jeton de rafraîchissement.
+fn connexion_aboutie(r: crate::oauth::ReponseJeton, nom: &str) -> Result<ConnexionOAuth, crate::oauth::ErreurOAuth> {
+    use crate::oauth::ErreurOAuth;
+    let refus = |code: &str, description: String| ErreurOAuth::Refus { code: code.into(), description };
+    let adresse = r
+        .id_token
+        .as_deref()
+        .and_then(crate::oauth::adresse_id_token)
+        .ok_or_else(|| refus("adresse", format!("{nom} n'a pas donné l'adresse du compte")))?;
+    let rafraichissement = r
+        .rafraichissement
+        .clone()
+        .ok_or_else(|| refus("offline_access", format!("{nom} n'a pas rendu de jeton de rafraîchissement")))?;
+    Ok(ConnexionOAuth { adresse, rafraichissement, acces: r.acces, duree: r.duree })
 }
 
 /// Dossier cible d'un déplacement.
@@ -887,6 +985,10 @@ enum Commande {
     Signale,
     /// Chercher un texte dans les messages d'un dossier, sur le serveur.
     Chercher { chemin: String, texte: String },
+    /// Chercher un texte sur le serveur dans le premier de `chemins` ; la
+    /// suite revient dans la file, derrière ce que l'utilisateur demande.
+    /// `chemins` vide : arrête la recherche en cours.
+    ChercherPartout { texte: String, chemins: Vec<String> },
     /// Garder sur le poste les messages récents d'un dossier (décision 17),
     /// par petits lots, après tout ce que l'utilisateur demande.
     Precharger { chemin: String },
@@ -908,15 +1010,32 @@ impl Commande {
                 | (EnvoyerDifferes { .. }, EnvoyerDifferes { .. })
                 | (Signale, Signale)
                 | (Chercher { .. }, Chercher { .. })
+                | (ChercherPartout { .. }, ChercherPartout { .. })
         ) || (matches!(anterieure, Veille) && (self.comptee() || matches!(self, Veille)))
+    }
+
+    /// Ordre de passage dans la file : ce que l'utilisateur demande, puis la
+    /// recherche sur toutes les boîtes, puis le préchargement.
+    fn rang(&self) -> u8 {
+        match self {
+            Commande::ChercherPartout { .. } => 1,
+            Commande::Precharger { .. } => 2,
+            _ => 0,
+        }
     }
 
     /// Vrai si la commande vient de l'interface et compte dans `occupe`.
     fn comptee(&self) -> bool {
-        // Les tâches de fond ne font pas tourner l'indicateur d'activité.
+        // Les tâches de fond ne font pas tourner l'indicateur d'activité. La
+        // recherche sur toutes les boîtes, que le fil remet lui-même dans sa
+        // file dossier après dossier, affiche sa propre progression.
         !matches!(
             self,
-            Commande::Veille | Commande::Signale | Commande::EnvoyerDifferes { .. } | Commande::Precharger { .. }
+            Commande::Veille
+                | Commande::Signale
+                | Commande::EnvoyerDifferes { .. }
+                | Commande::ChercherPartout { .. }
+                | Commande::Precharger { .. }
         )
     }
 }
@@ -958,6 +1077,9 @@ enum Issue {
     DeplacementEchoue { message: String },
     /// UID trouvés par le serveur pour une recherche.
     Recherche { chemin: String, texte: String, uids: Vec<u32> },
+    /// UID trouvés par le serveur dans un dossier, pour une recherche sur
+    /// toutes les boîtes ; `restants` : dossiers encore à interroger.
+    RecherchePartout { chemin: String, texte: String, uids: Vec<u32>, restants: usize },
     /// Un marquage n'a pas atteint le serveur : l'index du dossier a peut-être
     /// pris de l'avance, il sera réconcilié à la prochaine ouverture.
     MarquageAbandonne { chemin: String },
@@ -1174,13 +1296,13 @@ impl qobject::Boite {
         }
         let Some(magasin) = self.magasin.as_ref() else { return };
         // Les comptes dont on a le mot de passe : ceux qui sont connectés. Un
-        // compte Microsoft n'a pas d'agenda CalDAV.
+        // compte Microsoft ou Google n'a pas d'agenda CalDAV.
         let comptes: Vec<(i64, String, Identifiants)> = magasin
             .comptes()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|c| self.identites.get(&c.id).map(|id| (c.id, c.adresse, id.clone())))
-            .filter(|(_, _, id)| id.microsoft.is_none())
+            .filter(|(_, _, id)| id.oauth.is_none())
             .collect();
         if comptes.is_empty() {
             return;
@@ -1231,7 +1353,7 @@ impl qobject::Boite {
             .comptes()
             .unwrap_or_default()
             .into_iter()
-            .filter(|c| self.authentifies.contains(&c.id) && !c.microsoft())
+            .filter(|c| self.authentifies.contains(&c.id) && !c.oauth())
             .filter_map(|c| self.identites.get(&c.id).map(|i| (c.adresse, i.mot_de_passe.clone())))
             .collect();
         if comptes.is_empty() {
@@ -1297,9 +1419,12 @@ impl qobject::Boite {
             self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from("compte non connecté"));
             return;
         };
-        if identifiants.microsoft.is_some() {
-            let motif = "compte Microsoft : une sauvegarde se retrouve par un compte à mot de passe";
-            self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from(motif));
+        if let Some(jetons) = &identifiants.oauth {
+            let motif = format!(
+                "compte {} : une sauvegarde se retrouve par un compte à mot de passe",
+                crate::oauth::fournisseur(jetons).nom()
+            );
+            self.as_mut().sauvegardes_trouvees(compte, &QString::from("[]"), &QString::from(&motif));
             return;
         }
         let fil = self.qt_thread();
@@ -1656,8 +1781,9 @@ impl qobject::Boite {
             self.as_mut().evenement_enregistre(false, &QString::from("cette boîte n'est pas connectée"));
             return;
         };
-        if id.microsoft.is_some() {
-            self.as_mut().evenement_enregistre(false, &QString::from("pas d'agenda pour un compte Microsoft dans MMail"));
+        if let Some(jetons) = &id.oauth {
+            let motif = format!("pas d'agenda pour un compte {} dans MMail", crate::oauth::fournisseur(jetons).nom());
+            self.as_mut().evenement_enregistre(false, &QString::from(&motif));
             return;
         }
         let profil = self.profil.clone();
@@ -1747,8 +1873,8 @@ impl qobject::Boite {
                 Ok(id) => {
                     let present = magasin.compte_par_id(id).ok().flatten();
                     let hote_envoi = present.as_ref().map(|c| c.hote_envoi.clone()).unwrap_or_default();
-                    let microsoft = present.is_some_and(|c| c.microsoft());
-                    (id, nouveau, hote_envoi, microsoft)
+                    let service = present.and_then(|c| c.fournisseur());
+                    (id, nouveau, hote_envoi, service)
                 }
                 Err(e) => {
                     let message = QString::from(&format!("index local : {e}"));
@@ -1757,20 +1883,19 @@ impl qobject::Boite {
                 }
             }
         };
-        let (id, nouveau, hote_envoi, microsoft) = compte;
-        // Compte Microsoft : ce que l'interface tient du coffre est le jeton de
-        // rafraîchissement, pas un mot de passe.
-        let (mot_de_passe, microsoft) = if microsoft {
-            (String::new(), Some(crate::microsoft::partager(&mot_de_passe.to_string())))
-        } else {
-            (mot_de_passe.to_string(), None)
+        let (id, nouveau, hote_envoi, service) = compte;
+        // Compte à jetons (Microsoft, Google) : ce que l'interface tient du
+        // coffre est le jeton de rafraîchissement, pas un mot de passe.
+        let (mot_de_passe, oauth) = match service {
+            Some(f) => (String::new(), Some(crate::oauth::partager(f, &mot_de_passe.to_string()))),
+            None => (mot_de_passe.to_string(), None),
         };
         {
             let mut noyau = self.as_mut().rust_mut();
             if nouveau {
                 noyau.nouveaux.insert(id);
             }
-            noyau.identites.insert(id, Identifiants { hote, hote_envoi, utilisateur: adresse, mot_de_passe, microsoft });
+            noyau.identites.insert(id, Identifiants { hote, hote_envoi, utilisateur: adresse, mot_de_passe, oauth });
             noyau.authentifies.remove(&id);
         }
         self.as_mut().lancer(id, Vec::new())
@@ -1785,7 +1910,7 @@ impl qobject::Boite {
     }
 
     pub fn connecter_microsoft(mut self: Pin<&mut Self>, indice: &QString) -> QString {
-        use crate::microsoft::{self as ms, ErreurOAuth};
+        use crate::microsoft as ms;
         let client = ms::identifiant_client();
         if client.is_empty() {
             self.as_mut().set_erreur(QString::from(
@@ -1805,21 +1930,9 @@ impl qobject::Boite {
         let url = ms::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice.to_string());
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
-            let refus = |code: &str, description: &str| ErreurOAuth::Refus { code: code.into(), description: description.into() };
             let issue = ms::attendre_code(&ecoute, &etat, ms::DELAI_CONNEXION)
                 .and_then(|code| ms::echanger_code(&client, &code, &pkce.verificateur, &ecoute.redirection))
-                .and_then(|r| {
-                    let adresse = r
-                        .id_token
-                        .as_deref()
-                        .and_then(ms::adresse_id_token)
-                        .ok_or_else(|| refus("adresse", "Microsoft n'a pas donné l'adresse du compte"))?;
-                    let rafraichissement = r
-                        .rafraichissement
-                        .clone()
-                        .ok_or_else(|| refus("offline_access", "Microsoft n'a pas rendu de jeton de rafraîchissement"))?;
-                    Ok(ConnexionMicrosoft { adresse, rafraichissement, acces: r.acces, duree: r.duree })
-                });
+                .and_then(|r| connexion_aboutie(r, "Microsoft"));
             let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
         });
         if let Err(e) = lance {
@@ -1833,8 +1946,7 @@ impl qobject::Boite {
     /// Issue de la connexion Microsoft, sur le fil Qt : le compte est
     /// enregistré — ou converti, s'il existait avec un mot de passe — puis
     /// connecté.
-    fn accueillir_microsoft(mut self: Pin<&mut Self>, issue: Result<ConnexionMicrosoft, crate::microsoft::ErreurOAuth>) {
-        use crate::microsoft as ms;
+    fn accueillir_microsoft(mut self: Pin<&mut Self>, issue: Result<ConnexionOAuth, crate::microsoft::ErreurOAuth>) {
         let c = match issue {
             Ok(c) => c,
             Err(e) => {
@@ -1842,26 +1954,93 @@ impl qobject::Boite {
                 return;
             }
         };
-        let enregistre = match self.magasin.as_ref() {
-            None => Err("le profil n'est pas ouvert".to_string()),
-            Some(magasin) => {
-                let nouveau = matches!(magasin.compte_connu(&c.adresse), Ok(None));
-                magasin
-                    .compte(&c.adresse, ms::HOTE_IMAP, PORT_IMAPS, &c.adresse)
-                    .and_then(|id| magasin.poser_auth(&c.adresse, crate::magasin::AUTH_MICROSOFT).map(|_| id))
-                    .map(|id| (id, nouveau))
-                    .map_err(|e| format!("index local : {e}"))
+        match self.as_mut().enregistrer_oauth(crate::oauth::Fournisseur::Microsoft, &c) {
+            Ok(()) => self.as_mut().microsoft_connecte(
+                &QString::from(&c.adresse),
+                &QString::from(crate::microsoft::HOTE_IMAP),
+                &QString::from(&c.rafraichissement),
+            ),
+            Err(message) => self.as_mut().microsoft_refuse(&QString::from(&message), false),
+        }
+    }
+
+    pub fn google_disponible(&self) -> bool {
+        crate::google::disponible()
+    }
+
+    pub fn google_ajout_ouvert(&self) -> bool {
+        crate::google::ajout_ouvert()
+    }
+
+    pub fn connecter_google(mut self: Pin<&mut Self>, indice: &QString) -> QString {
+        use crate::google as g;
+        let (client, secret) = (g::identifiant_client(), g::secret_client());
+        if client.is_empty() || secret.is_empty() {
+            self.as_mut().set_erreur(QString::from("connexion Google indisponible : MMail n'a pas de client Google"));
+            return QString::default();
+        }
+        let ecoute = match g::ecouter() {
+            Ok(e) => e,
+            Err(e) => {
+                self.as_mut().set_erreur(QString::from(&format!("écoute locale : {e}")));
+                return QString::default();
             }
         };
-        let (id, nouveau) = match enregistre {
-            Ok(r) => r,
-            Err(message) => {
-                self.as_mut().microsoft_refuse(&QString::from(&message), false);
+        let pkce = crate::oauth::pkce();
+        let etat = crate::oauth::etat();
+        let url = g::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice.to_string());
+        let fil = self.qt_thread();
+        let lance = thread::Builder::new().name("mmail-google".into()).spawn(move || {
+            let issue = g::attendre_code(&ecoute, &etat, crate::oauth::DELAI_CONNEXION)
+                .and_then(|code| g::echanger_code(&client, &secret, &code, &pkce.verificateur, &ecoute.redirection))
+                .and_then(g::verifier_portee)
+                .and_then(|r| connexion_aboutie(r, "Google"));
+            let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_google(issue));
+        });
+        if let Err(e) = lance {
+            self.as_mut().set_erreur(QString::from(&format!("connexion Google : {e}")));
+            return QString::default();
+        }
+        self.as_mut().set_erreur(QString::from(""));
+        QString::from(&url)
+    }
+
+    /// Issue de la connexion Google, sur le fil Qt : comme pour Microsoft.
+    fn accueillir_google(mut self: Pin<&mut Self>, issue: Result<ConnexionOAuth, crate::oauth::ErreurOAuth>) {
+        let c = match issue {
+            Ok(c) => c,
+            Err(e) => {
+                self.as_mut().google_refuse(&QString::from(&crate::google::message_refus(&e)));
                 return;
             }
         };
-        let jetons = ms::partager(&c.rafraichissement);
-        ms::retenir(&jetons, ms::PORTEE_IMAP, &c.acces, c.duree);
+        match self.as_mut().enregistrer_oauth(crate::oauth::Fournisseur::Google, &c) {
+            Ok(()) => self.as_mut().google_connecte(
+                &QString::from(&c.adresse),
+                &QString::from(crate::google::HOTE_IMAP),
+                &QString::from(&c.rafraichissement),
+            ),
+            Err(message) => self.as_mut().google_refuse(&QString::from(&message)),
+        }
+    }
+
+    /// Enregistre le compte d'une connexion OAuth2 aboutie — ou le convertit,
+    /// s'il existait avec un mot de passe —, garde ses jetons et le connecte.
+    fn enregistrer_oauth(mut self: Pin<&mut Self>, service: crate::oauth::Fournisseur, c: &ConnexionOAuth) -> Result<(), String> {
+        let hote = service.hote_imap();
+        let (id, nouveau) = match self.magasin.as_ref() {
+            None => return Err("le profil n'est pas ouvert".to_string()),
+            Some(magasin) => {
+                let nouveau = matches!(magasin.compte_connu(&c.adresse), Ok(None));
+                magasin
+                    .compte(&c.adresse, hote, PORT_IMAPS, &c.adresse)
+                    .and_then(|id| magasin.poser_auth(&c.adresse, service.auth()).map(|_| id))
+                    .map(|id| (id, nouveau))
+                    .map_err(|e| format!("index local : {e}"))?
+            }
+        };
+        let jetons = crate::oauth::partager(service, &c.rafraichissement);
+        crate::oauth::retenir(&jetons, service.portee_imap(), &c.acces, c.duree);
         {
             let mut noyau = self.as_mut().rust_mut();
             if nouveau {
@@ -1870,21 +2049,17 @@ impl qobject::Boite {
             noyau.identites.insert(
                 id,
                 Identifiants {
-                    hote: ms::HOTE_IMAP.into(),
+                    hote: hote.into(),
                     hote_envoi: String::new(),
                     utilisateur: c.adresse.clone(),
                     mot_de_passe: String::new(),
-                    microsoft: Some(jetons),
+                    oauth: Some(jetons),
                 },
             );
             noyau.authentifies.remove(&id);
         }
         self.as_mut().lancer(id, Vec::new());
-        self.as_mut().microsoft_connecte(
-            &QString::from(&c.adresse),
-            &QString::from(ms::HOTE_IMAP),
-            &QString::from(&c.rafraichissement),
-        );
+        Ok(())
     }
 
     /// Jetons de rafraîchissement que Microsoft a renouvelés pendant le
@@ -1894,7 +2069,7 @@ impl qobject::Boite {
             .identites
             .values()
             .filter_map(|i| {
-                let jeton = crate::microsoft::a_conserver(i.microsoft.as_ref()?)?;
+                let jeton = crate::oauth::a_conserver(i.oauth.as_ref()?)?;
                 Some((i.utilisateur.clone(), i.hote.clone(), jeton))
             })
             .collect();
@@ -2193,6 +2368,44 @@ impl qobject::Boite {
         self.as_mut().envoyer(compte, Commande::Chercher { chemin, texte })
     }
 
+    pub fn chercher_partout_sur_le_serveur(mut self: Pin<&mut Self>, texte: &QString) -> i32 {
+        let texte = texte.to_string().trim().to_string();
+        let mut comptes: Vec<i64> = self.sessions.keys().copied().collect();
+        comptes.sort_unstable();
+        let mut total = 0;
+        for compte in comptes {
+            // Tous les dossiers qui contiennent des messages, masqués compris :
+            // la boîte de réception d'abord, puis l'ordre de l'arborescence.
+            let chemins: Vec<String> = if texte.is_empty() {
+                Vec::new()
+            } else {
+                self.magasin
+                    .as_ref()
+                    .and_then(|m| m.dossiers(compte).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|d| d.selectionnable)
+                    .map(|d| d.chemin)
+                    .collect()
+            };
+            let nombre = chemins.len();
+            if self.as_mut().envoyer(compte, Commande::ChercherPartout { texte: texte.clone(), chemins }) {
+                total += nombre;
+            }
+        }
+        total as i32
+    }
+
+    pub fn trouves_par_uid(&self, compte: i32, chemin: &QString, uids: &QString) -> QString {
+        let Some(magasin) = self.magasin.as_ref() else {
+            return QString::from("[]");
+        };
+        let Ok(id) = magasin.dossier_id(compte as i64, &chemin.to_string()) else {
+            return QString::from("[]");
+        };
+        QString::from(&json_trouves(&magasin.trouves_par_uid(id, &lire_uids(uids)).unwrap_or_default()))
+    }
+
     pub fn messages_par_uid(&self, uids: &QString) -> QString {
         let (Some(magasin), Some((_, _, id))) = (self.magasin.as_ref(), self.courant.as_ref()) else {
             return QString::from("[]");
@@ -2322,15 +2535,26 @@ impl qobject::Boite {
         self.as_mut().envoyer(compte, Commande::Deplacer { source, uids, cible })
     }
 
-    pub fn supprimer(mut self: Pin<&mut Self>, uids: &QString) -> bool {
+    pub fn supprimer(self: Pin<&mut Self>, uids: &QString) -> bool {
         let Some((compte, source, _)) = self.courant.clone() else {
             return false;
         };
+        self.supprimer_dans(compte as i32, &QString::from(&source), uids)
+    }
+
+    pub fn supprimer_dans(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, uids: &QString) -> bool {
+        let compte = compte as i64;
+        let source = chemin.to_string();
+        let uids = lire_uids(uids);
+        if uids.is_empty() {
+            return false;
+        }
         let corbeille =
             self.magasin.as_ref().and_then(|m| dossier_de_role(&m.dossiers(compte).ok()?, "Trash"));
         match corbeille {
             Some(corbeille) if corbeille != source => {
-                self.deplacer(uids, compte as i32, &QString::from(&corbeille))
+                let cible = Cible { compte, chemin: corbeille, identifiants: None };
+                self.as_mut().envoyer(compte, Commande::Deplacer { source, uids, cible })
             }
             Some(_) => {
                 self.as_mut().set_erreur(QString::from("ces messages sont déjà dans la corbeille"));
@@ -2964,6 +3188,16 @@ impl qobject::Boite {
                 // de la connexion : ici, seulement de quoi rendre les lignes.
                 self.as_mut().deplacement_termine(0, &QString::from(&message));
             }
+            Issue::RecherchePartout { chemin, texte, uids, restants } => {
+                let uids: Vec<String> = uids.iter().map(u32::to_string).collect();
+                self.as_mut().resultats_partout(
+                    compte_qt,
+                    &QString::from(&chemin),
+                    &QString::from(&texte),
+                    &QString::from(&uids.join(",")),
+                    restants as i32,
+                );
+            }
             Issue::Recherche { chemin, texte, uids } => {
                 let uids: Vec<String> = uids.iter().map(u32::to_string).collect();
                 self.as_mut().resultats_serveur(
@@ -3485,8 +3719,9 @@ impl Travail {
             }
             let (restantes, abandonnees) = regrouper(file);
             file = restantes;
-            // Le préchargement passe après tout ce que l'utilisateur demande.
-            file.sort_by_key(|c| matches!(c, Commande::Precharger { .. }));
+            // La recherche sur toutes les boîtes, puis le préchargement, passent
+            // après tout ce que l'utilisateur demande (tri stable).
+            file.sort_by_key(Commande::rang);
             self.terminer(abandonnees);
 
             let commande = file.remove(0);
@@ -3495,6 +3730,14 @@ impl Travail {
                 Commande::OuvrirDossier(chemin) => Some(chemin.clone()),
                 Commande::Veille => etabli.ouvert.clone(),
                 Commande::Signale => Some(dossier_surveille(&etabli)),
+                _ => None,
+            };
+            // Recherche sur toutes les boîtes : les dossiers suivants reviennent
+            // dans la file, un à la fois.
+            let suite = match &commande {
+                Commande::ChercherPartout { texte, chemins } if chemins.len() > 1 => {
+                    Some(Commande::ChercherPartout { texte: texte.clone(), chemins: chemins[1..].to_vec() })
+                }
                 _ => None,
             };
             let est_veille = matches!(commande, Commande::Veille);
@@ -3516,6 +3759,9 @@ impl Travail {
             };
             if let (false, Some(chemin)) = (perdue, a_precharger) {
                 file.push(Commande::Precharger { chemin });
+            }
+            if let (false, Some(suite)) = (perdue, suite) {
+                file.push(suite);
             }
             if perdue {
                 // Les commandes en attente ne seront pas traitées : chacune
@@ -3709,12 +3955,24 @@ impl Travail {
                 })
             }
             Commande::Chercher { chemin, texte } => {
-                let resultat = assurer_selection(&mut e.client, &chemin).and_then(|()| Ok(e.client.chercher_texte(&texte)?));
+                let resultat = self.chercher_au_serveur(e, &chemin, &texte);
                 Some(match resultat {
                     Ok(uids) => Issue::Recherche { chemin, texte, uids },
                     Err(err) if err.reseau() => echec("reseau", format!("recherche : {err}"), &err),
                     // Refusée par le serveur : l'index seul répond.
                     Err(_) => Issue::Recherche { chemin, texte, uids: Vec::new() },
+                })
+            }
+            Commande::ChercherPartout { texte, chemins } => {
+                // Liste vide : la recherche en cours est arrêtée, rien à rendre.
+                let chemin = chemins.first().cloned().filter(|_| !texte.is_empty())?;
+                let restants = chemins.len() - 1;
+                Some(match self.chercher_au_serveur(e, &chemin, &texte) {
+                    Ok(uids) => Issue::RecherchePartout { chemin, texte, uids, restants },
+                    Err(err) if err.reseau() => echec("reseau", format!("recherche : {err}"), &err),
+                    // Dossier refusé (droits, disparu) : il ne rend rien, la
+                    // recherche passe au suivant.
+                    Err(_) => Issue::RecherchePartout { chemin, texte, uids: Vec::new(), restants },
                 })
             }
             Commande::Signale => {
@@ -4045,8 +4303,9 @@ impl Travail {
                     continue;
                 }
                 nombre += 1;
-                // Graph range lui-même la copie d'un compte Microsoft.
-                if let (Some(envoyes), None) = (&envoyes, &id.microsoft) {
+                // Graph range lui-même la copie d'un compte Microsoft, Gmail
+                // celle d'un compte Google.
+                if let (Some(envoyes), None) = (&envoyes, &id.oauth) {
                     let _ = e.client.deposer(envoyes, &["\\Seen".into()], "", &envoi.copie);
                 }
                 // Parti : il quitte « Envoi différé ». S'il y reste, il garde
@@ -4064,6 +4323,18 @@ impl Travail {
             let _ = synchro::arborescence(&mut e.client, &e.magasin, self.compte);
         }
         resultat
+    }
+
+    /// Cherche `texte` sur le serveur dans le dossier `chemin`, et range dans
+    /// l'index ceux des messages trouvés qu'il n'a pas encore — les plus
+    /// récents, `RECHERCHE_MAX` au plus : un dossier jamais ouvert, ou dont la
+    /// première lecture n'est pas finie, rend ses résultats comme les autres.
+    fn chercher_au_serveur(&self, e: &mut Etabli, chemin: &str, texte: &str) -> Result<Vec<u32>, Echec> {
+        assurer_selection(&mut e.client, chemin)?;
+        let uids = e.client.chercher_texte(texte)?;
+        let id = e.magasin.dossier_id(self.compte, chemin)?;
+        synchro::completer(&e.magasin, &mut e.client, id, &uids, RECHERCHE_MAX)?;
+        Ok(uids)
     }
 
     /// Garde sur le poste, par lot de quelques messages, ceux d'un dossier reçus
@@ -4229,10 +4500,10 @@ impl Travail {
             .collect();
         let _ = e.magasin.noter_correspondants(&destinataires, maintenant());
         let mut avertissements = Vec::new();
-        // Envoyé par Graph : Microsoft a déjà rangé la copie.
-        let par_graph = e.magasin.compte_par_id(self.compte).ok().flatten().is_some_and(|c| c.microsoft());
+        // Envoyé par Graph ou par Gmail : le service a déjà rangé la copie.
+        let copie_rangee = e.magasin.compte_par_id(self.compte).ok().flatten().is_some_and(|c| c.oauth());
         match self.dossier_de_role(e, "Sent") {
-            _ if par_graph => {}
+            _ if copie_rangee => {}
             Some(envoyes) => {
                 if let Err(x) = e.client.deposer(&envoyes, &["\\Seen".into()], "", copie) {
                     avertissements.push(format!("copie dans « {envoyes} » : {x}"));
@@ -4883,6 +5154,7 @@ mod tests {
                 Commande::Veille => "veille".into(),
                 Commande::Signale => "signale".into(),
                 Commande::Chercher { texte, .. } => format!("chercher {texte}"),
+                Commande::ChercherPartout { texte, chemins } => format!("partout {texte} {}", chemins.join("|")),
                 Commande::Precharger { chemin } => format!("precharger {chemin}"),
                 Commande::Preparer { .. } => "preparer".into(),
                 Commande::Envoyer { .. } => "envoyer".into(),
@@ -4890,6 +5162,27 @@ mod tests {
                 Commande::Brouillon { .. } => "brouillon".into(),
             })
             .collect()
+    }
+
+    fn partout(texte: &str, chemins: &[&str]) -> Commande {
+        Commande::ChercherPartout { texte: texte.into(), chemins: chemins.iter().map(|c| c.to_string()).collect() }
+    }
+
+    #[test]
+    fn recherche_partout_derriere_l_utilisateur_et_devant_le_prechargement() {
+        let (mut file, abandonnees) = regrouper(vec![
+            Commande::Precharger { chemin: "INBOX".into() },
+            partout("devis", &["INBOX", "Archives"]),
+            dossier("Sent"),
+            // Une nouvelle recherche remplace la précédente, avec ses dossiers.
+            partout("facture", &["Archives"]),
+            corps(4),
+        ]);
+        file.sort_by_key(Commande::rang);
+        assert_eq!(noms(&file), vec!["ouvrir Sent", "corps 4", "partout facture Archives", "precharger INBOX"]);
+        // Ni l'une ni l'autre ne comptait dans l'indicateur d'activité.
+        assert_eq!(abandonnees, 0);
+        assert!(!partout("x", &[]).comptee());
     }
 
     #[test]
@@ -4939,7 +5232,7 @@ mod tests {
                 hote_envoi: String::new(),
                 utilisateur: "u".into(),
                 mot_de_passe: "p".into(),
-                microsoft: None,
+                oauth: None,
             },
         };
         let (file, _) = regrouper(vec![Commande::Veille, differes]);

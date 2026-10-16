@@ -159,7 +159,7 @@ impl Client {
     }
 
     /// Comme `ouvrir_session`, par un jeton d'accès OAuth2 (`AUTHENTICATE
-    /// XOAUTH2`, comptes Microsoft) : la chaîne SASL part avec la commande
+    /// XOAUTH2`, comptes Microsoft et Google) : la chaîne SASL part avec la commande
     /// (SASL-IR, que les serveurs de Microsoft annoncent).
     pub fn ouvrir_session_jeton(&mut self, utilisateur: &str, jeton: &str) -> Resultat<()> {
         self.authentifier("XOAUTH2", &crate::microsoft::xoauth2(utilisateur, jeton))?;

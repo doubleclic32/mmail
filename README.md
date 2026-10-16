@@ -47,6 +47,10 @@ de projet interne.
   — sur ce poste ou un autre ; sinon à la prochaine ouverture. Le premier MMail
   qui le réserve (CONDSTORE) l'envoie, les autres le laissent : il ne part
   qu'une fois ;
+- **corbeille sur chaque ligne** : au survol de la souris, une corbeille en bout
+  de ligne envoie ce message à la corbeille de sa boîte sans l'ouvrir — dans un
+  dossier comme dans « Toutes les BàL » ; le message affiché et la sélection ne
+  bougent pas ;
 - **drapeau de suivi** (`\Flagged`) posé ou retiré d'un clic en bout de ligne,
   par le menu ou la touche Insertion ; importance des messages reçus signalée
   dans la liste (« ! », « ↓ ») et dans l'en-tête ;
@@ -100,9 +104,14 @@ de projet interne.
   recherches (dix visibles, ascenseur au-delà), Entrée lance la recherche ; la
   liste des messages ne contient alors que les résultats — dans le dossier
   actif, objet et expéditeur d'après l'index puis le texte entier des messages
-  par le serveur ; dans toutes les boîtes (index du poste), chaque résultat avec
-  son dossier, un seul choisi à la fois, et l'on revient au dossier de départ
-  en sortant de la recherche (Échap). Les résultats se **trient** — plus
+  par le serveur ; dans toutes les boîtes, l'index du poste tout de suite, puis
+  le serveur dossier par dossier (texte entier, dossiers jamais ouverts
+  compris, progression dans la barre d'état, après ce que l'on demande par
+  ailleurs), chaque résultat avec son dossier, un seul choisi à la fois, et
+  l'on revient au dossier de départ en sortant de la recherche (Échap). Un
+  message trouvé par le serveur mais pas encore sur le poste y est rangé (les
+  500 plus récents par dossier) ; la liste s'arrête aux 1 000 résultats les
+  plus récents. Les résultats se **trient** — plus
   récents, plus anciens, expéditeur, objet (sans ses « RE : »), plus gros,
   dossier dans toutes les boîtes — sur le poste : le tri n'est jamais demandé
   au serveur, pour qui il coûte cher sur un gros dossier ;
@@ -269,6 +278,44 @@ d'Office 365) ; le texte et les images du corps d'un message tiennent en
 CalDAV) ; la sauvegarde de la configuration garde le compte, mais pas son
 jeton — il se reconnecte à Microsoft sur le poste où elle est remise — et ne
 se chiffre que par les comptes à mot de passe.
+
+### Comptes Google (Gmail)
+
+Même principe : « Comptes › Ajouter un compte Google (Gmail)… » ouvre la page
+de connexion de Google dans le navigateur ; la personne s'y connecte et
+autorise MMail ; le retour arrive sur une écoute locale
+(`http://127.0.0.1:<port>`, flux « code d'autorisation » avec PKCE). Le jeton
+de rafraîchissement va au coffre du système, à la place du mot de passe.
+
+- **Inscription chez Google** : MMail y est inscrit comme « application de
+  bureau » ; son identifiant et son secret sont livrés avec le programme — Google
+  ne tient pas ce secret pour confidentiel dans ce cas. Le secret n'est pas dans
+  le code source : il est donné à la compilation (variable
+  `MMAIL_GOOGLE_CLIENT_SECRET`, secret de l'intégration continue). Une
+  compilation sans lui n'affiche pas le menu. À l'exécution,
+  `MMAIL_GOOGLE_CLIENT_ID` et `MMAIL_GOOGLE_CLIENT_SECRET` remplacent ceux du
+  programme (essais, autre inscription).
+- **Portée** : `https://mail.google.com/`, tout le courrier — lecture et envoi ;
+  `openid email` pour l'adresse du compte.
+- **Lecture** en IMAPS sur `imap.gmail.com` (`AUTHENTICATE XOAUTH2`) ; **envoi**
+  en SMTP sur TLS, `smtp.gmail.com:465` (`AUTH XOAUTH2`). Gmail range lui-même
+  la copie dans ses messages envoyés : MMail n'en dépose pas.
+- « Modifier le compte… » propose « Se reconnecter à Google… », de même quand
+  Google refuse le jeton (expiré ou révoqué).
+
+Limites : tant que Google n'a pas vérifié l'application, il l'annonce comme non
+vérifiée à la connexion, et seuls ses « utilisateurs de test » peuvent s'y
+connecter ; une application laissée « En test » voit ses jetons expirer au bout
+de sept jours — il faut alors se reconnecter. Pas d'agenda ; la sauvegarde de
+la configuration garde le compte, pas son jeton.
+
+**Ajout masqué tant que l'application Google est « En test ».** Google n'y
+laisse se connecter que ses utilisateurs de test : pour tout autre, le menu
+mènerait à un refus. « Ajouter un compte Google (Gmail)… » ne s'affiche donc
+que si la variable `MMAIL_GOOGLE_ESSAI` est posée (n'importe quelle valeur
+non vide) ; un compte Gmail déjà ajouté reste utilisable et se reconnecte
+normalement. L'ajout s'ouvrira à tous quand Google aura publié l'application
+(constante `APPLICATION_PUBLIEE` de `core/src/google.rs`).
 
 ### Lien de configuration
 

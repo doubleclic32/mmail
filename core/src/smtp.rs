@@ -3,8 +3,9 @@
 //!
 //! Écrit sur la pile TLS du client IMAP, comme `http` : mêmes autorités de
 //! certification sur les trois cibles. TLS d'emblée sur le port 465 (RFC 8314),
-//! authentification PLAIN ou LOGIN, un message par connexion — l'envoi est
-//! assez rare pour ne pas garder de session ouverte.
+//! authentification PLAIN ou LOGIN — `XOAUTH2` pour un compte à jeton (Gmail)
+//! —, un message par connexion : l'envoi est assez rare pour ne pas garder de
+//! session ouverte.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
@@ -25,6 +26,38 @@ pub fn envoyer(
     hote: &str,
     utilisateur: &str,
     mot_de_passe: &str,
+    expediteur: &str,
+    destinataires: &[String],
+    octets: &[u8],
+    accuse: bool,
+) -> Resultat<()> {
+    remettre(hote, &Authentification::MotDePasse { utilisateur, mot_de_passe }, expediteur, destinataires, octets, accuse)
+}
+
+/// Comme `envoyer`, avec un jeton d'accès OAuth2 au lieu d'un mot de passe
+/// (`AUTH XOAUTH2`, comptes Google). Un jeton refusé rend une erreur dont le
+/// texte commence par « authentification ».
+pub fn envoyer_jeton(
+    hote: &str,
+    utilisateur: &str,
+    jeton: &str,
+    expediteur: &str,
+    destinataires: &[String],
+    octets: &[u8],
+    accuse: bool,
+) -> Resultat<()> {
+    remettre(hote, &Authentification::Jeton { utilisateur, jeton }, expediteur, destinataires, octets, accuse)
+}
+
+/// Ce qui ouvre la session : un mot de passe, ou un jeton d'accès.
+enum Authentification<'a> {
+    MotDePasse { utilisateur: &'a str, mot_de_passe: &'a str },
+    Jeton { utilisateur: &'a str, jeton: &'a str },
+}
+
+fn remettre(
+    hote: &str,
+    auth: &Authentification,
     expediteur: &str,
     destinataires: &[String],
     octets: &[u8],
@@ -54,17 +87,7 @@ pub fn envoyer(
             )));
         }
     }
-    let mecanismes = mecanismes(&ehlo);
-    if mecanismes.iter().any(|m| m == "PLAIN") {
-        let jeton = base64(format!("\0{utilisateur}\0{mot_de_passe}").as_bytes());
-        s.echanger("authentification", &format!("AUTH PLAIN {jeton}"), 235)?;
-    } else if mecanismes.iter().any(|m| m == "LOGIN") {
-        s.echanger("authentification", "AUTH LOGIN", 334)?;
-        s.echanger("authentification", &base64(utilisateur.as_bytes()), 334)?;
-        s.echanger("authentification", &base64(mot_de_passe.as_bytes()), 235)?;
-    } else {
-        return Err(Erreur::Refuse("le serveur ne propose ni PLAIN ni LOGIN".into()));
-    }
+    authentifier(&mut s, &mecanismes(&ehlo), auth)?;
     let dsn = accuse && ehlo.lines().any(|l| l.trim().eq_ignore_ascii_case("DSN"));
     let (retour, notifier) = if dsn { (" RET=HDRS", " NOTIFY=SUCCESS,FAILURE") } else { ("", "") };
     s.echanger("expéditeur", &format!("MAIL FROM:<{expediteur}>{retour}"), 250)?;
@@ -81,6 +104,39 @@ pub fn envoyer(
     s.attendre("remise", 250)?;
     // Le message est accepté : un QUIT perdu n'y change rien.
     let _ = s.envoyer_ligne("QUIT");
+    Ok(())
+}
+
+/// Ouvre la session SMTP selon les mécanismes annoncés.
+fn authentifier<F: Read + Write>(s: &mut Session<F>, mecanismes: &[String], auth: &Authentification) -> Resultat<()> {
+    match auth {
+        Authentification::MotDePasse { utilisateur, mot_de_passe } => {
+            if mecanismes.iter().any(|m| m == "PLAIN") {
+                let jeton = base64(format!("\0{utilisateur}\0{mot_de_passe}").as_bytes());
+                s.echanger("authentification", &format!("AUTH PLAIN {jeton}"), 235)?;
+            } else if mecanismes.iter().any(|m| m == "LOGIN") {
+                s.echanger("authentification", "AUTH LOGIN", 334)?;
+                s.echanger("authentification", &base64(utilisateur.as_bytes()), 334)?;
+                s.echanger("authentification", &base64(mot_de_passe.as_bytes()), 235)?;
+            } else {
+                return Err(Erreur::Refuse("le serveur ne propose ni PLAIN ni LOGIN".into()));
+            }
+        }
+        Authentification::Jeton { utilisateur, jeton } => {
+            if !mecanismes.iter().any(|m| m == "XOAUTH2") {
+                return Err(Erreur::Refuse("le serveur ne propose pas XOAUTH2".into()));
+            }
+            let chaine = crate::oauth::xoauth2(utilisateur, jeton);
+            let (code, texte) = s.envoyer_ligne(&format!("AUTH XOAUTH2 {chaine}"))?;
+            if code == 334 {
+                // Refus : le serveur détaille l'erreur (JSON en base64) et
+                // attend une ligne vide avant de conclure (RFC 7628 § 3.2.3).
+                let (code, texte) = s.envoyer_ligne("")?;
+                return verifier("authentification", code, texte, 235).map(|_| ());
+            }
+            verifier("authentification", code, texte, 235)?;
+        }
+    }
     Ok(())
 }
 
@@ -210,6 +266,65 @@ pub fn base64(octets: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// Faux serveur : ses réponses d'avance, ce que le client lui envoie.
+    struct Faux {
+        reponses: Cursor<Vec<u8>>,
+        recu: Vec<u8>,
+    }
+
+    impl Read for Faux {
+        fn read(&mut self, tampon: &mut [u8]) -> std::io::Result<usize> {
+            self.reponses.read(tampon)
+        }
+    }
+
+    impl Write for Faux {
+        fn write(&mut self, octets: &[u8]) -> std::io::Result<usize> {
+            self.recu.extend_from_slice(octets);
+            Ok(octets.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn session(reponses: &str) -> Session<Faux> {
+        Session { flux: BufReader::new(Faux { reponses: Cursor::new(reponses.as_bytes().to_vec()), recu: Vec::new() }) }
+    }
+
+    fn envoye(s: &Session<Faux>) -> String {
+        String::from_utf8(s.flux.get_ref().recu.clone()).unwrap()
+    }
+
+    #[test]
+    fn authentification_par_jeton() {
+        let gmail = vec!["LOGIN".to_string(), "PLAIN".into(), "XOAUTH2".into(), "OAUTHBEARER".into()];
+        let jeton = Authentification::Jeton { utilisateur: "jean@gmail.com", jeton: "ya29.JETON" };
+        let mut s = session("235 2.7.0 Accepted\r\n");
+        authentifier(&mut s, &gmail, &jeton).unwrap();
+        assert_eq!(envoye(&s), format!("AUTH XOAUTH2 {}\r\n", crate::oauth::xoauth2("jean@gmail.com", "ya29.JETON")));
+
+        // Jeton refusé : le détail en 334, une ligne vide, puis le refus.
+        let mut s = session("334 eyJzdGF0dXMiOiI0MDAifQ==\r\n535-5.7.8 Username and Password not accepted.\r\n535 5.7.8 Learn more\r\n");
+        let e = authentifier(&mut s, &gmail, &jeton).unwrap_err();
+        assert!(matches!(e, Erreur::Refuse(ref m) if m.starts_with("authentification : 535")), "{e:?}");
+        assert!(envoye(&s).ends_with("\r\n\r\n"), "ligne vide après le défi");
+
+        let e = authentifier(&mut session(""), &["PLAIN".to_string()], &jeton).unwrap_err();
+        assert!(matches!(e, Erreur::Refuse(ref m) if m.contains("XOAUTH2")));
+    }
+
+    #[test]
+    fn authentification_par_mot_de_passe_inchangee() {
+        let mdp = Authentification::MotDePasse { utilisateur: "a@b.fr", mot_de_passe: "secret" };
+        let mut s = session("235 ok\r\n");
+        authentifier(&mut s, &["PLAIN".to_string(), "LOGIN".into()], &mdp).unwrap();
+        assert_eq!(envoye(&s), format!("AUTH PLAIN {}\r\n", base64(b"\0a@b.fr\0secret")));
+        let mut s = session("334 VXNlcm5hbWU6\r\n334 UGFzc3dvcmQ6\r\n235 ok\r\n");
+        authentifier(&mut s, &["LOGIN".to_string()], &mdp).unwrap();
+        assert_eq!(envoye(&s), format!("AUTH LOGIN\r\n{}\r\n{}\r\n", base64(b"a@b.fr"), base64(b"secret")));
+    }
 
     #[test]
     fn reponses_sur_une_et_plusieurs_lignes() {

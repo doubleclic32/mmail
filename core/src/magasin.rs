@@ -27,6 +27,9 @@ const LOT_ECRITURE: usize = 500;
 /// Mode d'authentification d'un compte Microsoft (`accounts.auth`).
 pub const AUTH_MICROSOFT: &str = "microsoft";
 
+/// Mode d'authentification d'un compte Google (`accounts.auth`).
+pub const AUTH_GOOGLE: &str = "google";
+
 /// Version du schéma, portée par `PRAGMA user_version`.
 const VERSION_SCHEMA: i32 = 13;
 
@@ -97,7 +100,8 @@ pub struct CompteLocal {
     /// Replié dans l'arborescence : ses dossiers ne s'affichent pas.
     pub replie: bool,
     /// Mode d'authentification : vide pour un mot de passe, `microsoft` pour
-    /// un compte Microsoft (OAuth2, cf. `crate::microsoft`).
+    /// un compte Microsoft, `google` pour un compte Google (OAuth2, cf.
+    /// `crate::oauth`).
     pub auth: String,
 }
 
@@ -106,6 +110,16 @@ impl CompteLocal {
     /// Graph.
     pub fn microsoft(&self) -> bool {
         self.auth == AUTH_MICROSOFT
+    }
+
+    /// Compte à jetons OAuth2 (Microsoft, Google) : pas de mot de passe.
+    pub fn oauth(&self) -> bool {
+        self.fournisseur().is_some()
+    }
+
+    /// Service d'un compte à jetons ; `None` pour un mot de passe.
+    pub fn fournisseur(&self) -> Option<crate::oauth::Fournisseur> {
+        crate::oauth::Fournisseur::de_auth(&self.auth)
     }
 
     /// Serveur auquel remettre les messages : celui de l'envoi s'il est
@@ -512,7 +526,8 @@ impl Magasin {
         Ok(n > 0)
     }
 
-    /// Pose le mode d'authentification d'un compte (`AUTH_MICROSOFT`, ou
+    /// Pose le mode d'authentification d'un compte (`AUTH_MICROSOFT`,
+    /// `AUTH_GOOGLE`, ou
     /// vide pour un mot de passe). Le compte doit exister : rien n'est créé.
     pub fn poser_auth(&self, adresse: &str, auth: &str) -> Resultat<bool> {
         let n = self.base.execute("UPDATE accounts SET auth = ?2 WHERE adresse = ?1", params![adresse, auth])?;
@@ -1125,6 +1140,23 @@ impl Magasin {
             }
         }
         trouves.sort_by(|a, b| (b.horodatage, b.uid).cmp(&(a.horodatage, a.uid)));
+        Ok(trouves)
+    }
+
+    /// Comme `messages_par_uid`, avec le compte et le dossier de chaque
+    /// message : les résultats du serveur dans une recherche sur toutes les
+    /// boîtes.
+    pub fn trouves_par_uid(&self, dossier: i64, uids: &[u32]) -> Resultat<Vec<Trouve>> {
+        let mut trouves = Vec::new();
+        let mut requete = self.base.prepare(&format!("{SELECT_TROUVE} WHERE m.folder_id = ?1 AND m.uid = ?2"))?;
+        for uid in uids {
+            if let Some(t) = requete.query_row(params![dossier, uid], lire_trouve).optional()? {
+                trouves.push(t);
+            }
+        }
+        trouves.sort_by(|a, b| {
+            (b.message.horodatage, b.message.uid).cmp(&(a.message.horodatage, a.message.uid))
+        });
         Ok(trouves)
     }
 
@@ -2093,6 +2125,19 @@ mod tests {
     }
 
     #[test]
+    fn compte_google() {
+        use crate::oauth::Fournisseur;
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@gmail.com", crate::google::HOTE_IMAP, 993, "a@gmail.com").unwrap();
+        m.compte("b@b.fr", "h", 993, "b@b.fr").unwrap();
+        assert!(m.poser_auth("a@gmail.com", AUTH_GOOGLE).unwrap());
+        let comptes = m.comptes().unwrap();
+        assert!(comptes[0].oauth() && !comptes[0].microsoft());
+        assert_eq!(comptes[0].fournisseur(), Some(Fournisseur::Google));
+        assert!(!comptes[1].oauth() && comptes[1].fournisseur().is_none());
+    }
+
+    #[test]
     fn boites_de_reception_de_tous_les_comptes() {
         let m = Magasin::en_memoire().unwrap();
         let a = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
@@ -2218,6 +2263,10 @@ mod tests {
         // Par UID, du plus récent au plus ancien.
         let par_uid = m.messages_par_uid(inbox, &[1, 3, 9]).unwrap();
         assert_eq!(par_uid.iter().map(|l| l.uid).collect::<Vec<_>>(), vec![3, 1]);
+        // Résultats du serveur d'un autre dossier : avec leur compte et chemin.
+        let ailleurs = m.trouves_par_uid(archives, &[1, 9]).unwrap();
+        assert_eq!(sujets(&ailleurs), vec!["Facture de février"]);
+        assert_eq!((ailleurs[0].compte, ailleurs[0].chemin.as_str()), (compte, "Archives"));
     }
 
     #[test]

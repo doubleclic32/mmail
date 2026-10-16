@@ -211,6 +211,30 @@ fn reconcilier(
     Ok((nouveaux, perimes.len()))
 }
 
+/// Range dans l'index les messages que le serveur a trouvés et que l'index
+/// n'a pas encore : un dossier jamais ouvert, ou dont la première lecture
+/// n'est pas finie, rend ainsi tous ses résultats de recherche. Le dossier
+/// doit être sélectionné. Les plus récents d'abord, `limite` au plus ; rend
+/// le nombre de messages ajoutés.
+///
+/// L'état du dossier n'est pas touché : sa prochaine visite le complète, et
+/// la réconciliation retire ce que le serveur n'aurait plus.
+pub fn completer(magasin: &Magasin, client: &mut Client, id: i64, uids: &[u32], limite: usize) -> Result<usize, Echec> {
+    let connus: HashSet<u32> = magasin.uids(id)?.into_iter().collect();
+    let mut manquants: Vec<u32> = uids.iter().copied().filter(|u| !connus.contains(u)).collect();
+    manquants.sort_unstable_by(|a, b| b.cmp(a));
+    manquants.dedup();
+    manquants.truncate(limite);
+    let mut ajoutes = 0;
+    for paquet in manquants.chunks(1000) {
+        let lignes: Vec<MessageLocal> =
+            client.entetes(&ensemble_uid(paquet))?.iter().map(ligne_index).collect();
+        ajoutes += lignes.len();
+        magasin.poser_messages(id, &lignes)?;
+    }
+    Ok(ajoutes)
+}
+
 /// Marque des messages comme lus ou non lus, sur le serveur puis dans l'index.
 pub fn marquer_lu(
     client: &mut Client,
@@ -348,6 +372,63 @@ mod tests {
         m.poser_dossiers(compte, &[inbox()]).unwrap();
         let id = m.dossier_id(compte, "INBOX").unwrap();
         (m, compte, id)
+    }
+
+    #[test]
+    fn completer_ne_lit_que_les_absents_les_plus_recents() {
+        // Index : UID 1 à 3. Le serveur a trouvé 2, 5, 6 et 7 ; limite 2 :
+        // seuls 7 et 6 sont lus, 2 étant déjà connu.
+        let (m, _, id) = index_connu();
+        let (mut client, journal) = session(
+            DOVECOT,
+            vec![echange("UID FETCH 6:7 (UID FLAGS INTERNALDATE", &[fetch_entete(2, 7), fetch_entete(1, 6)].concat(), "OK")],
+        );
+        let ajoutes = completer(&m, &mut client, id, &[2, 5, 6, 7], 2).unwrap();
+        assert_eq!(ajoutes, 2);
+        assert_eq!(journal.lock().unwrap().len(), 1);
+        let mut uids = m.uids(id).unwrap();
+        uids.sort();
+        assert_eq!(uids, vec![1, 2, 3, 6, 7]);
+        // L'état du dossier reste celui de la dernière visite.
+        assert_eq!(m.dossier(id).unwrap().unwrap().uid_next, 4);
+    }
+
+    #[test]
+    fn completer_sans_absent_ne_demande_rien() {
+        let (m, _, id) = index_connu();
+        let (mut client, journal) = session(DOVECOT, vec![]);
+        assert_eq!(completer(&m, &mut client, id, &[1, 3], 500).unwrap(), 0);
+        assert!(journal.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn premiere_visite_apres_une_recherche() {
+        // Une recherche a rangé UID 3 dans un dossier jamais ouvert ; la
+        // première visite relit tout, sans doublon ni perte.
+        let (m, compte, id) = index_vierge();
+        let (mut client, _) = session(
+            DOVECOT,
+            vec![echange("UID FETCH 3 (UID FLAGS INTERNALDATE", &fetch_entete(1, 3), "OK")],
+        );
+        assert_eq!(completer(&m, &mut client, id, &[3], 500).unwrap(), 1);
+        let (mut client, _) = session(
+            DOVECOT,
+            vec![
+                echange("SELECT \"INBOX\"", SELECT_NEUF, "OK [READ-WRITE] fait"),
+                echange(
+                    "UID FETCH 1:* (UID FLAGS)",
+                    "* 1 FETCH (UID 1 FLAGS ())\r\n* 2 FETCH (UID 2 FLAGS (\\Seen))\r\n* 3 FETCH (UID 3 FLAGS ())\r\n",
+                    "OK",
+                ),
+                echange("UID FETCH 1:3 (UID FLAGS INTERNALDATE", &[fetch_entete(3, 3), fetch_entete(2, 2), fetch_entete(1, 1)].concat(), "OK"),
+            ],
+        );
+        let bilan = synchroniser(&mut client, &m, compte, "INBOX").unwrap();
+        assert!(bilan.complet);
+        let mut uids = m.uids(id).unwrap();
+        uids.sort();
+        assert_eq!(uids, vec![1, 2, 3]);
+        assert_eq!(m.dossier(id).unwrap().unwrap().uid_validity, 7);
     }
 
     const SELECT_NEUF: &str = "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 4] n\r\n* OK [HIGHESTMODSEQ 5] m\r\n";

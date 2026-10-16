@@ -16,6 +16,9 @@ on:
 env:
   QT_VERSION: "6.8.3"
   CARGO_TERM_COLOR: always
+  # Secret du client Google de MMail (comptes Gmail), lu à la compilation par
+  # `option_env!` : livré dans le programme, absent du code source.
+  MMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.MMAIL_GOOGLE_CLIENT_SECRET }}
 
 jobs:
   bureau:

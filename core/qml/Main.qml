@@ -198,6 +198,16 @@ ApplicationWindow {
     // simple : deux boîtes peuvent donner le même UID. On revient au dossier
     // d'avant en sortant de la recherche.
     property bool rechercheGlobale: false
+    // … et ce que le serveur y trouve, dossier par dossier, dans le texte des
+    // messages : « compte\nchemin » → UID, rangés dans l'index par le noyau.
+    // `dossiersPartout` : dossiers à interroger, `dossiersFaits` : ceux qui
+    // ont répondu. La liste s'arrête à `resultatsMax` lignes, les plus
+    // récentes : au-delà, l'affichage ralentirait sans rien apprendre.
+    property var trouvesPartout: ({})
+    property int dossiersPartout: 0
+    property int dossiersFaits: 0
+    readonly property int resultatsMax: 1000
+    property bool resultatsTronques: false
     // Tri des résultats d'une recherche (demande de Manu, 11/10) : fait sur le
     // poste, jamais demandé au serveur — un tri IMAP sur un gros dossier
     // continue de tourner après qu'on l'a abandonné (constaté le 05/10).
@@ -3642,7 +3652,9 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 10
-                    Layout.rightMargin: 8
+                    // Place de la corbeille, posée par-dessus en bout de ligne
+                    // (au survol de la souris seulement : rien au doigt).
+                    Layout.rightMargin: 8 + (fenetre.compact ? 0 : corbeilleLigne.width + 6)
                     Label {
                         text: model.expediteur
                         color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.palette.windowText
@@ -3835,6 +3847,39 @@ ApplicationWindow {
                     onClicked: fenetre.basculerSuivi([model.uid], model.suivi !== true)
                 }
             }
+
+            // Corbeille en bout de première ligne, au survol (demande de Manu
+            // du 15/10) : le message part à la corbeille sans être ouvert.
+            // Rien dans la corbeille elle-même.
+            Canvas {
+                id: corbeilleLigne
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.top: parent.top
+                anchors.topMargin: 7
+                height: dateLigne.implicitHeight
+                width: Math.round(height * 0.8)
+                visible: !fenetre.compact
+                         && (fenetre.listeMulti ? model.role : fenetre.roleCourant) !== "Trash"
+                         && (ligne.hovered || survolCorbeille.containsMouse)
+                property color encre: ligne.highlighted ? fenetre.palette.highlightedText
+                                                        : fenetre.palette.windowText
+                opacity: survolCorbeille.containsMouse ? 1 : 0.55
+                onEncreChanged: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onPaint: fenetre.dessinerCorbeille(getContext("2d"), width, height, encre)
+                ToolTip.visible: survolCorbeille.containsMouse
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("Mettre à la corbeille")
+                MouseArea {
+                    id: survolCorbeille
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    onClicked: fenetre.supprimerLigne(index)
+                }
+            }
         }
     }
 
@@ -3849,6 +3894,12 @@ ApplicationWindow {
         MenuItem {
             text: qsTr("Ajouter un compte Microsoft (Office 365, Outlook.com)…")
             onTriggered: fenetre.connecterMicrosoft("")
+        }
+        MenuItem {
+            text: qsTr("Ajouter un compte Google (Gmail)…")
+            visible: boite.googleAjoutOuvert()
+            height: visible ? implicitHeight : 0
+            onTriggered: fenetre.connecterGoogle("")
         }
         MenuItem {
             text: qsTr("Ajouter avec un lien de configuration…")
@@ -4440,9 +4491,12 @@ ApplicationWindow {
         id: dlgCompte
         property int compteId: 0
         property bool modification: false
-        // Compte Microsoft (en modification) : ni serveur ni mot de passe à
-        // saisir, la connexion se refait chez Microsoft.
-        property bool microsoft: false
+        // Compte à jetons en modification — « microsoft » ou « google » : ni
+        // serveur ni mot de passe à saisir, la connexion se refait chez le
+        // service. Vide pour un compte à mot de passe.
+        property string service: ""
+        readonly property bool microsoft: service === "microsoft"
+        readonly property bool oauth: service.length > 0
         // Serveurs du compte à l'ouverture : ce qui a changé se compare à eux.
         property string ancienHote: ""
         property string ancienHoteEnvoi: ""
@@ -4458,7 +4512,7 @@ ApplicationWindow {
         property string infoServeur: ""
         onAccepted: fenetre.validerCompte()
         onRejected: fenetre.demandeSuivante()
-        onOpened: (dlgCompte.microsoft ? boutonReconnexion : dlgCompte.modification ? champHote
+        onOpened: (dlgCompte.oauth ? boutonReconnexion : dlgCompte.modification ? champHote
                    : champAdresse.text.length > 0 ? champMotDePasse : champAdresse).forceActiveFocus()
 
         GridLayout {
@@ -4484,10 +4538,10 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 onEditingFinished: fenetre.chercherServeur()
             }
-            Label { text: qsTr("Serveur IMAP :"); visible: !dlgCompte.microsoft }
+            Label { text: qsTr("Serveur IMAP :"); visible: !dlgCompte.oauth }
             TextField {
                 id: champHote
-                visible: !dlgCompte.microsoft
+                visible: !dlgCompte.oauth
                 placeholderText: "mail.exemple.fr"
                 enabled: dlgCompte.compteId === 0 || dlgCompte.modification
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
@@ -4497,7 +4551,7 @@ ApplicationWindow {
             Label {
                 Layout.columnSpan: 2
                 Layout.fillWidth: true
-                visible: text.length > 0 && !dlgCompte.microsoft
+                visible: text.length > 0 && !dlgCompte.oauth
                 wrapMode: Text.Wrap
                 opacity: 0.75
                 font.pixelSize: 11
@@ -4505,19 +4559,19 @@ ApplicationWindow {
             }
             // Facultatif : la plupart des serveurs reçoivent l'envoi sur le
             // nom de la lecture ; Orange, Free, SFR ont un serveur à part.
-            Label { text: qsTr("Serveur d'envoi :"); visible: !dlgCompte.microsoft }
+            Label { text: qsTr("Serveur d'envoi :"); visible: !dlgCompte.oauth }
             TextField {
                 id: champHoteEnvoi
-                visible: !dlgCompte.microsoft
+                visible: !dlgCompte.oauth
                 placeholderText: qsTr("identique au serveur IMAP")
                 enabled: dlgCompte.compteId === 0 || dlgCompte.modification
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
                 Layout.fillWidth: true
             }
-            Label { text: qsTr("Mot de passe :"); visible: !dlgCompte.microsoft }
+            Label { text: qsTr("Mot de passe :"); visible: !dlgCompte.oauth }
             TextField {
                 id: champMotDePasse
-                visible: !dlgCompte.microsoft
+                visible: !dlgCompte.oauth
                 echoMode: TextInput.Password
                 // Vide : le mot de passe ne change pas.
                 placeholderText: dlgCompte.modification ? qsTr("inchangé") : ""
@@ -4527,7 +4581,7 @@ ApplicationWindow {
             CheckBox {
                 id: caseMemoriser
                 Layout.columnSpan: 2
-                visible: !dlgCompte.microsoft
+                visible: !dlgCompte.oauth
                 checked: reglages.memoriser
                 text: qsTr("Mémoriser le mot de passe dans le coffre du système")
             }
@@ -4542,15 +4596,30 @@ ApplicationWindow {
                     fenetre.connecterMicrosoft("")
                 }
             }
+            // Gmail : la connexion se fait chez Google, dans le navigateur.
+            Button {
+                Layout.columnSpan: 2
+                visible: dlgCompte.compteId === 0 && boite.googleAjoutOuvert()
+                text: qsTr("Compte Google (Gmail)…")
+                onClicked: {
+                    dlgCompte.close()
+                    fenetre.connecterGoogle("")
+                }
+            }
             Button {
                 id: boutonReconnexion
                 Layout.columnSpan: 2
-                visible: dlgCompte.microsoft
-                text: qsTr("Se reconnecter à Microsoft…")
+                visible: dlgCompte.oauth
+                text: dlgCompte.service === "google" ? qsTr("Se reconnecter à Google…")
+                                                     : qsTr("Se reconnecter à Microsoft…")
                 onClicked: {
                     var adresse = champAdresse.text
+                    var service = dlgCompte.service
                     dlgCompte.close()
-                    fenetre.connecterMicrosoft(adresse)
+                    if (service === "google")
+                        fenetre.connecterGoogle(adresse)
+                    else
+                        fenetre.connecterMicrosoft(adresse)
                 }
             }
             Button {
@@ -4571,6 +4640,8 @@ ApplicationWindow {
                 font.pixelSize: 11
                 text: dlgCompte.microsoft
                       ? qsTr("Compte Microsoft : la connexion se fait chez Microsoft, dans votre navigateur ; MMail ne voit jamais le mot de passe. Il garde, dans le coffre du système, le jeton que Microsoft lui délivre. Lecture en IMAPS (outlook.office365.com), envoi par Microsoft Graph.")
+                      : dlgCompte.service === "google"
+                      ? qsTr("Compte Google : la connexion se fait chez Google, dans votre navigateur ; MMail ne voit jamais le mot de passe. Il garde, dans le coffre du système, le jeton que Google lui délivre. Lecture en IMAPS (imap.gmail.com), envoi en SMTP sur TLS (smtp.gmail.com).")
                       : qsTr("Le mot de passe n'est jamais écrit par MMail : il est confié au coffre du système (Gestionnaire d'identifiants sous Windows, Secret Service ou KWallet sous Linux, Keystore sous Android). Connexion en IMAPS, port 993 ; envoi en SMTP sur TLS, port 465.")
             }
         }
@@ -5099,6 +5170,9 @@ ApplicationWindow {
                     + "« Ajouter un compte Microsoft (Office 365, Outlook.com)… » : la connexion se fait chez "
                     + "Microsoft, dans le navigateur ; si votre organisation l'exige, MMail donne le lien que "
                     + "son administrateur ouvre une fois pour l'autoriser. "
+                    + "« Ajouter un compte Google (Gmail)… » : de même chez Google ; ce menu n'apparaît "
+                    + "qu'une fois MMail publié par Google — avant, seuls les comptes déclarés pour les "
+                    + "essais pourraient s'y connecter. "
                     + "« Modifier un compte » (aussi au clic droit sur le compte, « Modifier ce compte… ») : "
                     + "serveur de lecture, serveur d'envoi, mot de passe — laissé vide, il ne change pas —, "
                     + "et de là, nom et signature. Clic droit sur un compte : aussi se connecter, se "
@@ -5144,7 +5218,10 @@ ApplicationWindow {
                     + "Glissez l'en-tête d'un compte sur un autre pour changer leur ordre, ou clic droit "
                     + "sur le compte : « Monter », « Descendre ».<br><br>"
                     + "<b>Recherche</b><br>"
-                    + "Ctrl+E, puis Entrée : dans le dossier actif ou dans toutes les boîtes. Pendant une "
+                    + "Ctrl+E, puis Entrée : dans le dossier actif ou dans toutes les boîtes. Le texte "
+                    + "entier des messages est cherché sur le serveur, même dans les dossiers pas encore "
+                    + "ouverts sur ce poste ; dans toutes les boîtes, les résultats arrivent dossier par "
+                    + "dossier, la barre d'état suit la progression. Pendant une "
                     + "recherche, « Trier par » range les résultats : plus récents, plus anciens, "
                     + "expéditeur, objet, plus gros ; dossier, dans toutes les boîtes. Échap en sort.<br><br>"
                     + "<b>Trier</b><br>"
@@ -5162,7 +5239,8 @@ ApplicationWindow {
                     + "Suppr : envoyer à la corbeille de la boîte, rien n'est détruit · Ctrl+Q : marquer "
                     + "comme lu · Ctrl+U : marquer comme non lu · Ctrl+Maj+V : déplacer vers… · "
                     + "Ctrl+A : tout sélectionner · F5 : actualiser · F1 : cette aide. "
-                    + "Ctrl+clic et Maj+clic sélectionnent plusieurs messages.<br><br>"
+                    + "Ctrl+clic et Maj+clic sélectionnent plusieurs messages. Au survol d'une ligne, "
+                    + "la corbeille en bout de ligne y envoie ce message sans l'ouvrir.<br><br>"
                     + "<b>Affichage</b><br>"
                     + "Chaque colonne a son propre zoom : Ctrl + molette sur la colonne, ou Ctrl +, "
                     + "Ctrl − et Ctrl 0 sur la dernière colonne survolée ; pincement au doigt. Le menu "
@@ -5510,6 +5588,18 @@ ApplicationWindow {
                 messageEtat.texte = qsTr("Connexion à Microsoft : %1").arg(message)
         }
 
+        function onGoogleConnecte(adresse, hote, jeton) {
+            // Comme un compte Microsoft : le jeton va au coffre une fois la
+            // connexion acceptée.
+            fenetre.secretsAConserver[adresse] = { cle: fenetre.cle(adresse, hote), motDePasse: jeton }
+            fenetre.dernierDemande = null
+            messageEtat.texte = qsTr("Connexion de %1…").arg(adresse)
+        }
+
+        function onGoogleRefuse(message) {
+            messageEtat.texte = qsTr("Connexion à Google : %1").arg(message)
+        }
+
         function onJetonRenouvele(adresse, hote, jeton) {
             coffre.ecrire(fenetre.cle(adresse, hote), jeton)
         }
@@ -5582,6 +5672,8 @@ ApplicationWindow {
                 fenetre.etapeScenario()
                 if (fenetre.essai.scenario === "glisser")
                     fenetre.etapeScenarioGlisser()
+                if (fenetre.essai.scenario === "corbeille-ligne")
+                    fenetre.etapeScenarioCorbeille()
             }
         }
 
@@ -5598,6 +5690,19 @@ ApplicationWindow {
                 champRecherche.text = identifiantsEssai.dossier
                 fenetre.lancerRecherche()
                 console.log("scenario: l'index trouve", modeleMessages.count, "message(s)")
+                return
+            }
+            // Scénario « recherche-serveur » : INBOX seule passée par l'index,
+            // le texte de MMAIL_DOSSIER est cherché dans toutes les boîtes ; le
+            // serveur le trouve aussi dans le corps des messages et dans les
+            // dossiers jamais ouverts (suite dans onResultatsPartout).
+            if (fenetre.essai && fenetre.essai.scenario === "recherche-serveur" && !fenetre.essai.cherche) {
+                fenetre.essai.cherche = true
+                porteeRecherche.currentIndex = 1
+                champRecherche.text = identifiantsEssai.dossier
+                fenetre.lancerRecherche()
+                console.log("scenario: l'index trouve", modeleMessages.count, "message(s) | dossiers à interroger",
+                            fenetre.dossiersPartout)
                 return
             }
             // Scénario « sous-dossier » : le sous-dossier MMAIL_DOSSIER de la
@@ -5663,6 +5768,8 @@ ApplicationWindow {
                 fenetre.etapeScenario()
             if (fenetre.essai && fenetre.essai.scenario === "glisser")
                 fenetre.etapeScenarioGlisser()
+            if (fenetre.essai && fenetre.essai.scenario === "corbeille-ligne")
+                fenetre.etapeScenarioCorbeille()
             if (fenetre.essai && fenetre.essai.scenario === "chevron")
                 fenetre.etapeScenarioChevron()
             if (fenetre.essai && (fenetre.essai.scenario === "defilement" || fenetre.essai.scenario === "favoris-fixes"))
@@ -5916,6 +6023,36 @@ ApplicationWindow {
                 console.log("scenario: piece ecrite", chemin, ouvrir)
         }
 
+        // Recherche dans toutes les boîtes : un dossier de plus a répondu. La
+        // liste n'est reposée que s'il a trouvé quelque chose, ou à la fin ;
+        // elle garde sa position si l'on s'y est déplacé.
+        function onResultatsPartout(compte, chemin, texte, uids, restants) {
+            if (!fenetre.rechercheGlobale || texte !== fenetre.recherche)
+                return
+            fenetre.dossiersFaits += 1
+            if (uids.length > 0) {
+                var trouves = fenetre.trouvesPartout
+                trouves[compte + "\n" + chemin] = uids.split(",").map(Number)
+                fenetre.trouvesPartout = trouves
+            }
+            var fini = fenetre.dossiersFaits >= fenetre.dossiersPartout
+            if (uids.length > 0 || fini)
+                fenetre.poserResultats()
+            messageEtat.texte = fenetre.etatRecherchePartout()
+            if (fenetre.essai && fenetre.essai.scenario === "recherche-serveur") {
+                console.log("scenario: serveur,", chemin, ":", uids.length > 0 ? uids.split(",").length : 0,
+                            "| restants", restants, "| liste", modeleMessages.count)
+                if (fini) {
+                    var dossiers = {}
+                    for (var i = 0; i < modeleMessages.count; ++i)
+                        dossiers[modeleMessages.get(i).chemin] = true
+                    console.log("scenario: fin |", messageEtat.texte, "| dossiers", Object.keys(dossiers).join(", "),
+                                "| premier :", modeleMessages.count > 0 ? modeleMessages.get(0).sujet : "—")
+                    Qt.quit()
+                }
+            }
+        }
+
         // Ce que le serveur a trouvé dans le texte des messages, ajouté aux
         // résultats de l'index si la recherche n'a pas changé entre-temps.
         function onResultatsServeur(compte, chemin, texte, uids) {
@@ -5962,6 +6099,8 @@ ApplicationWindow {
                 fenetre.etapeScenario()
                 if (fenetre.essai.scenario === "glisser")
                     fenetre.etapeScenarioGlisser()
+                if (fenetre.essai.scenario === "corbeille-ligne")
+                    fenetre.etapeScenarioCorbeille()
             }
         }
 
@@ -6117,6 +6256,80 @@ ApplicationWindow {
             ctx.stroke()
     }
 
+    function dessinerCorbeille(ctx, w, h, encre) {
+        ctx.reset()
+        ctx.strokeStyle = encre
+        ctx.lineWidth = Math.max(1.2, w * 0.11)
+        ctx.lineJoin = "round"
+        ctx.lineCap = "round"
+        // Couvercle et poignée.
+        ctx.beginPath()
+        ctx.moveTo(w * 0.08, h * 0.2)
+        ctx.lineTo(w * 0.92, h * 0.2)
+        ctx.moveTo(w * 0.36, h * 0.2)
+        ctx.lineTo(w * 0.4, h * 0.07)
+        ctx.lineTo(w * 0.6, h * 0.07)
+        ctx.lineTo(w * 0.64, h * 0.2)
+        ctx.stroke()
+        // Cuve, et ses deux rainures.
+        ctx.beginPath()
+        ctx.moveTo(w * 0.18, h * 0.3)
+        ctx.lineTo(w * 0.26, h * 0.94)
+        ctx.lineTo(w * 0.74, h * 0.94)
+        ctx.lineTo(w * 0.82, h * 0.3)
+        ctx.moveTo(w * 0.42, h * 0.42)
+        ctx.lineTo(w * 0.43, h * 0.8)
+        ctx.moveTo(w * 0.58, h * 0.42)
+        ctx.lineTo(w * 0.57, h * 0.8)
+        ctx.stroke()
+    }
+
+    /// Bouton corbeille d'une ligne : ce message seul part à la corbeille,
+    /// sans être ouvert ; le message affiché et la sélection ne bougent pas.
+    /// Si c'est le message affiché, seul choisi, c'est « Supprimer » : le
+    /// suivant prend sa place.
+    function supprimerLigne(index) {
+        if (index < 0 || index >= modeleMessages.count)
+            return
+        var r = modeleMessages.get(index)
+        var compte = listeMulti ? r.compte : boite.compteCourant
+        var chemin = listeMulti ? r.chemin : boite.dossierCourant
+        var cle = compte + "|" + chemin + "|" + r.uid
+        var seulChoisi = listeMulti ? cleChoisie === cle
+                                    : selection[r.uid] === true && uidsChoisis().length === 1
+        if (seulChoisi && compte === boite.compteCourant && chemin === boite.dossierCourant) {
+            supprimerSelection()
+            return
+        }
+        if (!boite.supprimerDans(compte, chemin, String(r.uid))) {
+            messageEtat.texte = boite.erreur
+            return
+        }
+        var retires = {}
+        for (var u in enDeplacement)
+            retires[u] = true
+        retires[cle] = true
+        enDeplacement = retires
+        deplacementsEnVol += 1
+        modeleMessages.remove(index)
+        if (!listeMulti && selection[r.uid] === true) {
+            var reste = {}
+            for (var k in selection) {
+                if (parseInt(k) !== r.uid)
+                    reste[k] = true
+            }
+            selection = reste
+        }
+        // Le message affiché, choisi parmi d'autres : il ne reste pas à l'écran.
+        if (!listeMulti && uidCourant === r.uid) {
+            uidCourant = 0
+            sujetAffiche.text = ""
+            auteurAffiche.text = ""
+            afficherTexte(qsTr("Aucun message sélectionné."))
+        }
+        messageEtat.texte = qsTr("Message mis à la corbeille.")
+    }
+
     function basculerSuivi(uids, suivi) {
         if (uids.length === 0)
             return
@@ -6171,18 +6384,18 @@ ApplicationWindow {
                 aDemander.push({ compte: compte, note: note })
             return
         }
-        // Un compte Microsoft n'a pas de mot de passe à redemander : la
-        // fenêtre propose de se reconnecter à Microsoft.
+        // Un compte Microsoft ou Google n'a pas de mot de passe à redemander :
+        // la fenêtre propose de se reconnecter au service.
         if (compte && compte.id > 0 && compte.auth === undefined) {
             var connu = compteParId(compte.id)
             compte.auth = connu ? connu.auth : ""
         }
-        if (compte && compte.auth === "microsoft")
+        if (compte && compteOAuth(compte.auth))
             modification = true
         dernierDemande = compte
         dlgCompte.compteId = compte && compte.id ? compte.id : 0
         dlgCompte.modification = modification === true && dlgCompte.compteId > 0
-        dlgCompte.microsoft = dlgCompte.modification && compte.auth === "microsoft"
+        dlgCompte.service = dlgCompte.modification && compteOAuth(compte.auth) ? compte.auth : ""
         dlgCompte.ancienHote = compte ? compte.hote : ""
         dlgCompte.ancienHoteEnvoi = compte && compte.hoteEnvoi ? compte.hoteEnvoi : ""
         champAdresse.text = compte ? compte.adresse : ""
@@ -6302,7 +6515,7 @@ ApplicationWindow {
         var nouveau = dlgCompte.compteId === 0
         var motDePasse = champMotDePasse.text
         champMotDePasse.text = ""
-        if (dlgCompte.microsoft) {
+        if (dlgCompte.oauth) {
             // Rien à appliquer ici : la reconnexion passe par son bouton.
             demandeSuivante()
             return
@@ -6540,6 +6753,9 @@ ApplicationWindow {
             if (c.auth === "microsoft") {
                 demanderCompte({ id: p ? p.id : 0, adresse: c.adresse, hote: hote, auth: "microsoft" },
                                qsTr("Compte Microsoft : reconnectez-le à Microsoft."))
+            } else if (c.auth === "google") {
+                demanderCompte({ id: p ? p.id : 0, adresse: c.adresse, hote: hote, auth: "google" },
+                               qsTr("Compte Google : reconnectez-le à Google."))
             } else if (typeof c.motDePasse === "string" && c.motDePasse.length > 0) {
                 if (reglages.memoriser)
                     secretsAConserver[c.adresse] = { cle: cle(c.adresse, hote), motDePasse: c.motDePasse }
@@ -6562,11 +6778,32 @@ ApplicationWindow {
 
     function connecterCompte(compte) {
         var connu = compte.id > 0 ? compteParId(compte.id) : null
-        // Un compte Microsoft ne vit que par son jeton au coffre.
-        if (reglages.memoriser || (connu && connu.auth === "microsoft"))
+        // Un compte Microsoft ou Google ne vit que par son jeton au coffre.
+        if (reglages.memoriser || (connu && compteOAuth(connu.auth)))
             coffre.lire(cle(compte.adresse, compte.hote))
         else
             demanderCompte(compte, "")
+    }
+
+    /// Compte à jetons OAuth2 : Microsoft ou Google, pas de mot de passe.
+    function compteOAuth(auth) {
+        return auth === "microsoft" || auth === "google"
+    }
+
+    /// Connexion d'un compte Google (Gmail) : comme `connecterMicrosoft` ;
+    /// la suite revient par `googleConnecte` ou `googleRefuse`.
+    function connecterGoogle(indice) {
+        if (!boite.googleDisponible()) {
+            messageEtat.texte = qsTr("Comptes Google indisponibles dans cette version de MMail.")
+            return
+        }
+        var url = boite.connecterGoogle(indice)
+        if (url.length === 0) {
+            messageEtat.texte = qsTr("Connexion à Google impossible : %1").arg(boite.erreur)
+            return
+        }
+        Qt.openUrlExternally(url)
+        messageEtat.texte = qsTr("Connexion à Google dans votre navigateur : MMail attend son retour…")
     }
 
     /// Connexion d'un compte Microsoft : la page de Microsoft s'ouvre dans le
@@ -6739,6 +6976,7 @@ ApplicationWindow {
             poserBoitesUnifiees()
             return
         }
+        var enHaut = listeEnHaut()
         var c = JSON.parse(boite.changementsListe(complet === true))
         if (c.complet !== undefined) {
             poserListe(c.complet, c.suite === true)
@@ -6767,8 +7005,18 @@ ApplicationWindow {
                 continue
             modeleMessages.insert(rangInsertion(n.h, n.uid), n)
         }
+        if (enHaut)
+            vueMessages.positionViewAtBeginning()
         oublierAbsents(absents)
         majInfoDossier()
+    }
+
+    /// Vrai si la liste est tout en haut. Des messages qui arrivent au-dessus
+    /// doivent alors se voir : la vue garde sinon à l'écran les lignes déjà
+    /// affichées, et les nouvelles se glissent au-dessus (constaté le 15/10, à
+    /// la première synchronisation d'une boîte Gmail de 1 300 messages).
+    function listeEnHaut() {
+        return modeleMessages.count === 0 || vueMessages.contentY <= vueMessages.originY + 1
     }
 
     /// Pose une liste entière, en gardant la position et ce qui est choisi.
@@ -6779,6 +7027,7 @@ ApplicationWindow {
         var messages = liste.filter(function(m) {
             return fenetre.enDeplacement[cleDeplacement(m.uid)] !== true
         })
+        var enHaut = listeEnHaut()
         var position = vueMessages.contentY
         var rangHaut = Math.max(0, vueMessages.indexAt(1, position + 1))
         modeleMessages.clear()
@@ -6806,7 +7055,10 @@ ApplicationWindow {
                 }
             }
         }
-        vueMessages.contentY = position
+        if (enHaut)
+            vueMessages.positionViewAtBeginning()
+        else
+            vueMessages.contentY = position
         // La sélection ne garde que les messages encore là — ceux qui manquent
         // alors qu'une suite reste à lire n'y sont plus non plus : elle a été
         // lue jusqu'à les trouver.
@@ -6912,10 +7164,14 @@ ApplicationWindow {
             recherche = texte
             uidsServeur = []
             cleChoisie = ""
+            arreterRecherchePartout()
             viderListe()
             poserResultats()
-            messageEtat.texte = qsTr("Recherche « %1 » dans toutes les boîtes : %2.").arg(texte)
-                    .arg(accord(modeleMessages.count, qsTr("résultat"), qsTr("résultats")))
+            // L'index répond tout de suite ; le serveur suit, dossier par
+            // dossier, dans le texte des messages et jusque dans les dossiers
+            // jamais ouverts sur ce poste.
+            dossiersPartout = boite.chercherPartoutSurLeServeur(texte)
+            messageEtat.texte = etatRecherchePartout()
             return
         }
         // De toutes les boîtes au dossier actif : celui d'où l'on était parti.
@@ -6935,11 +7191,28 @@ ApplicationWindow {
             messageEtat.texte = qsTr("Recherche dans l'index seulement (compte hors ligne).")
     }
 
-    /// Résultats de l'index — et, dans le dossier ouvert, ceux que le serveur a
-    /// trouvés dans le texte des messages —, du plus récent au plus ancien.
+    /// Résultats de l'index et ceux que le serveur a trouvés dans le texte des
+    /// messages — du dossier ouvert, ou de chaque dossier de chaque boîte —,
+    /// du plus récent au plus ancien.
     function poserResultats() {
         if (rechercheGlobale) {
-            poserListe(trierResultats(JSON.parse(boite.chercher(recherche, true)).map(function(r) {
+            var trouves = JSON.parse(boite.chercher(recherche, true))
+            var connus = {}
+            for (var j = 0; j < trouves.length; ++j)
+                connus[trouves[j].compte + "\n" + trouves[j].chemin + "\n" + trouves[j].uid] = true
+            for (var cle in trouvesPartout) {
+                var absents = trouvesPartout[cle].filter(function(u) { return !connus[cle + "\n" + u] })
+                if (absents.length === 0)
+                    continue
+                var coupure = cle.indexOf("\n")
+                trouves = trouves.concat(JSON.parse(boite.trouvesParUid(Number(cle.slice(0, coupure)),
+                                                                         cle.slice(coupure + 1),
+                                                                         absents.join(","))))
+            }
+            // Les plus récents d'abord pour la coupure, puis le tri choisi.
+            trouves.sort(function(a, b) { return b.h - a.h || b.uid - a.uid })
+            resultatsTronques = trouves.length > resultatsMax
+            poserListe(trierResultats(trouves.slice(0, resultatsMax).map(function(r) {
                 // Une liste JS deviendrait un sous-modèle dans la ListModel.
                 r.cheminAffiche = cheminResultat(r)
                 delete r.segments
@@ -6992,7 +7265,32 @@ ApplicationWindow {
         dossierAvantRecherche = null
         recherche = ""
         uidsServeur = []
+        arreterRecherchePartout()
         viderListe()
+    }
+
+    /// Arrête la recherche sur le serveur de toutes les boîtes, si elle court
+    /// encore : les dossiers qui restaient ne sont pas interrogés.
+    function arreterRecherchePartout() {
+        if (dossiersFaits < dossiersPartout)
+            boite.chercherPartoutSurLeServeur("")
+        trouvesPartout = ({})
+        dossiersPartout = 0
+        dossiersFaits = 0
+        resultatsTronques = false
+    }
+
+    /// État d'une recherche dans toutes les boîtes, pour la barre d'état.
+    function etatRecherchePartout() {
+        var nombre = accord(modeleMessages.count, qsTr("résultat"), qsTr("résultats"))
+        if (resultatsTronques)
+            nombre = qsTr("les %1 plus récents").arg(modeleMessages.count)
+        var debut = qsTr("Recherche « %1 » dans toutes les boîtes : %2").arg(recherche).arg(nombre)
+        if (dossiersPartout === 0)
+            return debut + qsTr(" (messages déjà sur le poste seulement : aucun compte connecté).")
+        if (dossiersFaits < dossiersPartout)
+            return debut + qsTr(" — recherche sur le serveur, dossier %1 sur %2…").arg(dossiersFaits + 1).arg(dossiersPartout)
+        return debut + "."
     }
 
     /// Sort de la recherche : la liste du dossier revient entière — celui d'où
@@ -7068,6 +7366,7 @@ ApplicationWindow {
         var voulues = {}
         for (var i = 0; i < lignes.length; ++i)
             voulues[cle(lignes[i])] = true
+        var enHaut = listeEnHaut()
         if (modeleMessages.count === 0) {
             modeleMessages.append(lignes)
         } else {
@@ -7101,6 +7400,8 @@ ApplicationWindow {
                 }
             }
         }
+        if (enHaut)
+            vueMessages.positionViewAtBeginning()
         // Même règle que poserListe : la sélection ne garde que les messages
         // encore là.
         var presents = {}
@@ -7853,6 +8154,39 @@ ApplicationWindow {
                 })
                 attenteMs.start()
             }
+            // Scénario « compte-google » : sans serveur, comme
+            // « compte-microsoft ». Un compte Google de l'index s'ouvre en
+            // modification sans serveur ni mot de passe, avec « Se reconnecter
+            // à Google… » — aussi quand son jeton serait redemandé ; la
+            // connexion prépare l'adresse de Google (MMAIL_GOOGLE_CLIENT_ID et
+            // MMAIL_GOOGLE_CLIENT_SECRET), sinon dit pourquoi elle ne peut pas.
+            if (essai.scenario === "compte-google") {
+                var attenteG = Qt.createQmlObject('import QtQuick; Timer { interval: 2000 }', fenetre)
+                attenteG.triggered.connect(function() {
+                    var g = listeComptes().filter(function(c) { return c.auth === "google" })[0]
+                    console.log("scenario: compte", g ? g.adresse : "aucun", "| auth", g ? g.auth : "")
+                    modifierCompte(g.id)
+                    console.log("scenario: modification", dlgCompte.visible, dlgCompte.title, "| service", dlgCompte.service,
+                                "| serveur", champHote.visible, "| mot de passe", champMotDePasse.visible,
+                                "| reconnexion", boutonReconnexion.visible, "«" + boutonReconnexion.text + "»")
+                    dlgCompte.close()
+                    demanderCompte(compteParId(g.id), "jeton refusé")
+                    console.log("scenario: redemande", dlgCompte.modification, dlgCompte.service, "| note", noteCompte.text)
+                    dlgCompte.close()
+                    console.log("scenario: disponible", boite.googleDisponible(), "| ajout ouvert", boite.googleAjoutOuvert())
+                    var url = boite.connecterGoogle(g.adresse)
+                    if (url.length === 0) {
+                        console.log("scenario: sans client :", boite.erreur)
+                    } else {
+                        console.log("scenario: adresse", url.indexOf("https://accounts.google.com/o/oauth2/v2/auth?") === 0,
+                                    "| indice", url.indexOf("login_hint=" + encodeURIComponent(g.adresse)) > 0,
+                                    "| redirection", /redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A[0-9]+&/.test(url),
+                                    "| hors ligne", url.indexOf("access_type=offline") > 0)
+                    }
+                    Qt.quit()
+                })
+                attenteG.start()
+            }
             // Scénario « modifier-compte » : « Modifier le compte… » pose puis
             // retire un serveur d'envoi, mène le compte à un serveur de lecture
             // injoignable — la fenêtre revient, avec le motif —, puis le ramène.
@@ -7932,6 +8266,81 @@ ApplicationWindow {
                     }
                 })
                 pas.start()
+            }
+            // Scénario « arrivee-en-haut » : boîte de réception ouverte, tout en
+            // haut, le premier message choisi ; un message déposé de l'extérieur
+            // doit arriver en tête ET se voir (essai du 15/10 sous Gmail : il se
+            // glissait au-dessus de la partie visible).
+            if (essai.scenario === "arrivee-en-haut") {
+                var veille = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+                // MMAIL_DOSSIER : nombre de messages attendus (une rafale).
+                var suiviA = { n: 0, avant: -1, attendus: Math.max(1, parseInt(identifiantsEssai.dossier) || 1) }
+                veille.triggered.connect(function() {
+                    suiviA.n += 1
+                    if (suiviA.n === 10 && boite.dossierCourant === "INBOX") {
+                        choisir(0, 0)
+                        suiviA.avant = modeleMessages.count
+                        console.log("scenario: pret", modeleMessages.count, "messages, haut", vueMessages.contentY, vueMessages.originY)
+                    } else if (suiviA.avant >= 0 && modeleMessages.count >= suiviA.avant + suiviA.attendus) {
+                        veille.stop()
+                        var haut = vueMessages.indexAt(1, vueMessages.contentY + 1)
+                        console.log("scenario: arrive", modeleMessages.get(0).sujet, "| premiere ligne visible", haut,
+                                    "| contentY", vueMessages.contentY, "originY", vueMessages.originY)
+                        console.log(haut === 0 ? "scenario: OK nouveau message visible en tete"
+                                               : "scenario: ECHEC nouveau message hors de la vue")
+                        Qt.quit()
+                    } else if (suiviA.n > 120) {
+                        veille.stop()
+                        console.log("scenario: ECHEC rien n'est arrive")
+                        Qt.quit()
+                    }
+                })
+                veille.start()
+            }
+            // Scénario « corbeille-unifiee » : la corbeille d'une ligne dans
+            // Toutes les BàL — une autre ligne que celle choisie. Le message
+            // part, ne revient pas à la relecture de la liste, la ligne choisie
+            // reste ; il est ensuite ramené de la corbeille.
+            if (essai.scenario === "corbeille-unifiee") {
+                var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+                var suiviU = { n: 0, cle: "", sujet: "" }
+                tic.triggered.connect(function() {
+                    suiviU.n += 1
+                    var a = listeComptes()[0]
+                    if (suiviU.n === 12) {
+                        ouvrirBoitesUnifiees()
+                    } else if (suiviU.n === 14) {
+                        choisir(0, 0)
+                        suiviU.cle = cleChoisie
+                        var r = modeleMessages.get(1)
+                        suiviU.sujet = r.sujet
+                        var avant = modeleMessages.count
+                        supprimerLigne(1)
+                        console.log("scenario: unifiée", avant, "->", modeleMessages.count, "| choisie gardée",
+                                    cleChoisie === suiviU.cle, "|", suiviU.sujet)
+                    } else if (suiviU.n === 20) {
+                        var revenu = false
+                        for (var i = 0; i < modeleMessages.count; ++i)
+                            revenu = revenu || modeleMessages.get(i).sujet === suiviU.sujet
+                        console.log(!revenu && deplacementsEnVol === 0 && cleChoisie === suiviU.cle
+                                    ? "scenario: OK corbeille dans Toutes les BàL"
+                                    : "scenario: ECHEC revenu " + revenu + " en vol " + deplacementsEnVol)
+                        ouvrirDossier(a.id, "Trash")
+                    } else if (suiviU.n === 24) {
+                        for (var j = 0; j < modeleMessages.count; ++j) {
+                            if (modeleMessages.get(j).sujet === suiviU.sujet) {
+                                choisir(j, 0)
+                                deplacerVers(a.id, "INBOX")
+                                console.log("scenario: message ramene de la corbeille")
+                                break
+                            }
+                        }
+                    } else if (suiviU.n === 28) {
+                        tic.stop()
+                        Qt.quit()
+                    }
+                })
+                tic.start()
             }
             if (essai.scenario.indexOf("mise-a-jour") === 0) {
                 reglagesMiseAJour.version = ""
@@ -8659,6 +9068,61 @@ ApplicationWindow {
             boite.epinglerDossier(a.id, "Essais", false)
             boite.epinglerDossier(b.id, "INBOX", false)
             console.log("scenario: message ramene, favoris retires :", JSON.stringify(favorisActuels()))
+        }
+    }
+
+    /// Scénario « corbeille-ligne » : dans la boîte de réception, le premier
+    /// message affiché, la corbeille de la deuxième ligne l'envoie à la
+    /// corbeille sans toucher au message affiché ni à la sélection ; il y est
+    /// retrouvé, puis ramené.
+    function etapeScenarioCorbeille() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret")
+            return
+        if (essai.etape === 0 && boite.dossierCourant === "INBOX" && modeleMessages.count >= 2) {
+            essai.etape = 1
+            choisir(0, 0)
+            var affiche = modeleMessages.get(0).uid
+            var avant = modeleMessages.count
+            essai.sujet = modeleMessages.get(1).sujet
+            supprimerLigne(1)
+            var garde = uidCourant === affiche && selection[affiche] === true && uidsChoisis().length === 1
+            console.log("scenario: ligne retiree", avant, "->", modeleMessages.count, "|", essai.sujet)
+            console.log(modeleMessages.count === avant - 1 && garde
+                        ? "scenario: OK message affiche et selection inchanges"
+                        : "scenario: ECHEC affiche " + uidCourant + " / " + affiche)
+        } else if (essai.etape === 1 && deplacementsEnVol === 0) {
+            essai.etape = 2
+            var corbeille = ""
+            var parcourir = function(noeuds) {
+                for (var i = 0; i < noeuds.length && !corbeille; ++i) {
+                    if (noeuds[i].compte === a.id && noeuds[i].role === "Trash")
+                        corbeille = noeuds[i].chemin
+                    else if (noeuds[i].enfants)
+                        parcourir(noeuds[i].enfants)
+                }
+            }
+            parcourir(JSON.parse(boite.arborescence(true)))
+            essai.corbeille = corbeille
+            console.log("scenario: corbeille", corbeille)
+            ouvrirDossier(a.id, corbeille)
+        } else if (essai.etape === 2 && boite.dossierCourant === essai.corbeille) {
+            for (var j = 0; j < modeleMessages.count; ++j) {
+                if (modeleMessages.get(j).sujet === essai.sujet) {
+                    essai.etape = 3
+                    console.log("scenario: OK message dans la corbeille")
+                    choisir(j, 0)
+                    deplacerVers(a.id, "INBOX")
+                    return
+                }
+            }
+            console.log("scenario: ECHEC message absent de la corbeille")
+            essai.etape = 9
+            Qt.quit()
+        } else if (essai.etape === 3 && deplacementsEnVol === 0) {
+            essai.etape = 9
+            console.log("scenario: message ramene en boite de reception")
+            Qt.quit()
         }
     }
 
