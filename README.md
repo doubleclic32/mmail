@@ -98,7 +98,8 @@ de projet interne.
 - **menus contextuels et « Déplacer vers… » au zoom de la colonne** d'où ils
   sont ouverts ;
 - **déplacement par glisser-déposer ou par clic droit**, vers un dossier de la
-  même boîte ou de n'importe quelle autre boîte connectée ; dialogue
+  même boîte ou de n'importe quelle autre boîte connectée — le message va au
+  dossier sous la pointe de la souris ; dialogue
   « Déplacer vers… » avec filtre (Ctrl+Maj+V) ;
 - **recherche** (Ctrl+E), comme dans Outlook : le champ propose les dernières
   recherches (dix visibles, ascenseur au-delà), Entrée lance la recherche ; la
@@ -130,14 +131,18 @@ de projet interne.
   sélectionné dans un message part au presse-papier, sauf ce qu'un autre
   logiciel vient d'y déposer, protégé une minute ; clic droit sur le message :
   « Copier », « Tout sélectionner » ; sur une ligne de la liste : copier
-  l'adresse de l'expéditeur ou l'objet. Sous Android, ni copie automatique ni
+  l'adresse de l'expéditeur ou l'objet. L'objet et l'expéditeur, en tête du
+  message, se sélectionnent eux aussi (Ctrl+C) ; leur clic droit propose
+  « Copier », « Copier l'adresse de l'expéditeur », « Copier l'objet ».
+  Sous Android, ni copie automatique ni
   menu : l'appui long choisit le mot et ouvre la barre d'Android (Copier, Tout
   sélectionner), qu'un toucher ou le défilement referme ;
 - **barre d'information** : compte et dossier ouverts, nombre de messages et de
   non-lus, sélection, état de la synchronisation, déplacements en attente ;
 - **pièces jointes** mises en valeur sous l'en-tête du message, une ligne par
   pièce : type en couleur (PDF, XLSX, JPG…), nom, taille, « Ouvrir » et
-  « Enregistrer sous… » ; clic droit, « Ouvrir avec… » un logiciel choisi, pour
+  « Enregistrer sous… » — qui propose le dernier dossier choisi, s'il existe
+  encore, sinon les téléchargements ; clic droit, « Ouvrir avec… » un logiciel choisi, pour
   cette fois ou pour tous les fichiers du même type — retenu sur ce poste
   seulement, revu par « Logiciels d'ouverture… » (menu « Affichage ») ; sans
   choix, le logiciel du système. Sous Windows, un type que le système ne sait

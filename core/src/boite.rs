@@ -127,6 +127,12 @@ pub mod qobject {
         #[cxx_name = "googleDisponible"]
         fn google_disponible(&self) -> bool;
 
+        /// Vrai si `url` (`file:///…`) désigne un dossier présent : le
+        /// dernier dossier d'enregistrement n'est proposé que s'il existe.
+        #[qinvokable]
+        #[cxx_name = "dossierExiste"]
+        fn dossier_existe(&self, url: &QString) -> bool;
+
         /// Vrai si l'ajout d'un compte Google s'affiche : l'application Google
         /// de MMail est publiée, ou `MMAIL_GOOGLE_ESSAI` est posée.
         #[qinvokable]
@@ -1966,6 +1972,21 @@ impl qobject::Boite {
 
     pub fn google_disponible(&self) -> bool {
         crate::google::disponible()
+    }
+
+    pub fn dossier_existe(&self, url: &QString) -> bool {
+        let url = url.to_string();
+        if let Some(chemin) = crate::rendu::chemin_de_url(&url) {
+            return chemin.is_dir();
+        }
+        // « file://serveur/partage/… » : un partage réseau, sous Windows
+        // « \\serveur\partage\… ».
+        let partage = url
+            .get(..7)
+            .filter(|p| p.eq_ignore_ascii_case("file://"))
+            .and_then(|_| crate::rendu::decoder_pourcent(&url[7..]))
+            .filter(|reste| !reste.is_empty() && !reste.starts_with('/'));
+        cfg!(windows) && partage.is_some_and(|reste| std::path::Path::new(&format!(r"\\{}", reste.replace('/', r"\"))).is_dir())
     }
 
     pub fn google_ajout_ouvert(&self) -> bool {

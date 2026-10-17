@@ -117,6 +117,9 @@ ApplicationWindow {
         id: reglagesPieces
         category: "pieces"
         property string logiciels: "{}"
+        // Dernier dossier où une pièce jointe a été enregistrée (adresse
+        // file:///), proposé à l'enregistrement suivant.
+        property string dernierDossier: ""
     }
     // « Ouvrir avec… » d'une seule fois : { extension, programme }, repris
     // quand le noyau a écrit la pièce.
@@ -179,6 +182,8 @@ ApplicationWindow {
     property var selection: ({})
     property int ancre: -1
     property int uidCourant: 0
+    /// Adresse de l'expéditeur du message affiché (« Copier l'adresse » de l'en-tête).
+    property string adresseAffichee: ""
     // Invitation, réponse ou annulation portée par le message affiché (cf.
     // `Boite.invitationRecue`) ; et la réponse en cours d'envoi.
     property var invitation: ({})
@@ -1578,21 +1583,21 @@ ApplicationWindow {
                         }
                     }
                     // L'objet, en titre dans la police des titres sous une
-                    // apparence de marque.
-                    Label {
+                    // apparence de marque. L'objet et l'expéditeur se
+                    // sélectionnent et se copient (Ctrl+C, clic droit) ; trop
+                    // longs, ils passent à la ligne au lieu d'être coupés.
+                    EnTeteSelectionnable {
                         id: sujetAffiche
                         font.bold: true
                         font.family: fenetre.marque ? fenetre.policeTitres : fenetre.font.family
                         font.pointSize: fenetre.tailleMessage * (fenetre.titresEtroits ? 1.4
                                                                  : fenetre.marque ? 1.2 : 1)
-                        elide: Text.ElideRight
                         Layout.fillWidth: true
                         Layout.topMargin: fenetre.marque ? 2 : 0
                     }
-                    Label {
+                    EnTeteSelectionnable {
                         id: auteurAffiche
                         opacity: 0.8
-                        elide: Text.ElideRight
                         Layout.fillWidth: true
                     }
                     Label {
@@ -3481,8 +3486,13 @@ ApplicationWindow {
                 visible: zoneLigne.drag.active
                 Drag.active: zoneLigne.drag.active
                 Drag.keys: model.genre === "compte" ? ["mmail/compte"] : ["mmail/dossier"]
-                Drag.hotSpot.x: 8
-                Drag.hotSpot.y: height / 2
+                // Le point de dépôt est la pointe de la souris : l'étiquette
+                // part de l'appui, coin haut gauche sous le pointeur (cf.
+                // onPressed). Un point au milieu de son bord gauche, à une
+                // demi-hauteur sous la pointe, déposait souvent dans le
+                // dossier du dessous (retour d'une utilisatrice du 16/10).
+                Drag.hotSpot.x: 0
+                Drag.hotSpot.y: 0
                 Drag.supportedActions: Qt.MoveAction
                 Label {
                     id: texteEtiquetteDossier
@@ -3750,8 +3760,13 @@ ApplicationWindow {
                 visible: zone.drag.active
                 Drag.active: zone.drag.active
                 Drag.keys: ["mmail/messages"]
-                Drag.hotSpot.x: 8
-                Drag.hotSpot.y: height / 2
+                // Le point de dépôt est la pointe de la souris : l'étiquette
+                // part de l'appui, coin haut gauche sous le pointeur (cf.
+                // onPressed). Un point au milieu de son bord gauche, à une
+                // demi-hauteur sous la pointe, déposait souvent dans le
+                // dossier du dessous (retour d'une utilisatrice du 16/10).
+                Drag.hotSpot.x: 0
+                Drag.hotSpot.y: 0
                 Drag.supportedActions: Qt.MoveAction
                 Label {
                     id: texteEtiquette
@@ -4205,7 +4220,63 @@ ApplicationWindow {
         property int uid: 0
         title: qsTr("Enregistrer la pièce jointe")
         fileMode: FileDialog.SaveFile
-        onAccepted: boite.enregistrerPiece(uid, piece.indice, selectedFile.toString())
+        onAccepted: {
+            var fichier = selectedFile.toString()
+            reglagesPieces.dernierDossier = fichier.substring(0, fichier.lastIndexOf("/"))
+            boite.enregistrerPiece(uid, piece.indice, fichier)
+        }
+    }
+
+    /// Ligne d'en-tête du message affiché (objet, expéditeur) : un texte
+    /// sélectionnable, sans cadre, aux couleurs d'un Label.
+    component EnTeteSelectionnable: TextEdit {
+        readOnly: true
+        selectByMouse: true
+        textFormat: TextEdit.PlainText
+        wrapMode: TextEdit.Wrap
+        color: fenetre.palette.windowText
+        selectionColor: fenetre.palette.highlight
+        selectedTextColor: fenetre.palette.highlightedText
+        font.pointSize: fenetre.tailleMessage
+        // Comme dans le corps : un Ctrl+C explicite passe par la règle du
+        // presse-papier, qui sait ainsi que le dépôt vient de MMail.
+        Keys.onPressed: function(touche) {
+            if (touche.matches(StandardKey.Copy) && selectedText.length > 0) {
+                fenetre.copierTexte(selectedText, "message")
+                touche.accepted = true
+            }
+        }
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
+            onTapped: {
+                menuEnTete.texteChoisi = parent.selectedText
+                menuEnTete.popup()
+            }
+        }
+    }
+
+    // Clic droit sur l'objet ou l'expéditeur du message affiché.
+    Menu {
+        id: menuEnTete
+        property string texteChoisi: ""
+        font.pointSize: fenetre.tailleColonne("message")
+        onAboutToShow: width = fenetre.largeurMenu(menuEnTete)
+        MenuItem {
+            text: qsTr("Copier")
+            enabled: menuEnTete.texteChoisi.length > 0
+            onTriggered: fenetre.copierTexte(menuEnTete.texteChoisi, "message")
+        }
+        MenuItem {
+            text: qsTr("Copier l'adresse de l'expéditeur")
+            enabled: fenetre.adresseAffichee.length > 0
+            onTriggered: fenetre.copierTexte(fenetre.adresseAffichee, "message")
+        }
+        MenuItem {
+            text: qsTr("Copier l'objet")
+            enabled: sujetAffiche.text.length > 0
+            onTriggered: fenetre.copierTexte(sujetAffiche.text, "message")
+        }
     }
 
     Menu {
@@ -5252,11 +5323,14 @@ ApplicationWindow {
                     + "s'affiche dans la barre du bas. "
                     + "Le bouton « Source » affiche le message brut, en-têtes compris. Un texte "
                     + "sélectionné part au presse-papier, sauf ce qu'un autre logiciel vient d'y "
-                    + "déposer, protégé une minute. Sous Android, l'appui long choisit un mot et ouvre "
+                    + "déposer, protégé une minute. L'objet et l'expéditeur se sélectionnent aussi "
+                    + "(Ctrl+C) ; clic droit : « Copier l'adresse de l'expéditeur », « Copier l'objet ». "
+                    + "Sous Android, l'appui long choisit un mot et ouvre "
                     + "la barre d'Android (Copier, Tout sélectionner) ; un toucher la referme.<br><br>"
                     + "<b>Pièces jointes</b><br>"
                     + "Une ligne par pièce sous l'en-tête du message : son type, son nom, sa taille, "
-                    + "« Ouvrir » et « Enregistrer sous… ». Clic droit sur une pièce : « Ouvrir avec… » un "
+                    + "« Ouvrir » et « Enregistrer sous… », qui propose le dernier dossier choisi. "
+                    + "Clic droit sur une pièce : « Ouvrir avec… » un "
                     + "autre logiciel, pour cette fois ou pour tous les fichiers du même type (menu "
                     + "Affichage, « Logiciels d'ouverture… », pour les revoir) ; un type que le système ne "
                     + "sait pas ouvrir fait choisir le logiciel, retenu d'emblée ; « Joindre au message en "
@@ -5770,6 +5844,8 @@ ApplicationWindow {
                 fenetre.etapeScenarioGlisser()
             if (fenetre.essai && fenetre.essai.scenario === "corbeille-ligne")
                 fenetre.etapeScenarioCorbeille()
+            if (fenetre.essai && fenetre.essai.scenario === "en-tete")
+                fenetre.etapeScenarioEnTete()
             if (fenetre.essai && fenetre.essai.scenario === "chevron")
                 fenetre.etapeScenarioChevron()
             if (fenetre.essai && (fenetre.essai.scenario === "defilement" || fenetre.essai.scenario === "favoris-fixes"))
@@ -6325,6 +6401,7 @@ ApplicationWindow {
             uidCourant = 0
             sujetAffiche.text = ""
             auteurAffiche.text = ""
+            adresseAffichee = ""
             afficherTexte(qsTr("Aucun message sélectionné."))
         }
         messageEtat.texte = qsTr("Message mis à la corbeille.")
@@ -6956,6 +7033,7 @@ ApplicationWindow {
         uidCourant = 0
         sujetAffiche.text = ""
         auteurAffiche.text = ""
+        adresseAffichee = ""
         afficherTexte(qsTr("Aucun message sélectionné."))
     }
 
@@ -7132,6 +7210,7 @@ ApplicationWindow {
             uidCourant = 0
             sujetAffiche.text = ""
             auteurAffiche.text = ""
+            adresseAffichee = ""
             afficherTexte(qsTr("Aucun message sélectionné."))
         }
     }
@@ -7669,6 +7748,7 @@ ApplicationWindow {
                     + (ligne.adresse.length > 0 && ligne.adresse !== ligne.expediteur
                        ? " <" + ligne.adresse + ">" : "")
                     + "  ·  " + dateLongue(ligne.date)
+            adresseAffichee = ligne.adresse
         }
         confirmationDemandee = ""
         afficherTexte(qsTr("Chargement…"))
@@ -7873,6 +7953,7 @@ ApplicationWindow {
         uidCourant = 0
         sujetAffiche.text = ""
         auteurAffiche.text = ""
+        adresseAffichee = ""
         afficherTexte(qsTr("Aucun message sélectionné."))
         // Comme Outlook : le message suivant prend la place.
         if (suivant >= 0 && modeleMessages.count > 0 && !compact)
@@ -7963,13 +8044,22 @@ ApplicationWindow {
         reglagesPieces.logiciels = JSON.stringify(m)
     }
 
+    /// Dossier proposé à l'enregistrement d'une pièce jointe.
+    function dossierEnregistrement() {
+        var dernier = reglagesPieces.dernierDossier
+        return dernier.length > 0 && boite.dossierExiste(dernier) ? dernier : dossierTelechargements
+    }
+
     function enregistrerPiece(piece) {
         if (!piece)
             return
         dlgEnregistrerPiece.piece = piece
         dlgEnregistrerPiece.uid = uidCourant
-        dlgEnregistrerPiece.currentFolder = dossierTelechargements
-        dlgEnregistrerPiece.selectedFile = dossierTelechargements + "/" + encodeURIComponent(piece.nom)
+        // Le dernier dossier choisi, s'il existe encore ; sinon les
+        // téléchargements de l'utilisateur.
+        var dossier = dossierEnregistrement()
+        dlgEnregistrerPiece.currentFolder = dossier
+        dlgEnregistrerPiece.selectedFile = dossier + "/" + encodeURIComponent(piece.nom)
         dlgEnregistrerPiece.open()
     }
 
@@ -9075,6 +9165,39 @@ ApplicationWindow {
     /// message affiché, la corbeille de la deuxième ligne l'envoie à la
     /// corbeille sans toucher au message affiché ni à la sélection ; il y est
     /// retrouvé, puis ramené.
+    // Scénario « en-tete » : l'objet et l'expéditeur du message affiché se
+    // sélectionnent et se copient ; « Enregistrer sous… » propose le dernier
+    // dossier choisi s'il existe, sinon les téléchargements.
+    function etapeScenarioEnTete() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret" || essai.etape || boite.dossierCourant !== "INBOX" || modeleMessages.count < 1)
+            return
+        essai.etape = 1
+        choisir(0, 0)
+        var ligne = modeleMessages.get(0)
+        sujetAffiche.selectAll()
+        console.log("scenario: objet sélectionnable", sujetAffiche.selectByMouse && sujetAffiche.readOnly,
+                    "| sélection = objet", sujetAffiche.selectedText === ligne.sujet)
+        menuEnTete.texteChoisi = sujetAffiche.selectedText
+        copierTexte(menuEnTete.texteChoisi, "message")
+        console.log("scenario: copie de l'objet", pressePapier.texte === ligne.sujet)
+        copierTexte(adresseAffichee, "message")
+        console.log("scenario: copie de l'adresse", adresseAffichee.length > 0 && pressePapier.texte === ligne.adresse,
+                    "|", adresseAffichee)
+        auteurAffiche.selectAll()
+        console.log("scenario: expéditeur sélectionnable", auteurAffiche.selectedText.indexOf(ligne.adresse) >= 0)
+        reglagesPieces.dernierDossier = ""
+        var d1 = dossierEnregistrement()
+        reglagesPieces.dernierDossier = "file:///tmp"
+        var d2 = dossierEnregistrement()
+        reglagesPieces.dernierDossier = "file:///tmp/mmail-dossier-absent"
+        var d3 = dossierEnregistrement()
+        reglagesPieces.dernierDossier = ""
+        console.log("scenario: dossier d'enregistrement", d1 === dossierTelechargements, d2 === "file:///tmp",
+                    d3 === dossierTelechargements)
+        Qt.quit()
+    }
+
     function etapeScenarioCorbeille() {
         var a = listeComptes()[0]
         if (!a || a.etat !== "pret")

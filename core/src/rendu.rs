@@ -196,8 +196,55 @@ fn filtrer(
         }
         ("img", "src") => Some(source_image(valeur.trim(), collecte, resoudre)),
         (_, "src") | (_, "href") => None,
+        (_, "bgcolor") | (_, "color") => couleur(valeur),
         _ => Some(valeur.to_string()),
     }
+}
+
+/// Noms de couleurs que le moteur de Qt connaît (ceux de CSS).
+const NOMS_DE_COULEURS: &[&str] = &[
+    "aliceblue", "antiquewhite", "aqua", "aquamarine", "azure", "beige", "bisque", "black",
+    "blanchedalmond", "blue", "blueviolet", "brown", "burlywood", "cadetblue", "chartreuse",
+    "chocolate", "coral", "cornflowerblue", "cornsilk", "crimson", "cyan", "darkblue", "darkcyan",
+    "darkgoldenrod", "darkgray", "darkgreen", "darkgrey", "darkkhaki", "darkmagenta",
+    "darkolivegreen", "darkorange", "darkorchid", "darkred", "darksalmon", "darkseagreen",
+    "darkslateblue", "darkslategray", "darkslategrey", "darkturquoise", "darkviolet", "deeppink",
+    "deepskyblue", "dimgray", "dimgrey", "dodgerblue", "firebrick", "floralwhite", "forestgreen",
+    "fuchsia", "gainsboro", "ghostwhite", "gold", "goldenrod", "gray", "green", "greenyellow",
+    "grey", "honeydew", "hotpink", "indianred", "indigo", "ivory", "khaki", "lavender",
+    "lavenderblush", "lawngreen", "lemonchiffon", "lightblue", "lightcoral", "lightcyan",
+    "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightsalmon",
+    "lightseagreen", "lightskyblue", "lightslategray", "lightslategrey", "lightsteelblue",
+    "lightyellow", "lime", "limegreen", "linen", "magenta", "maroon", "mediumaquamarine",
+    "mediumblue", "mediumorchid", "mediumpurple", "mediumseagreen", "mediumslateblue",
+    "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream",
+    "mistyrose", "moccasin", "navajowhite", "navy", "oldlace", "olive", "olivedrab", "orange",
+    "orangered", "orchid", "palegoldenrod", "palegreen", "paleturquoise", "palevioletred",
+    "papayawhip", "peachpuff", "peru", "pink", "plum", "powderblue", "purple", "red", "rosybrown",
+    "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen", "seashell", "sienna", "silver",
+    "skyblue", "slateblue", "slategray", "slategrey", "snow", "springgreen", "steelblue", "tan",
+    "teal", "thistle", "tomato", "transparent", "turquoise", "violet", "wheat", "white",
+    "whitesmoke", "yellow", "yellowgreen",
+];
+
+/// Couleur d'un attribut `bgcolor` ou `color`, telle que le moteur de Qt la
+/// comprend, ou `None` pour l'écarter. Les navigateurs tolèrent un code
+/// hexadécimal sans « # » (`bgcolor="ffffff"`) ; Qt n'y voit pas une couleur
+/// et peint le fond en noir, ce qui rendait illisibles des courriels entiers
+/// (notification 3CX du 16/10). Le « # » est rétabli ; toute autre valeur
+/// qu'un code ou un nom connu est écartée — mieux vaut pas de fond qu'un fond
+/// noir.
+fn couleur(valeur: &str) -> Option<String> {
+    let v = valeur.trim();
+    let hexa = |h: &str| matches!(h.len(), 3 | 6) && h.chars().all(|c| c.is_ascii_hexdigit());
+    if let Some(code) = v.strip_prefix('#') {
+        return hexa(code).then(|| v.to_string());
+    }
+    if hexa(v) {
+        return Some(format!("#{v}"));
+    }
+    let nom = v.to_ascii_lowercase();
+    NOMS_DE_COULEURS.contains(&nom.as_str()).then_some(nom)
 }
 
 /// Repère qui remplace l'adresse d'une image.
@@ -719,6 +766,30 @@ mod tests {
         assert_eq!(css_sur("a:url(\"x)y\");b:1"), "a:none;b:1");
         assert_eq!(css_sur("width:expression(alert(1))"), "width:nonealert(1))");
         assert_eq!(css_sur("color:URL(x"), "color:none");
+    }
+
+    #[test]
+    fn couleurs_sans_diese_retablies() {
+        assert_eq!(couleur("ffffff").as_deref(), Some("#ffffff"));
+        assert_eq!(couleur(" FFF ").as_deref(), Some("#FFF"));
+        assert_eq!(couleur("#0596D4").as_deref(), Some("#0596D4"));
+        assert_eq!(couleur("White").as_deref(), Some("white"));
+        // Ce que Qt peindrait en noir est écarté.
+        assert_eq!(couleur("#ff00"), None);
+        assert_eq!(couleur("fffff"), None);
+        assert_eq!(couleur("rgb(1,2,3)"), None);
+        assert_eq!(couleur("blanc"), None);
+        assert_eq!(couleur(""), None);
+        // La lettre 3CX du 16/10 : cadre blanc déclaré sans « # ».
+        let c = corps_html(&message(
+            "<table bgcolor=\"ffffff\" width=\"600\"><tr><td><font color=\"373737\">Bonjour</font></td></tr></table>\
+             <p><font color=\"nimportequoi\">x</font></p>",
+        ))
+        .unwrap();
+        assert!(!c.html.contains("\"ffffff\"") && !c.html.contains(":ffffff"), "{}", c.html);
+        assert!(c.html.contains("#ffffff"), "{}", c.html);
+        assert!(c.html.contains("#373737"), "{}", c.html);
+        assert!(!c.html.contains("nimportequoi"), "{}", c.html);
     }
 
     #[test]
