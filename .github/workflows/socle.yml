@@ -64,6 +64,104 @@ jobs:
         run: cmake --build _build --config Release
       - name: Tests du noyau
         run: cargo test --manifest-path core/Cargo.toml
+      # ---- Linux : le client contre un vrai Dovecot ---------------------------
+      - name: Épreuves contre un Dovecot
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Les épreuves de core/src/essais_serveur.rs, jusqu'ici lancées à la
+          # main contre le Mailcow de MMEDIA, ici contre un Dovecot du poste de
+          # construction : deux comptes jetables, séparateur « / », dossiers à
+          # rôle (SPECIAL-USE), « Essais/Clients » créé d'office. Son certificat
+          # est signé par une autorité d'essai ajoutée au magasin du système,
+          # celui que lit le client (rustls-platform-verifier) : il vérifie le
+          # serveur comme chez un utilisateur. Hors champ : l'envoi SMTP et
+          # l'agenda (SOGo), toujours éprouvés à la main.
+          set -euo pipefail
+          sudo apt-get install -y -q dovecot-imapd > /dev/null
+          sudo systemctl stop dovecot
+          D=/tmp/mmail-dovecot
+          mkdir -p $D/boites
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=MMail autorite d'essai" \
+            -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -keyout $D/ac.key -out $D/ac.crt 2> /dev/null
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
+            -keyout $D/serveur.key -out $D/serveur.csr 2> /dev/null
+          printf 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' > $D/ext
+          openssl x509 -req -in $D/serveur.csr -CA $D/ac.crt -CAkey $D/ac.key -CAcreateserial -days 2 \
+            -extfile $D/ext -out $D/serveur.crt 2> /dev/null
+          sudo cp $D/ac.crt /usr/local/share/ca-certificates/mmail-essai.crt
+          sudo update-ca-certificates > /dev/null
+          M1=$(openssl rand -hex 12)
+          M2=$(openssl rand -hex 12)
+          printf 'un@essai.test:{PLAIN}%s::::::\ndeux@essai.test:{PLAIN}%s::::::\n' "$M1" "$M2" > $D/comptes
+          chmod 644 $D/comptes
+          cat > $D/dovecot.conf <<FIN
+          base_dir = $D/run
+          protocols = imap
+          listen = 127.0.0.1
+          ssl = required
+          ssl_cert = <$D/serveur.crt
+          ssl_key = <$D/serveur.key
+          auth_mechanisms = plain login
+          log_path = $D/dovecot.log
+          passdb {
+            driver = passwd-file
+            args = scheme=PLAIN $D/comptes
+          }
+          userdb {
+            driver = static
+            args = uid=$(id -u) gid=$(id -g) home=$D/boites/%u
+          }
+          mail_location = maildir:~/Maildir
+          namespace inbox {
+            inbox = yes
+            separator = /
+            mailbox Drafts {
+              special_use = \Drafts
+              auto = subscribe
+            }
+            mailbox Sent {
+              special_use = \Sent
+              auto = subscribe
+            }
+            mailbox Trash {
+              special_use = \Trash
+              auto = subscribe
+            }
+            mailbox Junk {
+              special_use = \Junk
+              auto = subscribe
+            }
+            mailbox Archive {
+              special_use = \Archive
+              auto = subscribe
+            }
+            mailbox Essais {
+              auto = subscribe
+            }
+            mailbox "Essais/Clients" {
+              auto = subscribe
+            }
+          }
+          FIN
+          # Les épreuves lisent une boîte de réception déjà garnie, comme celles
+          # du Mailcow : trois messages par compte, objet accentué.
+          for u in un@essai.test deux@essai.test; do
+            m=$D/boites/$u/Maildir
+            mkdir -p $m/cur $m/new $m/tmp
+            for i in 1 2 3; do
+              printf 'From: Essai MMail <essai@essai.test>\nTo: %s\nSubject: =?UTF-8?Q?Pr=C3=A9paration_d=E2=80=99essai_%s?=\nDate: Fri, 16 Oct 2026 10:0%s:00 +0200\nMessage-ID: <graine-%s-%s@essai.test>\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\nMessage d essai %s : été, à, ça.\n' \
+                "$u" $i $i $i "${u%@*}" $i > $m/new/graine-$i.essai
+            done
+          done
+          sudo dovecot -c $D/dovecot.conf
+          for i in $(seq 30); do (exec 3<> /dev/tcp/127.0.0.1/993) 2> /dev/null && break; sleep 1; done
+          MMAIL_HOTE=localhost MMAIL_UTILISATEUR=un@essai.test MMAIL_MOTDEPASSE=$M1 \
+          MMAIL_UTILISATEUR2=deux@essai.test MMAIL_MOTDEPASSE2=$M2 \
+            cargo test --manifest-path core/Cargo.toml essais_serveur -- --ignored --test-threads=1 \
+              --skip envoi_smtp --skip agenda --skip invitation \
+            || { sudo cat $D/dovecot.log; exit 1; }
       - name: Test de fumée
         run: ctest --test-dir _build --output-on-failure -C Release
         env:

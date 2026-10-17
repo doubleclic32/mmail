@@ -497,12 +497,28 @@ Qt 6.4 au minimum, Rust stable, `libsecret-1-dev` sous Linux. Les paquets —
 installeur Windows, AppImage, APK — sont produits par l'intégration continue
 (`.github/workflows/socle.yml`).
 
+L'interface est en QML, dans `core/qml/` : `Main.qml` porte la fenêtre, ses
+réglages, ses raccourcis et ses actions ; chaque élément a son fichier — les trois
+volets (`VoletArborescence.qml`, `VoletListe.qml`, `VoletLecture.qml`), la
+rédaction (`Redaction.qml`), les lignes de la liste et de l'arborescence, les
+dialogues et menus, les réactions aux signaux du noyau (`ReactionsNoyau.qml`),
+l'agenda (`Agenda.qml`). Les scénarios d'essai de `Scenarios.qml` pilotent
+l'interface sans écran contre une boîte d'essai, chaque étape tracée sur la
+console : `MMAIL_HOTE`, `MMAIL_UTILISATEUR`, `MMAIL_MOTDEPASSE` (et
+`MMAIL_UTILISATEUR2`, `MMAIL_MOTDEPASSE2` pour un second compte),
+`MMAIL_SCENARIO` (`aller-retour`, `glisser`, `recherche`, `accessibilite`…),
+`MMAIL_PROFIL` pour un profil jetable.
+
 Épreuves contre un vrai serveur, ignorées par défaut (identifiants fournis par
 l'environnement, cf. `core/src/essais_serveur.rs`) :
 
 ```sh
 cargo test --manifest-path core/Cargo.toml -- --ignored --test-threads=1
 ```
+
+L'intégration continue les passe sous Linux contre un Dovecot monté pour
+l'occasion — deux comptes jetables, certificat signé par une autorité d'essai
+posée dans le magasin du système —, hors envoi SMTP et agenda.
 
 ## Licence
 
