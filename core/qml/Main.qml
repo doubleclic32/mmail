@@ -1829,6 +1829,54 @@ ApplicationWindow {
 
     DialogueAPropos { id: dlgAPropos }
 
+    DialogueFiltres { id: dlgFiltres }
+
+    // Sous Android : la page de connexion Microsoft intégrée (cf.
+    // ConnexionIntegree.qml, absente du module ailleurs).
+    Loader {
+        id: chargeurConnexion
+        active: Qt.platform.os === "android"
+        source: active ? "ConnexionIntegree.qml" : ""
+    }
+    Connections {
+        target: chargeurConnexion.item
+        ignoreUnknownSignals: true
+        function onRetour(url) {
+            if (!boite.terminerMicrosoft(url))
+                messageEtat.texte = qsTr("Retour de connexion inattendu : relancez « Ajouter un compte Microsoft… ».")
+        }
+        function onAbandon() {
+            messageEtat.texte = qsTr("Connexion à Microsoft abandonnée.")
+        }
+    }
+
+    // « Créer un filtre… » sur un message : un filtre sur son expéditeur, pour
+    // son compte, à compléter dans le dialogue des filtres.
+    function creerFiltre() {
+        var uids = uidsChoisis()
+        if (uids.length === 0)
+            return
+        var r = null
+        for (var i = 0; i < modeleMessages.count; ++i) {
+            var m = modeleMessages.get(i)
+            if (m.uid === uids[0] && (!listeMulti || cleResultat(m.compte, m.chemin, m.uid) === cleChoisie)) {
+                r = m
+                break
+            }
+        }
+        if (!r)
+            return
+        var compte = listeMulti ? r.compte : boite.compteCourant
+        var adresse = ""
+        for (var c = 0; c < comptesConnus.length; ++c) {
+            if (comptesConnus[c].compte === compte)
+                adresse = comptesConnus[c].adresse
+        }
+        dlgFiltres.ouvrir({ nom: r.expediteur || r.adresse, actif: true, compte: adresse, tout: true,
+                            conditions: [{ champ: "expediteur", operateur: "est", valeur: r.adresse }],
+                            lu: false, suivi: false, destination: "dossier", dossier: "", arreter: false })
+    }
+
     Dialog {
         id: dlgRetrait
         property int compteId: 0
@@ -2585,6 +2633,49 @@ ApplicationWindow {
         messageEtat.texte = qsTr("Connexion à Google dans votre navigateur : MMail attend son retour…")
     }
 
+    /// Ajout d'un compte Microsoft : l'adresse d'abord — elle mène à la
+    /// connexion de son organisation, ou à celle des comptes personnels pour
+    /// Outlook.com, sans passer par un compte déjà connecté dans le navigateur
+    /// (retour de Manu du 18/10).
+    function ajouterMicrosoft(adresse) {
+        if (adresse.indexOf("@") > 0) {
+            connecterMicrosoft(adresse)
+            return
+        }
+        dlgAdresseMicrosoft.open()
+    }
+    Dialog {
+        id: dlgAdresseMicrosoft
+        title: qsTr("Compte Microsoft")
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(460, fenetre.width - 24)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: {
+            champAdresseMicrosoft.text = ""
+            champAdresseMicrosoft.forceActiveFocus()
+        }
+        onAccepted: {
+            if (champAdresseMicrosoft.text.indexOf("@") > 0)
+                fenetre.connecterMicrosoft(champAdresseMicrosoft.text.trim())
+        }
+        ColumnLayout {
+            width: parent.width
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Adresse du compte (Office 365 de l'entreprise, ou Outlook.com) :")
+            }
+            TextField {
+                id: champAdresseMicrosoft
+                Layout.fillWidth: true
+                placeholderText: qsTr("prenom.nom@entreprise.fr")
+                inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase
+                onAccepted: dlgAdresseMicrosoft.accept()
+            }
+        }
+    }
+
     /// Connexion d'un compte Microsoft : la page de Microsoft s'ouvre dans le
     /// navigateur ; la suite revient par `microsoftConnecte` ou
     /// `microsoftRefuse`. `indice` : l'adresse d'un compte à reconnecter.
@@ -2596,6 +2687,13 @@ ApplicationWindow {
         var url = boite.connecterMicrosoft(indice)
         if (url.length === 0) {
             messageEtat.texte = qsTr("Connexion à Microsoft impossible : %1").arg(boite.erreur)
+            return
+        }
+        // Sous Android, dans la page intégrée : le navigateur du système
+        // laisserait MMail gelé en arrière-plan (retour de Manu du 18/10).
+        if (chargeurConnexion.item) {
+            chargeurConnexion.item.ouvrir(url)
+            messageEtat.texte = qsTr("Connexion à Microsoft…")
             return
         }
         Qt.openUrlExternally(url)

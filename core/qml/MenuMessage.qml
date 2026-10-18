@@ -39,6 +39,10 @@ Menu {
         text: qsTr("Transférer")
         onTriggered: fenetre.rediger("transferer")
     }
+    MenuItem {
+        text: qsTr("Créer un filtre…")
+        onTriggered: fenetre.creerFiltre()
+    }
     MenuSeparator {}
     MenuItem {
         text: qsTr("Poser un drapeau de suivi")

@@ -429,6 +429,8 @@ jobs:
           host: all_os
           target: android
           arch: android_${{ matrix.abi }}
+          # La page de connexion Microsoft intégrée (cf. ConnexionIntegree.qml).
+          modules: qtwebview
           cache: true
       - uses: actions/setup-java@v4
         with:

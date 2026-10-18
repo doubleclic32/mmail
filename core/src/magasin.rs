@@ -31,7 +31,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 13;
+const VERSION_SCHEMA: i32 = 14;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -470,6 +470,27 @@ impl Magasin {
         if version < 13 {
             self.ajouter_colonne("accounts", "auth", "TEXT NOT NULL DEFAULT ''")?;
         }
+        // Version 14 : les filtres (0.6.0, cf. `filtres`) — leur liste ; le
+        // dernier message de chaque boîte de réception qu'ils ont lu ; les
+        // messages qu'ils ont touchés, qu'un retour à la main ne refiltre pas.
+        if version < 14 {
+            self.base.execute_batch(
+                "CREATE TABLE IF NOT EXISTS filtres (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS filtres_etat (
+                     account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                     chemin      TEXT NOT NULL,
+                     uidvalidity INTEGER NOT NULL,
+                     uid         INTEGER NOT NULL,
+                     PRIMARY KEY (account_id, chemin)
+                 );
+                 CREATE TABLE IF NOT EXISTS filtres_vus (
+                     account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                     message_id  TEXT NOT NULL,
+                     quand       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                     PRIMARY KEY (account_id, message_id)
+                 );",
+            )?;
+        }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
     }
@@ -489,6 +510,122 @@ impl Magasin {
     // ------------------------------------------------------------- comptes
 
     /// Identifiant d'un compte déjà enregistré, sans rien créer.
+    /// Liste des filtres du profil, en JSON (cf. `filtres`) ; vide s'il n'y
+    /// en a pas.
+    pub fn filtres(&self) -> Resultat<String> {
+        Ok(self
+            .base
+            .query_row("SELECT valeur FROM filtres WHERE cle = 'liste'", [], |l| l.get(0))
+            .optional()?
+            .unwrap_or_default())
+    }
+
+    pub fn poser_filtres(&self, json: &str) -> Resultat<()> {
+        self.base.execute(
+            "INSERT INTO filtres (cle, valeur) VALUES ('liste', ?1)
+             ON CONFLICT (cle) DO UPDATE SET valeur = excluded.valeur",
+            [json],
+        )?;
+        Ok(())
+    }
+
+    /// Dernier message du dossier `chemin` du compte que les filtres ont lu,
+    /// et l'`UIDVALIDITY` sous laquelle ; `None` : jamais.
+    pub fn filtres_etat(&self, compte: i64, chemin: &str) -> Resultat<Option<(u32, u32)>> {
+        Ok(self
+            .base
+            .query_row(
+                "SELECT uidvalidity, uid FROM filtres_etat WHERE account_id = ?1 AND chemin = ?2",
+                params![compte, chemin],
+                |l| Ok((l.get(0)?, l.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn poser_filtres_etat(&self, compte: i64, chemin: &str, uidvalidity: u32, uid: u32) -> Resultat<()> {
+        self.base.execute(
+            "INSERT INTO filtres_etat (account_id, chemin, uidvalidity, uid) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (account_id, chemin) DO UPDATE SET uidvalidity = excluded.uidvalidity, uid = excluded.uid",
+            params![compte, chemin, uidvalidity, uid],
+        )?;
+        Ok(())
+    }
+
+    /// Messages du dossier `chemin` du compte au-delà de l'UID `apres`, dans
+    /// l'ordre d'arrivée, et l'`UIDVALIDITY` du dossier — 0 s'il n'est pas
+    /// encore indexé.
+    pub fn recus_apres(&self, compte: i64, chemin: &str, apres: u32) -> Resultat<(u32, Vec<crate::filtres::Recu>)> {
+        let dossier: Option<(i64, u32)> = self
+            .base
+            .query_row(
+                "SELECT id, uidvalidity FROM folders WHERE account_id = ?1 AND chemin = ?2",
+                params![compte, chemin],
+                |l| Ok((l.get(0)?, l.get(1)?)),
+            )
+            .optional()?;
+        let Some((dossier, uidvalidity)) = dossier else {
+            return Ok((0, Vec::new()));
+        };
+        let mut requete = self.base.prepare(
+            "SELECT uid, message_id, expediteur, adresse, sujet FROM messages
+             WHERE folder_id = ?1 AND uid > ?2 ORDER BY uid",
+        )?;
+        let recus = requete
+            .query_map(params![dossier, apres], |l| {
+                Ok(crate::filtres::Recu {
+                    uid: l.get(0)?,
+                    message_id: l.get(1)?,
+                    expediteur: l.get(2)?,
+                    adresse: l.get(3)?,
+                    sujet: l.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((uidvalidity, recus))
+    }
+
+    /// `UIDVALIDITY` du dossier `chemin` du compte et son plus haut UID
+    /// indexé ; `(0, 0)` s'il n'est pas encore indexé.
+    pub fn uid_max(&self, compte: i64, chemin: &str) -> Resultat<(u32, u32)> {
+        Ok(self
+            .base
+            .query_row(
+                "SELECT f.uidvalidity, COALESCE(MAX(m.uid), 0) FROM folders f
+                 LEFT JOIN messages m ON m.folder_id = f.id
+                 WHERE f.account_id = ?1 AND f.chemin = ?2 GROUP BY f.id",
+                params![compte, chemin],
+                |l| Ok((l.get(0)?, l.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((0, 0)))
+    }
+
+    /// Ceux des `Message-ID` donnés qu'un filtre a déjà touchés sur ce compte.
+    pub fn filtres_vus(&self, compte: i64, ids: &[String]) -> Resultat<HashSet<String>> {
+        let mut requete =
+            self.base.prepare("SELECT 1 FROM filtres_vus WHERE account_id = ?1 AND message_id = ?2")?;
+        let mut vus = HashSet::new();
+        for id in ids.iter().filter(|id| !id.is_empty()) {
+            if requete.exists(params![compte, id])? {
+                vus.insert(id.clone());
+            }
+        }
+        Ok(vus)
+    }
+
+    /// Note les messages touchés par un filtre ; oublie ceux d'il y a plus
+    /// de 90 jours.
+    pub fn noter_filtres_vus(&self, compte: i64, ids: &[String]) -> Resultat<()> {
+        for id in ids.iter().filter(|id| !id.is_empty()) {
+            self.base.execute(
+                "INSERT OR REPLACE INTO filtres_vus (account_id, message_id) VALUES (?1, ?2)",
+                params![compte, id],
+            )?;
+        }
+        self.base.execute("DELETE FROM filtres_vus WHERE quand < strftime('%s','now') - 90 * 86400", [])?;
+        Ok(())
+    }
+
     pub fn compte_connu(&self, adresse: &str) -> Resultat<Option<i64>> {
         Ok(self
             .base

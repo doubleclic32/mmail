@@ -122,6 +122,8 @@ Connections {
                 scenarios.etapeScenarioCorbeille()
             if (fenetre.essai.scenario === "glisser-ligne")
                 scenarios.etapeScenarioGlisserLigne()
+            if (fenetre.essai.scenario === "filtres")
+                scenarios.etapeScenarioFiltres()
         }
     }
 
@@ -220,10 +222,14 @@ Connections {
             scenarios.etapeScenarioCorbeille()
         if (fenetre.essai && fenetre.essai.scenario === "glisser-ligne")
             scenarios.etapeScenarioGlisserLigne()
+        if (fenetre.essai && fenetre.essai.scenario === "filtres")
+            scenarios.etapeScenarioFiltres()
         if (fenetre.essai && fenetre.essai.scenario === "en-tete")
             scenarios.etapeScenarioEnTete()
         if (fenetre.essai && fenetre.essai.scenario === "dialogues")
             scenarios.etapeScenarioDialogues()
+        if (fenetre.essai && fenetre.essai.scenario === "image-filtres")
+            scenarios.etapeScenarioImageFiltres()
         if (fenetre.essai && fenetre.essai.scenario === "tactile")
             scenarios.etapeScenarioTactile()
         if (fenetre.essai && fenetre.essai.scenario === "accessibilite")
@@ -543,6 +549,16 @@ Connections {
         }
     }
 
+    // Des filtres ont agi : leurs déplacements, lancés par le noyau, rendront
+    // chacun « deplacementTermine », comme ceux de l'interface.
+    function onFiltresAppliques(compte, touches, deplacements) {
+        fenetre.deplacementsEnVol += deplacements
+        if (touches > 0)
+            messageEtat.texte = qsTr("Filtres : %1.").arg(fenetre.accord(touches, qsTr("message trié"), qsTr("messages triés")))
+        if (fenetre.essai && fenetre.essai.scenario === "filtres")
+            console.log("scenario: filtres appliqués", compte, touches, deplacements)
+    }
+
     function onDeplacementTermine(nombre, erreurs) {
         fenetre.deplacementsEnVol = Math.max(0, fenetre.deplacementsEnVol - 1)
         if (fenetre.deplacementsEnVol === 0)
@@ -561,6 +577,8 @@ Connections {
                 scenarios.etapeScenarioCorbeille()
             if (fenetre.essai.scenario === "glisser-ligne")
                 scenarios.etapeScenarioGlisserLigne()
+            if (fenetre.essai.scenario === "filtres")
+                scenarios.etapeScenarioFiltres()
         }
     }
 

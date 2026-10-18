@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Q_OS_ANDROID n’est pas encore défini ici, avant les en-têtes de Qt.
+#ifdef __ANDROID__
+#include <QtWebView/QtWebView>
+#endif
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -117,6 +121,10 @@ static QString dossierProfil()
 
 int main(int argc, char* argv[])
 {
+#ifdef Q_OS_ANDROID
+  // Connexion Microsoft dans une page intégrée (cf. ConnexionIntegree.qml).
+  QtWebView::initialize();
+#endif
   QGuiApplication app(argc, argv);
   QCoreApplication::setApplicationName(QStringLiteral("MMail"));
   QCoreApplication::setOrganizationName(QStringLiteral("M-Media"));

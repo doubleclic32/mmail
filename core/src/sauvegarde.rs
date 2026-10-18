@@ -190,6 +190,9 @@ pub struct Document {
     /// Images des signatures, en base64 : `"<dossier du compte>/<fichier>"`.
     #[serde(default)]
     pub images: BTreeMap<String, String>,
+    /// Filtres du courrier (cf. `filtres`), en JSON ; absent avant la 0.6.0.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filtres: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -348,6 +351,7 @@ pub fn composer(
         comptes,
         reglages,
         images,
+        filtres: magasin.filtres().map_err(local)?,
     })
 }
 
@@ -395,6 +399,9 @@ pub fn appliquer(magasin: &Magasin, document: &Document) -> Resultat<()> {
             };
             magasin.restaurer_agenda(&agenda).map_err(local)?;
         }
+    }
+    if !document.filtres.is_empty() && crate::filtres::lire(&document.filtres).is_ok() {
+        magasin.poser_filtres(&document.filtres).map_err(local)?;
     }
     let ordre: Vec<String> = document.comptes.iter().map(|c| c.adresse.clone()).collect();
     magasin.ordonner_comptes(&ordre).map_err(local)
@@ -721,6 +728,7 @@ mod tests {
             comptes: Vec::new(),
             reglages: serde_json::json!({}),
             images,
+            filtres: String::new(),
         };
         let signatures = racine.join("signatures");
         assert_eq!(poser_images(&doc, &signatures).unwrap(), 1);

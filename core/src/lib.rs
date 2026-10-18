@@ -6,6 +6,7 @@ pub mod cache;
 pub mod caldav;
 pub mod configuration;
 pub mod deplacement;
+pub mod filtres;
 pub mod garde;
 pub mod google;
 pub mod http;

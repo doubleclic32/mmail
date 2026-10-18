@@ -316,6 +316,13 @@ pub fn lire_requete(ligne: &str, etat: &str) -> Option<Result<String, ErreurOAut
     valeur("code").map(|c| Ok(c.to_string()))
 }
 
+/// Le code d'une adresse de retour (`fr.mmedia.mmail://oauth?code=…&state=…`),
+/// contrôlée comme une requête reçue par l'écoute locale.
+pub fn lire_retour(url: &str, etat: &str) -> Option<Result<String, ErreurOAuth>> {
+    let requete = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+    lire_requete(&format!("GET /?{requete} HTTP/1.1"), etat)
+}
+
 /// Paramètres d'une requête `a=1&b=2`, décodés (`+` vaut une espace).
 pub(crate) fn parametres(requete: &str) -> Vec<(String, String)> {
     requete
@@ -484,6 +491,17 @@ pub(crate) fn encoder(texte: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn adresse_de_retour() {
+        let ok = lire_retour("fr.mmedia.mmail://oauth?code=0.AbC%2Bd&state=ETAT&session_state=x", "ETAT");
+        assert_eq!(ok.unwrap().unwrap(), "0.AbC+d");
+        assert!(lire_retour("fr.mmedia.mmail://oauth?code=c&state=AUTRE", "ETAT").unwrap().is_err());
+        let refus = lire_retour("fr.mmedia.mmail://oauth?error=access_denied&error_description=non&state=ETAT", "ETAT");
+        assert!(refus.unwrap().is_err());
+        assert!(lire_retour("fr.mmedia.mmail://oauth", "ETAT").is_none());
+    }
+
     use super::*;
 
     #[test]

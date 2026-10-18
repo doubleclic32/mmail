@@ -130,8 +130,9 @@ Dialog {
             visible: dlgCompte.compteId === 0 && boite.microsoftDisponible()
             text: qsTr("Compte Microsoft (Office 365, Outlook.com)…")
             onClicked: {
+                var adresse = champAdresse.text
                 dlgCompte.close()
-                fenetre.connecterMicrosoft("")
+                fenetre.ajouterMicrosoft(adresse)
             }
         }
         // Gmail : la connexion se fait chez Google, dans le navigateur.

@@ -122,6 +122,13 @@ pub mod qobject {
         #[cxx_name = "connecterMicrosoft"]
         fn connecter_microsoft(self: Pin<&mut Boite>, indice: &QString) -> QString;
 
+        /// Sous Android : l'adresse de retour que la page de connexion intégrée
+        /// a interceptée après la connexion Microsoft. Rend faux si elle n'est
+        /// pas celle attendue. Issue : `microsoftConnecte`, ou `microsoftRefuse`.
+        #[qinvokable]
+        #[cxx_name = "terminerMicrosoft"]
+        fn terminer_microsoft(self: Pin<&mut Boite>, url: &QString) -> bool;
+
         /// Vrai si MMail a un client Google : sans lui, pas de compte Google.
         #[qinvokable]
         #[cxx_name = "googleDisponible"]
@@ -377,6 +384,25 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "signalerIndesirableDans"]
         fn signaler_indesirable_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString) -> bool;
+
+        /// Filtres du courrier (0.6.0, cf. `filtres`), en JSON : une liste
+        /// d'objets `{nom, actif, compte, tout, conditions, lu, suivi,
+        /// destination, dossier, arreter}`.
+        #[qinvokable]
+        fn filtres(&self) -> QString;
+
+        /// Enregistre la liste des filtres. Rend faux, `erreur` posée, si un
+        /// filtre est incomplet : rien n'est alors changé.
+        #[qinvokable]
+        #[cxx_name = "poserFiltres"]
+        fn poser_filtres(self: Pin<&mut Boite>, json: &QString) -> bool;
+
+        /// Passe aux filtres toute la boîte de réception du compte, et non
+        /// les seules arrivées. Rend le nombre de messages touchés ; issue :
+        /// `filtresAppliques`, puis `deplacementTermine` par déplacement.
+        #[qinvokable]
+        #[cxx_name = "appliquerFiltres"]
+        fn appliquer_filtres(self: Pin<&mut Boite>, compte: i32) -> i32;
 
         /// Vide, sur TOUS les comptes connectés, la corbeille et les dossiers
         /// d'indésirables (rôles SPECIAL-USE `Trash` et `Junk`, ou dont le nom
@@ -640,6 +666,13 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "deplacementTermine"]
         fn deplacement_termine(self: Pin<&mut Boite>, nombre: i32, erreurs: &QString);
+
+        /// Des filtres ont agi sur la boîte de réception d'un compte :
+        /// `touches` messages, `deplacements` déplacements lancés — chacun
+        /// rendra `deplacementTermine`.
+        #[qsignal]
+        #[cxx_name = "filtresAppliques"]
+        fn filtres_appliques(self: Pin<&mut Boite>, compte: i32, touches: i32, deplacements: i32);
 
         /// Corbeille et indésirables d'un compte vidés : `nombre` messages
         /// effacés définitivement. Émis une fois par compte concerné.
@@ -1146,6 +1179,9 @@ impl Etat {
 pub struct BoiteRust {
     occupe: bool,
     erreur: QString,
+    /// Connexion Microsoft lancée sous Android, en attente de l'adresse de
+    /// retour : (client, state, vérificateur PKCE, adresse).
+    attente_microsoft: Option<(String, String, String, String)>,
     revision: i32,
     compte_courant: i32,
     dossier_courant: QString,
@@ -1195,6 +1231,7 @@ impl Default for BoiteRust {
         Self {
             occupe: false,
             erreur: QString::from(""),
+            attente_microsoft: None,
             revision: 0,
             compte_courant: 0,
             dossier_courant: QString::from(""),
@@ -1932,6 +1969,19 @@ impl qobject::Boite {
             ));
             return QString::default();
         }
+        let indice = indice.to_string();
+        // Sous Android, MMail est gelé en arrière-plan pendant que le navigateur
+        // montre la connexion : l'écoute locale ne répond pas (retour de Manu
+        // du 18/10). La connexion se fait dans une page intégrée à MMail, qui
+        // intercepte le retour et le remet à terminer_microsoft.
+        if cfg!(target_os = "android") {
+            let pkce = ms::pkce();
+            let etat = ms::etat();
+            let url = ms::url_autorisation(&client, ms::REDIRECTION_ANDROID, &pkce.defi, &etat, &indice);
+            self.as_mut().rust_mut().attente_microsoft = Some((client, etat, pkce.verificateur, indice));
+            self.as_mut().set_erreur(QString::from(""));
+            return QString::from(&url);
+        }
         let ecoute = match ms::ecouter() {
             Ok(e) => e,
             Err(e) => {
@@ -1941,11 +1991,11 @@ impl qobject::Boite {
         };
         let pkce = ms::pkce();
         let etat = ms::etat();
-        let url = ms::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice.to_string());
+        let url = ms::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice);
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
             let issue = ms::attendre_code(&ecoute, &etat, ms::DELAI_CONNEXION)
-                .and_then(|code| ms::echanger_code(&client, &code, &pkce.verificateur, &ecoute.redirection))
+                .and_then(|code| ms::echanger_code(&client, &code, &pkce.verificateur, &ecoute.redirection, &indice))
                 .and_then(|r| connexion_aboutie(r, "Microsoft"));
             let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
         });
@@ -1955,6 +2005,30 @@ impl qobject::Boite {
         }
         self.as_mut().set_erreur(QString::from(""));
         QString::from(&url)
+    }
+
+    pub fn terminer_microsoft(mut self: Pin<&mut Self>, url: &QString) -> bool {
+        let url = url.to_string();
+        let Some((client, etat, verificateur, adresse)) = self.attente_microsoft.clone() else {
+            return false;
+        };
+        let code = match crate::oauth::lire_retour(&url, &etat) {
+            None => return false,
+            Some(Ok(code)) => code,
+            Some(Err(e)) => {
+                self.as_mut().rust_mut().attente_microsoft = None;
+                self.as_mut().accueillir_microsoft(Err(e));
+                return true;
+            }
+        };
+        self.as_mut().rust_mut().attente_microsoft = None;
+        let fil = self.qt_thread();
+        let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
+            let issue = crate::microsoft::echanger_code(&client, &code, &verificateur, crate::microsoft::REDIRECTION_ANDROID, &adresse)
+                .and_then(|r| connexion_aboutie(r, "Microsoft"));
+            let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
+        });
+        lance.is_ok()
     }
 
     /// Issue de la connexion Microsoft, sur le fil Qt : le compte est
@@ -2613,6 +2687,116 @@ impl qobject::Boite {
         self.as_mut().envoyer(compte, Commande::Deplacer { source, uids, cible })
     }
 
+    pub fn filtres(&self) -> QString {
+        QString::from(&self.magasin.as_ref().and_then(|m| m.filtres().ok()).unwrap_or_default())
+    }
+
+    pub fn poser_filtres(mut self: Pin<&mut Self>, json: &QString) -> bool {
+        let json = json.to_string();
+        if let Err(e) = crate::filtres::lire(&json) {
+            self.as_mut().set_erreur(QString::from(&e));
+            return false;
+        }
+        match self.magasin.as_ref().map(|m| m.poser_filtres(&json)) {
+            Some(Ok(())) => true,
+            _ => {
+                self.as_mut().set_erreur(QString::from("index local indisponible : filtres non enregistrés"));
+                false
+            }
+        }
+    }
+
+    pub fn appliquer_filtres(self: Pin<&mut Self>, compte: i32) -> i32 {
+        self.filtrer(compte as i64, "INBOX", true)
+    }
+
+    /// Passe aux filtres les messages du dossier `chemin` du compte arrivés
+    /// depuis leur dernier passage — tous si `tout`. La première fois (ou
+    /// après une rupture d'`UIDVALIDITY`), ce qui est déjà là est seulement
+    /// noté : les filtres ne valent que pour les arrivées, sauf demande. Rend
+    /// le nombre de messages touchés.
+    fn filtrer(mut self: Pin<&mut Self>, compte: i64, chemin: &str, tout: bool) -> i32 {
+        let Some(magasin) = self.magasin.as_ref() else {
+            return 0;
+        };
+        // Appelé à chaque relecture de la boîte de réception : rien n'est lu
+        // de l'index au-delà de l'UID le plus haut tant qu'il n'a pas bougé.
+        let etat = magasin.filtres_etat(compte, chemin).ok().flatten();
+        let Ok((uidvalidity, dernier)) = magasin.uid_max(compte, chemin) else {
+            return 0;
+        };
+        if uidvalidity == 0 {
+            return 0;
+        }
+        let deja_lu = etat.filter(|(v, _)| *v == uidvalidity).map(|(_, u)| u);
+        let apres = match deja_lu {
+            _ if tout => 0,
+            Some(uid) => uid,
+            None => {
+                let _ = magasin.poser_filtres_etat(compte, chemin, uidvalidity, dernier);
+                return 0;
+            }
+        };
+        if dernier <= apres {
+            return 0;
+        }
+        if dernier > deja_lu.unwrap_or(0) {
+            let _ = magasin.poser_filtres_etat(compte, chemin, uidvalidity, dernier);
+        }
+        let filtres = crate::filtres::lire(&magasin.filtres().unwrap_or_default()).unwrap_or_default();
+        if filtres.iter().all(|f| !f.actif) {
+            return 0;
+        }
+        let Ok((_, recus)) = magasin.recus_apres(compte, chemin, apres) else {
+            return 0;
+        };
+        if recus.is_empty() {
+            return 0;
+        }
+        let Some(adresse) =
+            magasin.comptes().ok().and_then(|cs| cs.into_iter().find(|c| c.id == compte)).map(|c| c.adresse)
+        else {
+            return 0;
+        };
+        let ids: Vec<String> = recus.iter().map(|r| r.message_id.clone()).collect();
+        let vus = magasin.filtres_vus(compte, &ids).unwrap_or_default();
+        let plan = crate::filtres::planifier(&filtres, &adresse, &recus, &|id| vus.contains(id));
+        if plan.vide() {
+            return 0;
+        }
+        let _ = magasin.noter_filtres_vus(compte, &plan.touches);
+        let dossiers = magasin.dossiers(compte).unwrap_or_default();
+        let corbeille = dossier_de_role(&dossiers, "Trash");
+        let indesirables = dossier_indesirables(&dossiers).map(|j| if j == chemin { "INBOX".to_string() } else { j });
+        let touches = plan.touches.len() as i32;
+        let source = chemin.to_string();
+        if !plan.lus.is_empty() {
+            self.as_mut().envoyer(compte, Commande::MarquerLu { chemin: source.clone(), uids: plan.lus, lu: true, discret: false });
+        }
+        if !plan.suivis.is_empty() {
+            self.as_mut().envoyer(compte, Commande::MarquerSuivi { chemin: source.clone(), uids: plan.suivis, suivi: true });
+        }
+        let mut destinations: Vec<(String, Vec<u32>)> = plan.deplacements.into_iter().collect();
+        if let Some(c) = corbeille {
+            destinations.push((c, plan.corbeille));
+        }
+        if let Some(j) = indesirables {
+            destinations.push((j, plan.indesirables));
+        }
+        let mut lances = 0;
+        for (cible, uids) in destinations {
+            if uids.is_empty() || cible == source {
+                continue;
+            }
+            let cible = Cible { compte, chemin: cible, identifiants: None };
+            if self.as_mut().envoyer(compte, Commande::Deplacer { source: source.clone(), uids, cible }) {
+                lances += 1;
+            }
+        }
+        self.as_mut().filtres_appliques(compte as i32, touches, lances);
+        touches
+    }
+
     pub fn signaler_indesirable(mut self: Pin<&mut Self>, uids: &QString) -> bool {
         let Some((compte, source, _)) = self.courant.clone() else {
             return false;
@@ -3160,10 +3344,16 @@ impl qobject::Boite {
             Issue::Arborescence => {
                 self.as_mut().rafraichir_attente();
                 self.as_mut().reviser();
+                // La boîte de réception, relue en fond : les filtres voient
+                // les arrivées.
+                self.as_mut().filtrer(compte, "INBOX", false);
             }
             Issue::Dossier { chemin, veille } => {
                 self.as_mut().reviser();
                 self.as_mut().dossier_ouvert(compte_qt, &QString::from(&chemin), veille);
+                if chemin == "INBOX" {
+                    self.as_mut().filtrer(compte, "INBOX", false);
+                }
             }
             Issue::Corps { uid, lu, marque } => {
                 if marque {

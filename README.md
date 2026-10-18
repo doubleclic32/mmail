@@ -73,6 +73,16 @@ de projet interne.
 - **« Toutes les BàL »** : les boîtes de réception de tous les comptes en une
   seule liste (les 1 000 messages les plus récents), chacun avec son compte ;
   un message s'y lit, s'y répond, s'y déplace comme ailleurs ;
+- **filtres du courrier** (« Comptes › Filtres du courrier… », ou « Créer un
+  filtre… » sur un message) : selon l'expéditeur — nom ou adresse — et l'objet
+  (contient, est, commence par, se termine par ; toutes les conditions ou une
+  au moins), un message arrivé dans la boîte de réception est marqué lu, suivi,
+  rangé dans un dossier de son compte, mis à la corbeille ou classé
+  indésirable ; les filtres se lisent dans l'ordre. MMail les applique lui-même,
+  pour tous les comptes (Mailcow, Microsoft 365, Gmail…), aux messages qui
+  arrivent pendant qu'il est ouvert — ou à toute la boîte sur demande. Un
+  message ramené à la main n'est pas refiltré. Les filtres partent avec la
+  sauvegarde de la configuration ;
 - **mise à jour assistée** : une nouvelle version s'installe maintenant (un
   redémarrage de MMail), à la fermeture, ou jamais — téléchargée et contrôlée
   par MMail, installée sans question (cf. « Données sur le poste ») ;

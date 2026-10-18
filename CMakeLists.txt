@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.5.17 LANGUAGES CXX)
+project(mmail VERSION 0.6.0 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -185,6 +185,13 @@ endif()
 # rien ne garantit que la permission soit déduite des modules liés. Elle est
 # donc déclarée ici (commande apparue avec Qt 6.8, celui de la fabrication
 # Android).
+# Sous Android, la connexion Microsoft se fait dans une page intégrée à MMail
+# (QtWebView) : le navigateur du système, lui, laisse MMail gelé en arrière-plan.
+if(ANDROID)
+  find_package(Qt6 REQUIRED COMPONENTS WebView)
+  target_link_libraries(mmail PRIVATE Qt6::WebView)
+endif()
+
 if(ANDROID AND COMMAND qt_add_android_permission)
   qt_add_android_permission(mmail NAME android.permission.INTERNET)
   qt_add_android_permission(mmail NAME android.permission.ACCESS_NETWORK_STATE)

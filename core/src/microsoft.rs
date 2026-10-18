@@ -61,8 +61,34 @@ pub fn partager(rafraichissement: &str) -> Partage {
 }
 
 /// Point d'entrée de Microsoft pour toutes les organisations et les comptes
-/// personnels.
+/// personnels : le rafraîchissement des jetons, et la connexion sans adresse.
 const AUTORITE: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";
+
+/// Adresse de retour de la connexion sous Android : la page intégrée à MMail
+/// (cf. ConnexionIntegree.qml) l'intercepte sans la charger — rien n'y écoute.
+/// La même que sur le bureau, déjà déclarée dans l'application Entra « MMail ».
+pub const REDIRECTION_ANDROID: &str = "http://localhost";
+
+/// Domaines des comptes personnels de Microsoft (Outlook.com).
+const PARTICULIERS: [&str; 5] = ["outlook", "hotmail", "live", "msn", "passport"];
+
+/// Point d'entrée de la connexion pour une adresse. Retour de Manu du
+/// 18/10 : avec le point d'entrée commun, un téléphone déjà connecté à un
+/// compte Microsoft personnel partait sur la connexion des particuliers
+/// (login.live.com) pour une adresse d'entreprise. Une adresse d'Outlook.com,
+/// Hotmail, Live ou MSN va aux comptes personnels, toute autre aux comptes
+/// d'organisation ; sans adresse, le point d'entrée commun.
+pub fn autorite(adresse: &str) -> String {
+    let domaine = adresse.trim().rsplit_once('@').map(|(_, d)| d.to_ascii_lowercase()).unwrap_or_default();
+    let quoi = if domaine.is_empty() {
+        "common"
+    } else if PARTICULIERS.iter().any(|p| domaine.starts_with(&format!("{p}."))) {
+        "consumers"
+    } else {
+        "organizations"
+    };
+    format!("https://login.microsoftonline.com/{quoi}/oauth2/v2.0")
+}
 
 /// Serveur IMAP d'Office 365 et d'Outlook.com.
 pub const HOTE_IMAP: &str = "outlook.office365.com";
@@ -133,8 +159,9 @@ pub fn url_consentement(client: &str) -> String {
 /// compte quand on le reconnecte, pour ne pas la redemander.
 pub fn url_autorisation(client: &str, redirection: &str, defi: &str, etat: &str, indice: &str) -> String {
     let mut url = format!(
-        "{AUTORITE}/authorize?client_id={}&response_type=code&redirect_uri={}&response_mode=query\
+        "{}/authorize?client_id={}&response_type=code&redirect_uri={}&response_mode=query\
          &scope={}&state={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
+        autorite(indice),
         encoder(client),
         encoder(redirection),
         encoder(PORTEE_AUTORISATION),
@@ -148,8 +175,9 @@ pub fn url_autorisation(client: &str, redirection: &str, defi: &str, etat: &str,
 }
 
 /// Échange le code reçu par l'écoute locale contre les premiers jetons.
-pub fn echanger_code(client: &str, code: &str, verificateur: &str, redirection: &str) -> Result<ReponseJeton, ErreurOAuth> {
-    demander_jeton(&format!(
+/// `adresse` : celle de la connexion, pour le même point d'entrée.
+pub fn echanger_code(client: &str, code: &str, verificateur: &str, redirection: &str, adresse: &str) -> Result<ReponseJeton, ErreurOAuth> {
+    crate::oauth::demander_jeton(&format!("{}/token", autorite(adresse)), &format!(
         "client_id={}&grant_type=authorization_code&code={}&redirect_uri={}&code_verifier={}&scope={}",
         encoder(client),
         encoder(code),
@@ -525,7 +553,15 @@ mod tests {
         ));
         assert!(!url.contains("login_hint"));
         let url = url_autorisation("abc", "http://localhost:1", "d", "e", " jean@exemple.fr ");
+        assert!(url.starts_with("https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?"));
         assert!(url.ends_with("&login_hint=jean%40exemple.fr"));
+        // Points d'entrée : organisation, particuliers, commun.
+        assert_eq!(autorite("fabienne.velozo@pollenergie.fr"), "https://login.microsoftonline.com/organizations/oauth2/v2.0");
+        assert_eq!(autorite("Paul@Hotmail.fr"), "https://login.microsoftonline.com/consumers/oauth2/v2.0");
+        assert_eq!(autorite("p@outlook.com"), "https://login.microsoftonline.com/consumers/oauth2/v2.0");
+        assert_eq!(autorite("p@live.fr"), "https://login.microsoftonline.com/consumers/oauth2/v2.0");
+        assert_eq!(autorite("p@outlookfr.com"), "https://login.microsoftonline.com/organizations/oauth2/v2.0");
+        assert_eq!(autorite(""), "https://login.microsoftonline.com/common/oauth2/v2.0");
         assert_eq!(
             url_consentement("abc-123"),
             "https://login.microsoftonline.com/organizations/adminconsent?client_id=abc-123"

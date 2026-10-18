@@ -852,6 +852,85 @@ QtObject {
         }
     }
 
+    // Scénario « filtres » (0.6.0) : un filtre incomplet refusé ; un filtre
+    // sur l'objet d'un message de la boîte de réception, qui l'envoie dans
+    // « Essais » quand on l'applique ; le message y est, on le ramène — et les
+    // filtres ne le renvoient pas ; la liste est vidée à la fin.
+    function etapeScenarioFiltres() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret")
+            return
+        if (essai.etape === 0 && boite.dossierCourant === "INBOX" && modeleMessages.count >= 2) {
+            essai.etape = 1
+            essai.sujet = modeleMessages.get(1).sujet
+            var refus = boite.poserFiltres(JSON.stringify([{ nom: "Incomplet", conditions: [], lu: true }]))
+            console.log("scenario: filtre incomplet", refus ? "ECHEC accepté" : "OK refusé : " + boite.erreur)
+            var filtres = [{ nom: "Essai des filtres", actif: true, compte: a.adresse, tout: true,
+                             conditions: [{ champ: "objet", operateur: "est", valeur: essai.sujet }],
+                             lu: false, suivi: false, destination: "dossier", dossier: "Essais", arreter: false }]
+            console.log("scenario: filtre posé", boite.poserFiltres(JSON.stringify(filtres)),
+                        "| relu", JSON.parse(boite.filtres()).length)
+            var touches = boite.appliquerFiltres(a.id)
+            console.log(touches === 1 ? "scenario: OK un message touché par le filtre"
+                                      : "scenario: ECHEC messages touchés " + touches)
+        } else if (essai.etape === 1 && deplacementsEnVol === 0) {
+            essai.etape = 2
+            ouvrirDossier(a.id, "Essais")
+        } else if (essai.etape === 2 && boite.dossierCourant === "Essais") {
+            for (var j = 0; j < modeleMessages.count; ++j) {
+                if (modeleMessages.get(j).sujet === essai.sujet) {
+                    essai.etape = 3
+                    console.log("scenario: OK message rangé dans Essais par le filtre")
+                    choisir(j, 0)
+                    deplacerVers(a.id, "INBOX")
+                    return
+                }
+            }
+            console.log("scenario: ECHEC message absent d'Essais")
+            essai.etape = 9
+            boite.poserFiltres("[]")
+            Qt.quit()
+        } else if (essai.etape === 3 && deplacementsEnVol === 0) {
+            essai.etape = 4
+            ouvrirDossier(a.id, "INBOX")
+        } else if (essai.etape === 4 && boite.dossierCourant === "INBOX") {
+            essai.etape = 9
+            var encore = boite.appliquerFiltres(a.id)
+            console.log(encore === 0 ? "scenario: OK message ramené laissé en boîte de réception"
+                                     : "scenario: ECHEC filtre réappliqué au message ramené : " + encore)
+            boite.poserFiltres("[]")
+            console.log("scenario: filtres vidés", JSON.parse(boite.filtres() || "[]").length)
+            Qt.quit()
+        }
+    }
+
+    // Scénario « image-filtres » : le dialogue des filtres en image, avec un
+    // filtre à l'essai (rien n'est enregistré).
+    function etapeScenarioImageFiltres() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret" || essai.etape || boite.dossierCourant !== "INBOX" || modeleMessages.count < 1)
+            return
+        essai.etape = 1
+        dlgFiltres.ouvrir({ nom: "Factures des fournisseurs", actif: true, compte: a.adresse, tout: false,
+                            conditions: [{ champ: "objet", operateur: "contient", valeur: "facture" },
+                                         { champ: "expediteur", operateur: "finit", valeur: "@fournisseur.fr" }],
+                            lu: true, suivi: false, destination: "dossier", dossier: "Essais", arreter: true })
+        var racine = fenetre.contentItem
+        while (racine.parent)
+            racine = racine.parent
+        var t = Qt.createQmlObject("import QtQuick; Timer { interval: 900 }", fenetre)
+        t.triggered.connect(function() {
+            var chemin = lanceur.chemin(identifiantsEssai.sortie + "/filtres.png")
+            racine.grabToImage(function(r) {
+                r.saveToFile(chemin)
+                console.log("scenario: dialogue des filtres en image", dlgFiltres.opened, dlgFiltres.liste.length)
+                dlgFiltres.close()
+                Qt.quit()
+            })
+        })
+        t.start()
+    }
+
     function etapeScenarioCorbeille() {
         var a = listeComptes()[0]
         if (!a || a.etat !== "pret")

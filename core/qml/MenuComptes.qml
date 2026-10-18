@@ -24,7 +24,7 @@ Menu {
     }
     MenuItem {
         text: qsTr("Ajouter un compte Microsoft (Office 365, Outlook.com)…")
-        onTriggered: fenetre.connecterMicrosoft("")
+        onTriggered: fenetre.ajouterMicrosoft("")
     }
     MenuItem {
         text: qsTr("Ajouter un compte Google (Gmail)…")
@@ -58,6 +58,11 @@ Menu {
             visible: fenetre.comptesConnus.length === 0
             height: visible ? implicitHeight : 0
         }
+    }
+    MenuItem {
+        text: qsTr("Filtres du courrier…")
+        enabled: fenetre.comptesConnus.length > 0
+        onTriggered: dlgFiltres.ouvrir(null)
     }
     MenuItem {
         text: qsTr("Nom et signature…")
