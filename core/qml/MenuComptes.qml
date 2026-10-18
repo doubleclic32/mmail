@@ -60,6 +60,11 @@ Menu {
         }
     }
     MenuItem {
+        text: qsTr("Carnet d'adresses…")
+        enabled: fenetre.comptesConnus.length > 0
+        onTriggered: dlgCarnet.open()
+    }
+    MenuItem {
         text: qsTr("Filtres du courrier…")
         enabled: fenetre.comptesConnus.length > 0
         onTriggered: dlgFiltres.ouvrir(null)

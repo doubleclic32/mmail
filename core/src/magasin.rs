@@ -19,6 +19,17 @@ use crate::protocole::{self, Dossier, EtatDossier, Statut};
 
 pub type Resultat<T> = Result<T, Erreur>;
 
+/// Un contact des carnets d'adresses, pour l'interface.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FicheLocale {
+    pub nom: String,
+    pub organisation: String,
+    pub courriels: Vec<String>,
+    pub telephones: Vec<String>,
+    pub carnet: String,
+    pub compte: String,
+}
+
 /// Lignes écrites par transaction : le verrou d'écriture de SQLite est unique,
 /// et le fil de l'interface, qui écrit aussi (marquages), attend qu'il se
 /// libère. Une transaction sur tout un dossier le tenait plusieurs secondes.
@@ -31,7 +42,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 14;
+const VERSION_SCHEMA: i32 = 15;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -489,6 +500,38 @@ impl Magasin {
                      quand       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
                      PRIMARY KEY (account_id, message_id)
                  );",
+            )?;
+        }
+        // Version 15 : les carnets d'adresses (0.6.1, cf. `carddav`) — la
+        // collection de chaque compte, ses carnets, leurs fiches et les
+        // adresses de courriel de chacune.
+        if version < 15 {
+            self.ajouter_colonne("accounts", "carddav", "TEXT NOT NULL DEFAULT ''")?;
+            self.ajouter_colonne("accounts", "carddav_essai", "INTEGER NOT NULL DEFAULT 0")?;
+            self.base.execute_batch(
+                "CREATE TABLE IF NOT EXISTS carnets (
+                     id         INTEGER PRIMARY KEY,
+                     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                     url        TEXT NOT NULL,
+                     nom        TEXT NOT NULL DEFAULT '',
+                     ctag       TEXT NOT NULL DEFAULT '',
+                     UNIQUE (account_id, url)
+                 );
+                 CREATE TABLE IF NOT EXISTS fiches (
+                     id           INTEGER PRIMARY KEY,
+                     carnet_id    INTEGER NOT NULL REFERENCES carnets(id) ON DELETE CASCADE,
+                     href         TEXT NOT NULL,
+                     etag         TEXT NOT NULL,
+                     nom          TEXT NOT NULL DEFAULT '',
+                     organisation TEXT NOT NULL DEFAULT '',
+                     telephones   TEXT NOT NULL DEFAULT '',
+                     UNIQUE (carnet_id, href)
+                 );
+                 CREATE TABLE IF NOT EXISTS fiches_courriels (
+                     fiche_id INTEGER NOT NULL REFERENCES fiches(id) ON DELETE CASCADE,
+                     adresse  TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS fiches_courriels_fiche ON fiches_courriels(fiche_id);",
             )?;
         }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
@@ -1130,6 +1173,10 @@ impl Magasin {
         // récent à poids égal). Avec deux, le nom venait d'une ligne quelconque.
         let mut requete = self.base.prepare(
             "SELECT nom, adresse, MAX(poids * 10000000000 + dernier) AS cle FROM (
+                SELECT f.nom, c.adresse, 2000000 AS poids, 0 AS dernier
+                  FROM fiches_courriels c JOIN fiches f ON f.id = c.fiche_id
+                 WHERE c.adresse LIKE ?1 ESCAPE '\\' OR f.nom LIKE ?1 ESCAPE '\\'
+                UNION ALL
                 SELECT nom, adresse, 1000000 + envois AS poids, dernier FROM correspondants
                  WHERE adresse LIKE ?1 ESCAPE '\\' OR nom LIKE ?1 ESCAPE '\\'
                 UNION ALL
@@ -1508,6 +1555,137 @@ impl Magasin {
 
     /// Adresse CalDAV d'un compte (vide si elle n'est pas connue) et heure du
     /// dernier essai de découverte infructueux.
+    // ------------------------------------------------------ carnets d'adresses
+
+    pub fn carddav(&self, compte: i64) -> Resultat<(String, i64)> {
+        Ok(self
+            .base
+            .query_row("SELECT carddav, carddav_essai FROM accounts WHERE id = ?1", params![compte], |l| {
+                Ok((l.get(0)?, l.get(1)?))
+            })
+            .optional()?
+            .unwrap_or_default())
+    }
+
+    pub fn poser_carddav(&self, compte: i64, adresse: &str, essai: i64) -> Resultat<()> {
+        self.base.execute(
+            "UPDATE accounts SET carddav = ?2, carddav_essai = ?3 WHERE id = ?1",
+            params![compte, adresse, essai],
+        )?;
+        Ok(())
+    }
+
+    /// Pose les carnets d'un compte : `(adresse, nom)`. Ceux qui ont disparu
+    /// sont retirés, avec leurs fiches. Rend vrai si quelque chose a changé.
+    pub fn poser_carnets(&self, compte: i64, carnets: &[(String, String)]) -> Resultat<bool> {
+        let presents: HashSet<&str> = carnets.iter().map(|(u, _)| u.as_str()).collect();
+        let mut change = false;
+        let anciens: Vec<(i64, String)> = {
+            let mut requete = self.base.prepare("SELECT id, url FROM carnets WHERE account_id = ?1")?;
+            let lignes = requete.query_map(params![compte], |l| Ok((l.get(0)?, l.get(1)?)))?;
+            lignes.collect::<Result<_, _>>()?
+        };
+        for (id, url) in &anciens {
+            if !presents.contains(url.as_str()) {
+                self.base.execute("DELETE FROM carnets WHERE id = ?1", params![id])?;
+                change = true;
+            }
+        }
+        for (url, nom) in carnets {
+            let n = self.base.execute(
+                "INSERT INTO carnets (account_id, url, nom) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (account_id, url) DO UPDATE SET nom = excluded.nom WHERE nom <> excluded.nom",
+                params![compte, url, nom],
+            )?;
+            change |= n > 0;
+        }
+        Ok(change)
+    }
+
+    /// Carnets d'un compte : `(id, adresse, étiquette)`.
+    pub fn carnets(&self, compte: i64) -> Resultat<Vec<(i64, String, String)>> {
+        let mut requete = self.base.prepare("SELECT id, url, ctag FROM carnets WHERE account_id = ?1 ORDER BY nom")?;
+        let lignes = requete.query_map(params![compte], |l| Ok((l.get(0)?, l.get(1)?, l.get(2)?)))?;
+        Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
+    pub fn poser_ctag_carnet(&self, carnet: i64, ctag: &str) -> Resultat<()> {
+        self.base.execute("UPDATE carnets SET ctag = ?2 WHERE id = ?1", params![carnet, ctag])?;
+        Ok(())
+    }
+
+    /// ETag des fiches d'un carnet, par href.
+    pub fn etags_contacts(&self, carnet: i64) -> Resultat<HashMap<String, String>> {
+        let mut requete = self.base.prepare("SELECT href, etag FROM fiches WHERE carnet_id = ?1")?;
+        let lignes = requete.query_map(params![carnet], |l| Ok((l.get(0)?, l.get(1)?)))?;
+        Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
+    pub fn retirer_contacts(&self, carnet: i64, hrefs: &[String]) -> Resultat<()> {
+        let transaction = self.base.unchecked_transaction()?;
+        for href in hrefs {
+            transaction.execute("DELETE FROM fiches WHERE carnet_id = ?1 AND href = ?2", params![carnet, href])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Range des fiches lues : `(href, etag, contact)`.
+    pub fn poser_contacts(&self, carnet: i64, fiches: &[(String, String, crate::carddav::Contact)]) -> Resultat<()> {
+        let transaction = self.base.unchecked_transaction()?;
+        for (href, etag, c) in fiches {
+            transaction.execute(
+                "INSERT INTO fiches (carnet_id, href, etag, nom, organisation, telephones) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (carnet_id, href) DO UPDATE SET etag = excluded.etag, nom = excluded.nom,
+                     organisation = excluded.organisation, telephones = excluded.telephones",
+                params![carnet, href, etag, c.nom, c.organisation, c.telephones.join("\n")],
+            )?;
+            let fiche: i64 = transaction.query_row(
+                "SELECT id FROM fiches WHERE carnet_id = ?1 AND href = ?2",
+                params![carnet, href],
+                |l| l.get(0),
+            )?;
+            transaction.execute("DELETE FROM fiches_courriels WHERE fiche_id = ?1", params![fiche])?;
+            for adresse in &c.courriels {
+                transaction.execute(
+                    "INSERT INTO fiches_courriels (fiche_id, adresse) VALUES (?1, ?2)",
+                    params![fiche, adresse],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Contacts des carnets dont le nom, l'organisation ou une adresse
+    /// contient `filtre`, par nom : `(nom, organisation, courriels,
+    /// téléphones, carnet, compte)`.
+    pub fn fiches_contacts(&self, filtre: &str, limite: usize) -> Resultat<Vec<FicheLocale>> {
+        let motif = format!("%{}%", filtre.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let mut requete = self.base.prepare(
+            "SELECT f.id, f.nom, f.organisation, f.telephones, k.nom, a.adresse,
+                    (SELECT group_concat(adresse, char(10)) FROM fiches_courriels WHERE fiche_id = f.id)
+               FROM fiches f JOIN carnets k ON k.id = f.carnet_id JOIN accounts a ON a.id = k.account_id
+              WHERE f.nom LIKE ?1 ESCAPE '\\' OR f.organisation LIKE ?1 ESCAPE '\\'
+                 OR EXISTS (SELECT 1 FROM fiches_courriels c WHERE c.fiche_id = f.id AND c.adresse LIKE ?1 ESCAPE '\\')
+              ORDER BY f.nom COLLATE NOCASE
+              LIMIT ?2",
+        )?;
+        let lignes = requete.query_map(params![motif, limite as i64], |l| {
+            let telephones: String = l.get(3)?;
+            let courriels: Option<String> = l.get(6)?;
+            Ok(FicheLocale {
+                nom: l.get(1)?,
+                organisation: l.get(2)?,
+                telephones: telephones.split('\n').filter(|t| !t.is_empty()).map(String::from).collect(),
+                carnet: l.get(4)?,
+                compte: l.get(5)?,
+                courriels: courriels.unwrap_or_default().split('\n').filter(|t| !t.is_empty()).map(String::from).collect(),
+            })
+        })?;
+        Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
     pub fn caldav(&self, compte: i64) -> Resultat<(String, i64)> {
         Ok(self
             .base

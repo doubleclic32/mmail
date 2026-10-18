@@ -391,6 +391,12 @@ pub mod qobject {
         #[qinvokable]
         fn filtres(&self) -> QString;
 
+        /// Contacts des carnets d'adresses (0.6.1, cf. `carddav`) dont le nom,
+        /// l'organisation ou une adresse contient `filtre`, en JSON :
+        /// `[{nom, organisation, courriels, telephones, carnet, compte}]`.
+        #[qinvokable]
+        fn carnet(&self, filtre: &QString) -> QString;
+
         /// Enregistre la liste des filtres. Rend faux, `erreur` posée, si un
         /// filtre est incomplet : rien n'est alors changé.
         #[qinvokable]
@@ -1371,6 +1377,11 @@ impl qobject::Boite {
                         match crate::caldav::synchroniser(&magasin, *compte, &id.hote, &acces, maintenant(), insister) {
                             Ok(bilan) => change |= bilan.change,
                             Err(e) => erreurs.push(format!("{adresse} : {e}")),
+                        }
+                        // Les carnets d'adresses, au même serveur et au même
+                        // rythme que les agendas.
+                        if let Err(e) = crate::carddav::synchroniser(&magasin, *compte, &id.hote, &acces, maintenant(), insister) {
+                            erreurs.push(format!("{adresse} (contacts) : {e}"));
                         }
                     }
                 }
@@ -2685,6 +2696,30 @@ impl qobject::Boite {
         let chemin = if source == indesirables { "INBOX".to_string() } else { indesirables };
         let cible = Cible { compte, chemin, identifiants: None };
         self.as_mut().envoyer(compte, Commande::Deplacer { source, uids, cible })
+    }
+
+    pub fn carnet(&self, filtre: &QString) -> QString {
+        let fiches = self
+            .magasin
+            .as_ref()
+            .and_then(|m| m.fiches_contacts(&filtre.to_string(), 500).ok())
+            .unwrap_or_default();
+        let liste = |v: &[String]| format!("[{}]", v.iter().map(|t| texte_json(t)).collect::<Vec<_>>().join(","));
+        let lignes: Vec<String> = fiches
+            .iter()
+            .map(|f| {
+                format!(
+                    r#"{{"nom":{},"organisation":{},"courriels":{},"telephones":{},"carnet":{},"compte":{}}}"#,
+                    texte_json(&f.nom),
+                    texte_json(&f.organisation),
+                    liste(&f.courriels),
+                    liste(&f.telephones),
+                    texte_json(&f.carnet),
+                    texte_json(&f.compte)
+                )
+            })
+            .collect();
+        QString::from(&format!("[{}]", lignes.join(",")))
     }
 
     pub fn filtres(&self) -> QString {

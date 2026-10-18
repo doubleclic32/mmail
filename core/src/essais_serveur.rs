@@ -677,6 +677,65 @@ fn occurrences_janvier_2030(magasin: &Magasin, uid: &str) -> Vec<(String, String
 }
 
 #[test]
+#[ignore = "exige un serveur CardDAV et un compte"]
+fn carnet_decouvert_synchronise_et_suivi() {
+    use crate::caldav::Acces;
+    use crate::carddav;
+    let hote = variable("MMAIL_HOTE");
+    let (utilisateur, mot_de_passe) = (variable("MMAIL_UTILISATEUR"), variable("MMAIL_MOTDEPASSE"));
+    let maintenant = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let magasin = Magasin::en_memoire().unwrap();
+    let compte = magasin.compte(&utilisateur, &hote, 993, &utilisateur).unwrap();
+    let acces = Acces { utilisateur: &utilisateur, mot_de_passe: &mot_de_passe };
+    let synchro = || carddav::synchroniser(&magasin, compte, &hote, &acces, maintenant, false).expect("synchronisation");
+
+    let bilan = synchro();
+    assert!(bilan.carnets >= 1, "{bilan:?}");
+    let collection = magasin.carddav(compte).unwrap().0;
+    assert!(collection.starts_with("https://"), "{collection}");
+    let carnets = magasin.carnets(compte).unwrap();
+    let (_, carnet, _) = carnets.iter().find(|(_, url, _)| url.ends_with("/personal/")).unwrap_or(&carnets[0]).clone();
+    let uid = format!("mmail-epreuve-{maintenant}");
+    let url = format!("{carnet}{uid}.vcf");
+    let fiche = format!(
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:Épreuve Carnet {maintenant}\r\nN:Carnet;Épreuve;;;\r\n\
+ORG:MMEDIA\r\nEMAIL;TYPE=work:epreuve-{maintenant}@exemple.fr\r\nTEL;TYPE=cell:06 00 00 00 00\r\nEND:VCARD\r\n"
+    );
+    assert!(matches!(requete_dav("PUT", &url, "text/vcard; charset=utf-8", &fiche), 201 | 204));
+    assert!(synchro().lus >= 1);
+    let trouves = magasin.fiches_contacts(&format!("epreuve-{maintenant}"), 5).unwrap();
+    assert_eq!(trouves.len(), 1, "{trouves:?}");
+    assert_eq!(trouves[0].nom, format!("Épreuve Carnet {maintenant}"));
+    assert_eq!(trouves[0].organisation, "MMEDIA");
+    assert_eq!(trouves[0].telephones, vec!["06 00 00 00 00"]);
+    // La saisie la propose en tête.
+    let saisie = magasin.contacts(&format!("epreuve-{maintenant}"), 3).unwrap();
+    assert_eq!(saisie.first().map(|(_, a)| a.clone()), Some(format!("epreuve-{maintenant}@exemple.fr")));
+    // Rien n'a changé : rien n'est relu.
+    assert_eq!(synchro().lus, 0);
+    assert!(matches!(requete_dav("DELETE", &url, "text/vcard", ""), 200 | 204));
+    let bilan = synchro();
+    assert!(bilan.retires >= 1, "{bilan:?}");
+    assert!(magasin.fiches_contacts(&format!("epreuve-{maintenant}"), 5).unwrap().is_empty());
+}
+
+fn requete_dav(methode: &str, url: &str, type_contenu: &str, corps: &str) -> u16 {
+    let (utilisateur, mot_de_passe) = (variable("MMAIL_UTILISATEUR"), variable("MMAIL_MOTDEPASSE"));
+    let jeton = crate::smtp::base64(format!("{utilisateur}:{mot_de_passe}").as_bytes());
+    let entetes = [("Authorization", format!("Basic {jeton}")), ("Content-Type", type_contenu.to_string())];
+    crate::http::envoyer(&crate::http::Demande {
+        methode,
+        url,
+        accepte: "*/*",
+        entetes: &entetes,
+        corps: corps.as_bytes(),
+        taille_max: 1 << 20,
+    })
+    .unwrap_or_else(|e| panic!("{methode} {url} : {e}"))
+    .statut
+}
+
+#[test]
 #[ignore = "exige un serveur CalDAV et un compte"]
 fn agenda_decouvert_synchronise_et_suivi() {
     use crate::caldav::{self, Acces};

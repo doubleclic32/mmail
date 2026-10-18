@@ -73,6 +73,11 @@ de projet interne.
 - **« Toutes les BàL »** : les boîtes de réception de tous les comptes en une
   seule liste (les 1 000 messages les plus récents), chacun avec son compte ;
   un message s'y lit, s'y répond, s'y déplace comme ailleurs ;
+- **carnet d'adresses** (« Comptes › Carnet d'adresses… ») : les contacts des
+  carnets du serveur (CardDAV — SOGo, le webmail des boîtes Mailcow), relus avec
+  les agendas ; à chercher par nom, organisation ou adresse, et à qui écrire. Ils
+  viennent en tête des adresses proposées à la saisie. Lecture seule : un
+  contact se crée ou se modifie dans le webmail ;
 - **filtres du courrier** (« Comptes › Filtres du courrier… », ou « Créer un
   filtre… » sur un message) : selon l'expéditeur — nom ou adresse — et l'objet
   (contient, est, commence par, se termine par ; toutes les conditions ou une
@@ -533,7 +538,7 @@ cargo test --manifest-path core/Cargo.toml -- --ignored --test-threads=1
 
 L'intégration continue les passe sous Linux contre un Dovecot monté pour
 l'occasion — deux comptes jetables, certificat signé par une autorité d'essai
-posée dans le magasin du système —, hors envoi SMTP et agenda.
+posée dans le magasin du système —, hors envoi SMTP, agenda et carnet d’adresses.
 
 ## Licence
 

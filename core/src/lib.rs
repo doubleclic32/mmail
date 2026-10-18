@@ -4,6 +4,7 @@ pub mod agenda;
 pub mod boite;
 pub mod cache;
 pub mod caldav;
+pub mod carddav;
 pub mod configuration;
 pub mod deplacement;
 pub mod filtres;

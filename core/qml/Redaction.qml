@@ -709,15 +709,28 @@ Page {
         }
 
         ScrollView {
+            id: defilementCorps
             Layout.fillWidth: true
             Layout.fillHeight: true
             ScrollBar.vertical.policy: ScrollBar.vertical.size < 1 ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
             rightPadding: ScrollBar.vertical.width
+            // Au doigt (retour de Manu du 18/10 : « l'affichage bouge, impossible
+            // de sélectionner correctement un mot ») : tant qu'un choix de texte
+            // est en cours, le corps ne défile plus — tirer les poignées d'Android
+            // étend le choix au lieu de faire défiler.
+            Binding {
+                target: defilementCorps.contentItem
+                property: "interactive"
+                value: !(fenetre.tactile && corpsRedaction.selectedText.length > 0)
+            }
             TextArea {
                 id: corpsRedaction
                 textFormat: TextEdit.RichText
                 wrapMode: TextEdit.Wrap
-                selectByMouse: true
+                // Au doigt, glisser fait défiler : le choix du texte passe par
+                // l'appui long et les poignées, pas par un glissé qui disputait
+                // le défilement.
+                selectByMouse: !fenetre.tactile
                 persistentSelection: true
                 font.pointSize: fenetre.tailleColonne("message")
                 enabled: !redac.chargement
@@ -735,6 +748,8 @@ Page {
                     enabled: fenetre.tactile
                     acceptedDevices: PointerDevice.TouchScreen
                     onLongPressed: {
+                        if (corpsRedaction.selectedText.length > 0)
+                            return
                         corpsRedaction.forceActiveFocus()
                         corpsRedaction.cursorPosition = corpsRedaction.positionAt(point.position.x, point.position.y)
                         corpsRedaction.selectWord()

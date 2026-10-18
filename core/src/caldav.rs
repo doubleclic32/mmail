@@ -93,13 +93,13 @@ pub struct ObjetDistant {
     pub ical: Option<String>,
 }
 
-fn est(noeud: &roxmltree::Node, espace: &str, nom: &str) -> bool {
+pub(crate) fn est(noeud: &roxmltree::Node, espace: &str, nom: &str) -> bool {
     noeud.is_element() && noeud.tag_name().name() == nom && noeud.tag_name().namespace() == Some(espace)
 }
 
 /// Chaque réponse d'un `multistatus` : son href, et les propriétés rendues
 /// avec le statut 200.
-fn reponses<'a, 'b>(doc: &'b roxmltree::Document<'a>) -> Vec<(String, Vec<roxmltree::Node<'a, 'b>>)> {
+pub(crate) fn reponses<'a, 'b>(doc: &'b roxmltree::Document<'a>) -> Vec<(String, Vec<roxmltree::Node<'a, 'b>>)> {
     let mut sortie = Vec::new();
     for reponse in doc.descendants().filter(|n| est(n, DAV, "response")) {
         let href = reponse
@@ -281,7 +281,7 @@ impl Dav for Acces<'_> {
 }
 
 /// Envoie une requête en exigeant une réponse « multistatus » (207).
-fn demander(dav: &impl Dav, methode: &str, url: &str, profondeur: &str, corps: &str) -> Resultat<Reponse> {
+pub(crate) fn demander(dav: &impl Dav, methode: &str, url: &str, profondeur: &str, corps: &str) -> Resultat<Reponse> {
     let reponse = dav.envoyer(methode, url, profondeur, corps)?;
     match reponse.statut {
         207 => Ok(reponse),
@@ -291,11 +291,11 @@ fn demander(dav: &impl Dav, methode: &str, url: &str, profondeur: &str, corps: &
 }
 
 /// Une erreur de l'index local, dite comme telle.
-fn index(e: crate::magasin::Erreur) -> Erreur {
+pub(crate) fn index(e: crate::magasin::Erreur) -> Erreur {
     Erreur::Protocole(format!("index local : {e}"))
 }
 
-fn texte(reponse: &Reponse) -> String {
+pub(crate) fn texte(reponse: &Reponse) -> String {
     String::from_utf8_lossy(&reponse.corps).into_owned()
 }
 

@@ -979,6 +979,10 @@ ApplicationWindow {
                   + (fenetre.nonLusReceptions > 0 ? "  (" + fenetre.nonLusReceptions + ")" : "")
             onTriggered: fenetre.ouvrirBoitesUnifiees()
         }
+        MenuItem {
+            text: qsTr("Carnet d'adresses…")
+            onTriggered: dlgCarnet.open()
+        }
         MenuSeparator {}
         MenuItem {
             text: qsTr("Comptes…")
@@ -1849,6 +1853,8 @@ ApplicationWindow {
             messageEtat.texte = qsTr("Connexion à Microsoft abandonnée.")
         }
     }
+
+    DialogueCarnet { id: dlgCarnet }
 
     // « Créer un filtre… » sur un message : un filtre sur son expéditeur, pour
     // son compte, à compléter dans le dialogue des filtres.

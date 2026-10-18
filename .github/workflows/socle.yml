@@ -160,7 +160,7 @@ jobs:
           MMAIL_HOTE=localhost MMAIL_UTILISATEUR=un@essai.test MMAIL_MOTDEPASSE=$M1 \
           MMAIL_UTILISATEUR2=deux@essai.test MMAIL_MOTDEPASSE2=$M2 \
             cargo test --manifest-path core/Cargo.toml essais_serveur -- --ignored --test-threads=1 \
-              --skip envoi_smtp --skip agenda --skip invitation \
+              --skip envoi_smtp --skip agenda --skip invitation --skip carnet \
             || { sudo cat $D/dovecot.log; exit 1; }
       - name: Test de fumée
         run: ctest --test-dir _build --output-on-failure -C Release
