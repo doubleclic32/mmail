@@ -370,6 +370,14 @@ pub mod qobject {
         #[cxx_name = "signalerIndesirable"]
         fn signaler_indesirable(self: Pin<&mut Boite>, uids: &QString) -> bool;
 
+        /// Comme `signalerIndesirable`, pour des messages d'un dossier donné de
+        /// n'importe quel compte (le glisser d'une ligne, « Toutes les BàL »
+        /// comprise) : vers les indésirables de leur compte, ou, depuis ce
+        /// dossier, vers la boîte de réception. Issue : `deplacementTermine`.
+        #[qinvokable]
+        #[cxx_name = "signalerIndesirableDans"]
+        fn signaler_indesirable_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString) -> bool;
+
         /// Vide, sur TOUS les comptes connectés, la corbeille et les dossiers
         /// d'indésirables (rôles SPECIAL-USE `Trash` et `Junk`, ou dont le nom
         /// évoque le pourriel). Purge définitive côté serveur. Issue par compte :
@@ -2586,6 +2594,23 @@ impl qobject::Boite {
                 false
             }
         }
+    }
+
+    pub fn signaler_indesirable_dans(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, uids: &QString) -> bool {
+        let compte = compte as i64;
+        let source = chemin.to_string();
+        let uids = lire_uids(uids);
+        if uids.is_empty() {
+            return false;
+        }
+        let dossiers = self.magasin.as_ref().and_then(|m| m.dossiers(compte).ok()).unwrap_or_default();
+        let Some(indesirables) = dossier_indesirables(&dossiers) else {
+            self.as_mut().set_erreur(QString::from("ce compte n'a pas de dossier de courrier indésirable"));
+            return false;
+        };
+        let chemin = if source == indesirables { "INBOX".to_string() } else { indesirables };
+        let cible = Cible { compte, chemin, identifiants: None };
+        self.as_mut().envoyer(compte, Commande::Deplacer { source, uids, cible })
     }
 
     pub fn signaler_indesirable(mut self: Pin<&mut Self>, uids: &QString) -> bool {

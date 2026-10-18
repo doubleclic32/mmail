@@ -607,7 +607,7 @@ Page {
                 onToggled: redac.basculerMiseEnForme(checked)
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("G")
                 font.bold: true
                 checkable: true
@@ -618,7 +618,7 @@ Page {
                 ToolTip.text: qsTr("Gras (Ctrl+B)")
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("I")
                 font.italic: true
                 checkable: true
@@ -629,7 +629,7 @@ Page {
                 ToolTip.text: qsTr("Italique (Ctrl+I)")
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("S")
                 font.underline: true
                 checkable: true
@@ -640,7 +640,7 @@ Page {
                 ToolTip.text: qsTr("Souligné (Ctrl+U)")
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("• Liste")
                 checkable: true
                 checked: mef.puces
@@ -648,7 +648,7 @@ Page {
                 onClicked: mef.basculerListe(false)
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("1. Liste")
                 checkable: true
                 checked: mef.numeros
@@ -656,13 +656,13 @@ Page {
                 onClicked: mef.basculerListe(true)
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("Lien…")
                 focusPolicy: Qt.NoFocus
                 onClicked: dlgAdresseLien.open()
             }
             ToolButton {
-                visible: redac.miseEnForme
+                visible: redac.miseEnForme && !fenetre.tactile
                 text: qsTr("Effacer la mise en forme")
                 focusPolicy: Qt.NoFocus
                 onClicked: mef.effacerMiseEnForme()
@@ -728,7 +728,74 @@ Page {
                     if (ev.matches(StandardKey.Paste) && redac.collerImage())
                         ev.accepted = true
                 }
+                // Au doigt, l'appui long choisit le mot touché ; Android pose
+                // ensuite ses poignées pour étendre le choix (retour de Manu du
+                // 18/10 : le texte ne se sélectionnait pas).
+                TapHandler {
+                    enabled: fenetre.tactile
+                    acceptedDevices: PointerDevice.TouchScreen
+                    onLongPressed: {
+                        corpsRedaction.forceActiveFocus()
+                        corpsRedaction.cursorPosition = corpsRedaction.positionAt(point.position.x, point.position.y)
+                        corpsRedaction.selectWord()
+                    }
+                }
             }
+            // Zoom au pincement, celui du corps des messages (retour de Manu
+            // du 18/10) — comme le volet de lecture.
+            PinchHandler {
+                target: null
+                property real depart: 1
+                onActiveChanged: if (active) depart = reglages.zoomMessage
+                onActiveScaleChanged: if (active) fenetre.poserZoom("message", depart * activeScale)
+            }
+        }
+
+        // Vue tactile (décision 32, point 6) : la mise en forme au bas de la
+        // rédaction — donc juste au-dessus du clavier, qui réduit la fenêtre —,
+        // en boutons classiques, lisibles (retour de Manu du 18/10, plutôt
+        // que des pastilles) ; enfoncés quand l'option est active.
+        Flow {
+            visible: fenetre.tactile && redac.miseEnForme
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+            Layout.bottomMargin: 4
+            spacing: 4
+            Button { text: "G"; font.bold: true; font.pointSize: fenetre.tailleBase * 1.15
+                     checkable: true; checked: mef.gras; highlighted: checked; focusPolicy: Qt.NoFocus
+                     Accessible.name: qsTr("Gras"); onClicked: mef.basculerGras() }
+            Button { text: "I"; font.italic: true; font.pointSize: fenetre.tailleBase * 1.15
+                     checkable: true; checked: mef.italique; highlighted: checked; focusPolicy: Qt.NoFocus
+                     Accessible.name: qsTr("Italique"); onClicked: mef.basculerItalique() }
+            Button { text: "S"; font.underline: true; font.pointSize: fenetre.tailleBase * 1.15
+                     checkable: true; checked: mef.souligne; highlighted: checked; focusPolicy: Qt.NoFocus
+                     Accessible.name: qsTr("Souligné"); onClicked: mef.basculerSouligne() }
+            Button { text: qsTr("• Liste"); font.pointSize: fenetre.tailleBase * 1.15
+                     checkable: true; checked: mef.puces; highlighted: checked; focusPolicy: Qt.NoFocus
+                     Accessible.name: qsTr("Liste à puces"); onClicked: mef.basculerListe(false) }
+            Button { text: qsTr("Lien…"); font.pointSize: fenetre.tailleBase * 1.15; focusPolicy: Qt.NoFocus
+                     onClicked: dlgAdresseLien.open() }
+            Button { text: qsTr("Image…"); font.pointSize: fenetre.tailleBase * 1.15; focusPolicy: Qt.NoFocus
+                     Accessible.name: qsTr("Insérer une image"); onClicked: choixImages.open() }
+        }
+    }
+
+    // Images choisies pour le corps (bouton « Image… ») : copiées parmi les
+    // images collées du profil, comme une image glissée ou collée.
+    FileDialog {
+        id: choixImages
+        title: qsTr("Insérer une image")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp)")]
+        onAccepted: {
+            var images = []
+            for (var i = 0; i < selectedFiles.length; ++i) {
+                var copie = boite.importerImage(selectedFiles[i].toString())
+                if (copie.length > 0)
+                    images.push(copie)
+            }
+            if (images.length > 0)
+                redac.insererImages(images)
         }
     }
 

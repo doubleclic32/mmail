@@ -16,6 +16,7 @@ import fr.mmedia.mmail.natif
 // ---------------------------------------------------------------- menus
 Menu {
     id: menuComptes
+    title: qsTr("Comptes")
     onAboutToShow: width = fenetre.largeurMenu(menuComptes)
     MenuItem {
         text: qsTr("Ajouter un compte…")

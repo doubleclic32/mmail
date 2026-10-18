@@ -120,6 +120,8 @@ Connections {
                 scenarios.etapeScenarioGlisser()
             if (fenetre.essai.scenario === "corbeille-ligne")
                 scenarios.etapeScenarioCorbeille()
+            if (fenetre.essai.scenario === "glisser-ligne")
+                scenarios.etapeScenarioGlisserLigne()
         }
     }
 
@@ -216,10 +218,14 @@ Connections {
             scenarios.etapeScenarioGlisser()
         if (fenetre.essai && fenetre.essai.scenario === "corbeille-ligne")
             scenarios.etapeScenarioCorbeille()
+        if (fenetre.essai && fenetre.essai.scenario === "glisser-ligne")
+            scenarios.etapeScenarioGlisserLigne()
         if (fenetre.essai && fenetre.essai.scenario === "en-tete")
             scenarios.etapeScenarioEnTete()
         if (fenetre.essai && fenetre.essai.scenario === "dialogues")
             scenarios.etapeScenarioDialogues()
+        if (fenetre.essai && fenetre.essai.scenario === "tactile")
+            scenarios.etapeScenarioTactile()
         if (fenetre.essai && fenetre.essai.scenario === "accessibilite")
             scenarios.etapeScenarioAccessibilite()
         if (fenetre.essai && fenetre.essai.scenario === "chevron")
@@ -553,6 +559,8 @@ Connections {
                 scenarios.etapeScenarioGlisser()
             if (fenetre.essai.scenario === "corbeille-ligne")
                 scenarios.etapeScenarioCorbeille()
+            if (fenetre.essai.scenario === "glisser-ligne")
+                scenarios.etapeScenarioGlisserLigne()
         }
     }
 

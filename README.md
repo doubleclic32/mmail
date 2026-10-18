@@ -446,7 +446,9 @@ par jour. Rien d'autre n'est envoyé ; `AvisVersion` à 0 le coupe.
 la fermeture** de MMail, ou **jamais** :
 
 - *Maintenant* : le paquet se télécharge, son empreinte est contrôlée contre le
-  fichier `SHA256SUMS` de la publication, puis le bandeau invite à
+  fichier `SHA256SUMS` de la publication — lui-même signé par MMEDIA (Ed25519,
+  `SHA256SUMS-<version>.txt.sig`, clé hors de GitHub, partie publique compilée
+  dans MMail ; sans signature valide, rien n'est téléchargé) —, puis le bandeau invite à
   **redémarrer MMail** — un clic : MMail se ferme, la mise à jour s'installe
   sans question et MMail se rouvre. Sans ce clic, elle s'installe à la
   fermeture.
@@ -495,7 +497,10 @@ QT_QPA_PLATFORM=offscreen _build/mmail --smoke
 
 Qt 6.4 au minimum, Rust stable, `libsecret-1-dev` sous Linux. Les paquets —
 installeur Windows, AppImage, APK — sont produits par l'intégration continue
-(`.github/workflows/socle.yml`).
+(`.github/workflows/socle.yml`). L'APK publié est signé à part, par la clé de MMEDIA
+(empreinte du certificat `D4:97:9E:5F…:D7:75` depuis la 0.5.17 ; les versions
+précédentes portaient une clé d'essai : passer de l'une à l'autre demande de
+désinstaller MMail une fois).
 
 L'interface est en QML, dans `core/qml/` : `Main.qml` porte la fenêtre, ses
 réglages, ses raccourcis et ses actions ; chaque élément a son fichier — les trois

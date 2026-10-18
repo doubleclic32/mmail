@@ -711,6 +711,147 @@ QtObject {
         t.start()
     }
 
+    // Scénario « tactile » : la vue du téléphone en images, sans téléphone
+    // (MMAIL_TACTILE=1, MMAIL_TAILLE=412x915) — liste, tiroir, menu ⋮, message.
+    function etapeScenarioTactile() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret" || essai.etape || boite.dossierCourant !== "INBOX" || modeleMessages.count < 1)
+            return
+        essai.etape = 1
+        var racine = fenetre.contentItem
+        while (racine.parent)
+            racine = racine.parent
+        function saisir(nom) {
+            var chemin = lanceur.chemin(identifiantsEssai.sortie + "/tactile-" + nom + ".png")
+            racine.grabToImage(function(r) { r.saveToFile(chemin) })
+            console.log("scenario: tactile", nom, "| vue", vue, "| tiroir", tiroir.opened,
+                        "| menu", menuPlus.opened || menuComptes.opened, "| titre", boite.dossierCourant,
+                        "| barre", entete.height)
+        }
+        var etapes = [
+            function() { saisir("liste") },
+            function() { tiroir.open() },
+            function() { saisir("tiroir") },
+            function() { tiroir.close(); menuPlus.popup(fenetre.width - 10, 0) },
+            function() { saisir("menu") },
+            function() { menuPlus.close(); menuComptes.popup(boutonPlus, boutonPlus.width - 260, boutonPlus.height) },
+            function() { saisir("comptes") },
+            function() { menuComptes.close(); bandeauGlissement.texte = qsTr("Message mis à la corbeille."); bandeauGlissement.open() },
+            function() { saisir("annuler") },
+            function() { bandeauGlissement.close(); choisir(0, 0) },
+            function() { saisir("message") },
+            function() { vue = 1; rediger("nouveau") },
+            function() { saisir("redaction") },
+            // Retour à la liste d’abord : depuis le message, la fermeture (et Qt.quit)
+            // est le retour arrière d’Android, qui ramène à la liste sans quitter.
+            function() { console.log("scenario: tactile fin | tactile", tactile, "| compact", compact); vue = 1; Qt.quit() }
+        ]
+        var i = 0
+        var t = Qt.createQmlObject("import QtQuick; Timer { interval: 700; repeat: true }", fenetre)
+        t.triggered.connect(function() {
+            if (i < etapes.length)
+                etapes[i++]()
+        })
+        t.start()
+    }
+
+    // Scénario « glisser-ligne » : une ligne glissée vers la corbeille, puis
+    // annulée — elle revient ; glissée de nouveau et laissée partir — elle est
+    // dans la corbeille ; ramenée enfin en boîte de réception.
+    function etapeScenarioGlisserLigne() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret")
+            return
+        if (essai.etape === 0 && boite.dossierCourant === "INBOX" && modeleMessages.count >= 2) {
+            essai.etape = 1
+            essai.sujet = modeleMessages.get(1).sujet
+            var avant = modeleMessages.count
+            // Comme au doigt : la ligne est d'abord glissée (ouverte).
+            var glissee = colonneListe.vueMessages.itemAtIndex(1)
+            if (glissee)
+                glissee.swipe.open(SwipeDelegate.Right)
+            glisserLigne(1, "corbeille")
+            console.log("scenario: glissée", avant, "->", modeleMessages.count, "| bandeau", bandeauGlissement.opened,
+                        "|", bandeauGlissement.texte, "|", essai.sujet)
+            annulerGlissement()
+            var revenue = -1
+            for (var i = 0; i < modeleMessages.count; ++i) {
+                if (modeleMessages.get(i).sujet === essai.sujet)
+                    revenue = i
+            }
+            console.log(revenue >= 0 && modeleMessages.count === avant && !bandeauGlissement.opened
+                        ? "scenario: OK annulée, ligne revenue au rang " + revenue
+                        : "scenario: ECHEC annulation " + modeleMessages.count + " / " + avant)
+            // Retour de Manu du 18/10 : après un glisser, d'autres lignes
+            // restaient décalées. Une fois la liste redessinée, aucune ligne
+            // affichée ne doit l'être.
+            essai.etape = 5  // en attente du contrôle : les autres étapes se taisent
+            // La liste recycle ses lignes : faire défiler jusqu'au bout et
+            // revenir reprend les lignes rangées, dont la ligne glissée.
+            var vue = colonneListe.vueMessages
+            var etapesControle = [
+                function() { vue.positionViewAtEnd() },
+                function() { vue.positionViewAtBeginning() },
+                function() {
+                    var decalees = []
+                    for (var d = 0; d < modeleMessages.count; ++d) {
+                        var l = vue.itemAtIndex(d)
+                        if (l && l.visible && l.swipe.position !== 0)
+                            decalees.push(d + ":" + l.swipe.position)
+                    }
+                    console.log(decalees.length === 0 ? "scenario: OK aucune ligne décalée après l'annulation"
+                                                       : "scenario: ECHEC lignes décalées " + decalees.join(" "))
+                    var rang = -1
+                    for (var i = 0; i < modeleMessages.count; ++i) {
+                        if (modeleMessages.get(i).sujet === essai.sujet)
+                            rang = i
+                    }
+                    glisserLigne(rang, "corbeille")
+                    essai.etape = 1
+                    console.log("scenario: glissée de nouveau, en attente", Object.keys(enAttente).length)
+                }
+            ]
+            var controle = Qt.createQmlObject("import QtQuick; Timer { interval: 600; repeat: true }", fenetre)
+            controle.triggered.connect(function() {
+                etapesControle.shift()()
+                if (etapesControle.length === 0)
+                    controle.stop()
+            })
+            controle.start()
+        } else if (essai.etape === 1 && glissement === null && deplacementsEnVol === 0) {
+            essai.etape = 2
+            var corbeille = ""
+            var parcourir = function(noeuds) {
+                for (var i = 0; i < noeuds.length && !corbeille; ++i) {
+                    if (noeuds[i].compte === a.id && noeuds[i].role === "Trash")
+                        corbeille = noeuds[i].chemin
+                    else if (noeuds[i].enfants)
+                        parcourir(noeuds[i].enfants)
+                }
+            }
+            parcourir(JSON.parse(boite.arborescence(true)))
+            essai.corbeille = corbeille
+            ouvrirDossier(a.id, corbeille)
+        } else if (essai.etape === 2 && boite.dossierCourant === essai.corbeille) {
+            for (var j = 0; j < modeleMessages.count; ++j) {
+                if (modeleMessages.get(j).sujet === essai.sujet) {
+                    essai.etape = 3
+                    console.log("scenario: OK message dans la corbeille")
+                    choisir(j, 0)
+                    deplacerVers(a.id, "INBOX")
+                    return
+                }
+            }
+            console.log("scenario: ECHEC message absent de la corbeille")
+            essai.etape = 9
+            Qt.quit()
+        } else if (essai.etape === 3 && deplacementsEnVol === 0) {
+            essai.etape = 9
+            console.log("scenario: message ramene en boite de reception")
+            Qt.quit()
+        }
+    }
+
     function etapeScenarioCorbeille() {
         var a = listeComptes()[0]
         if (!a || a.etat !== "pret")

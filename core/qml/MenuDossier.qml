@@ -23,9 +23,12 @@ Menu {
     property bool masque: false
     property string nom: ""
     property bool selectionnable: true
-    function ouvrir(c, ch, f, m, n, sel) {
+    function ouvrir(c, ch, f, m, n, sel, item, x, y) {
         compte = c; chemin = ch; favori = f; masque = m; nom = n; selectionnable = sel
-        popup()
+        if (item)
+            popup(item, x, y)
+        else
+            popup()
     }
     MenuItem {
         text: menuDossier.favori ? qsTr("Retirer des favoris") : qsTr("Ajouter aux favoris")

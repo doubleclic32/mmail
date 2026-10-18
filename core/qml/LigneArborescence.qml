@@ -65,11 +65,14 @@ ItemDelegate {
         color: fenetre.fondFavoris
     }
 
-    function menuLigne() {
+    // Menu de la ligne, ouvert au point du clic ou de l'appui (x, y dans la
+    // ligne) — cf. LigneMessage.
+    function menuLigne(x, y) {
         if (model.genre === "compte")
-            menuCompte.ouvrir(model.compte, model.adresse, model.hote, model.etat)
+            menuCompte.ouvrir(model.compte, model.adresse, model.hote, model.etat, ligne, x, y)
         else if (estDossier)
-            menuDossier.ouvrir(model.compte, model.chemin, model.favori, model.masque, model.nom, model.selectionnable)
+            menuDossier.ouvrir(model.compte, model.chemin, model.favori, model.masque, model.nom,
+                               model.selectionnable, ligne, x, y)
     }
 
     // Cible de dépôt : des messages glissés depuis la liste (sur un
@@ -168,13 +171,13 @@ ItemDelegate {
         }
         onClicked: function(souris) {
             if (souris.button === Qt.RightButton)
-                ligne.menuLigne()
+                ligne.menuLigne(souris.x, souris.y)
             else if (ligne.surChevron(souris.x))
                 boite.replierDossier(model.compte, model.chemin, !model.replie)
             else
                 ligne.cliquer()
         }
-        onPressAndHold: ligne.menuLigne()
+        onPressAndHold: function(souris) { ligne.menuLigne(souris.x, souris.y) }
         drag.onActiveChanged: fenetre.glisse = drag.active ? etiquetteDossier : null
         onReleased: {
             if (drag.active)

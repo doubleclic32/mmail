@@ -172,6 +172,11 @@ ApplicationWindow {
     // Un seul volet à la fois sous cette largeur : 0 arborescence, 1 liste,
     // 2 message.
     readonly property bool compact: width < 760
+    // Vue tactile (décision 32) : celle d'Android, qui suit les usages du
+    // système — menus au point d'appui, ni raccourcis clavier ni agenda. À
+    // distinguer de la vue compacte, qui ne dit que la largeur : une fenêtre
+    // étroite sur le bureau reste à la souris et au clavier.
+    readonly property bool tactile: Qt.platform.os === "android" || identifiantsEssai.tactile === true
     property int vue: 0
     // « courrier » ou « agenda » : ce qu'occupe la fenêtre sous la barre
     // d'outils.
@@ -553,6 +558,12 @@ ApplicationWindow {
     // ------------------------------------------------------------- en-tête
     header: ToolBar {
         id: entete
+        // Deux barres, une seule visible : la hauteur se donne ici — avec deux
+        // enfants, la barre ne la tire plus d'elle-même et s'écrasait
+        // (constaté par Manu sur le téléphone le 18/10, et vrai sur le bureau).
+        // Au doigt, 48 au moins : la hauteur d'une barre d'application d'Android.
+        contentHeight: fenetre.tactile ? Math.max(48, barreTactile.implicitHeight)
+                                       : barreBureau.implicitHeight
         // Sous une apparence de marque : bandeau nuit, filet cyan dessous qui
         // s'éteint vers la droite, comme l'en-tête du site.
         Rectangle {
@@ -578,7 +589,124 @@ ApplicationWindow {
         SiMarque { target: entete; property: "topPadding"; value: 4 }
         SiMarque { target: entete; property: "bottomPadding"; value: 7 }
 
+        // Vue tactile (décision 32) : la barre d'application d'Android —
+        // ☰ ouvre l'arborescence en tiroir (‹ revient du message à la liste),
+        // le nom du dossier, la loupe, ⋮ pour le reste.
         RowLayout {
+            id: barreTactile
+            visible: fenetre.tactile
+            anchors.fill: parent
+            anchors.leftMargin: 2
+            anchors.rightMargin: 2
+            spacing: 2
+            BoutonEntete {
+                text: fenetre.vue === 2 ? "‹" : ""
+                font.pixelSize: 22
+                Layout.preferredWidth: 48
+                Layout.fillHeight: true
+                Accessible.name: fenetre.vue === 2 ? qsTr("Retour à la liste") : qsTr("Dossiers")
+                onClicked: {
+                    if (fenetre.vue === 2)
+                        fenetre.vue = 1
+                    else
+                        tiroir.open()
+                }
+                Canvas {
+                    visible: fenetre.vue !== 2
+                    anchors.centerIn: parent
+                    width: 22
+                    height: 18
+                    property color encre: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
+                    onEncreChanged: requestPaint()
+                    onPaint: {
+                        var c = getContext("2d")
+                        c.reset()
+                        c.fillStyle = encre
+                        for (var i = 0; i < 3; ++i)
+                            c.fillRect(0, i * 7.5, width, 3)
+                    }
+                }
+            }
+            Label {
+                text: fenetre.vueUnifiee ? qsTr("Toutes les BàL")
+                      : boite.dossierCourant.length > 0 ? fenetre.libelleCourant() : "MMail"
+                color: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
+                elide: Text.ElideRight
+                font.bold: true
+                font.pointSize: fenetre.tailleBase * 1.15
+                Layout.fillWidth: true
+                Layout.leftMargin: 4
+            }
+            // « Toutes les BàL » reste à portée de pouce (retour de Manu du
+            // 18/10), avec ses non-lus.
+            BoutonEntete {
+                cerne: true
+                compteur: fenetre.nonLusReceptions
+                text: qsTr("BàL") + (fenetre.marque === null && fenetre.nonLusReceptions > 0
+                                     ? " (" + fenetre.nonLusReceptions + ")" : "")
+                font.bold: fenetre.nonLusReceptions > 0
+                checkable: true
+                checked: fenetre.vueUnifiee
+                Layout.fillHeight: true
+                Accessible.name: qsTr("Toutes les boîtes de réception")
+                onClicked: {
+                    checked = Qt.binding(function() { return fenetre.vueUnifiee })
+                    fenetre.ouvrirBoitesUnifiees()
+                }
+            }
+            BusyIndicator {
+                running: boite.occupe
+                visible: running
+                Layout.preferredHeight: 26
+                Layout.preferredWidth: 26
+            }
+            BoutonEntete {
+                Layout.preferredWidth: 48
+                Layout.fillHeight: true
+                Accessible.name: qsTr("Rechercher")
+                onClicked: {
+                    fenetre.vue = 1
+                    colonneListe.rechercheOuverte = true
+                    colonneListe.champRecherche.forceActiveFocus()
+                }
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 20
+                    height: 20
+                    property color encre: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
+                    onEncreChanged: requestPaint()
+                    onPaint: fenetre.dessinerLoupe(getContext("2d"), width, height, encre)
+                }
+            }
+            BoutonEntete {
+                id: boutonPlus
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 6
+                    height: 22
+                    property color encre: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
+                    onEncreChanged: requestPaint()
+                    onPaint: {
+                        var c = getContext("2d")
+                        c.reset()
+                        c.fillStyle = encre
+                        for (var i = 0; i < 3; ++i) {
+                            c.beginPath()
+                            c.arc(3, 3 + i * 8, 2.6, 0, 2 * Math.PI)
+                            c.fill()
+                        }
+                    }
+                }
+                Layout.preferredWidth: 48
+                Layout.fillHeight: true
+                Accessible.name: qsTr("Plus d'options")
+                onClicked: menuPlus.popup(boutonPlus, boutonPlus.width - menuPlus.width, boutonPlus.height)
+            }
+        }
+
+        RowLayout {
+            id: barreBureau
+            visible: !fenetre.tactile
             anchors.fill: parent
             anchors.leftMargin: 6
             anchors.rightMargin: 6
@@ -614,7 +742,7 @@ ApplicationWindow {
             // Courrier ou agenda : deux boutons, un seul qui bascule sur un
             // écran étroit.
             BoutonEntete {
-                visible: fenetre.compact
+                visible: fenetre.compact && !fenetre.tactile
                 text: fenetre.module === "agenda" ? qsTr("Courrier") : qsTr("Agenda")
                 onClicked: fenetre.module = fenetre.module === "agenda" ? "courrier" : "agenda"
             }
@@ -727,6 +855,167 @@ ApplicationWindow {
     }
 
     BandeauVersion { id: bandeauVersion }
+
+    // Vue tactile : l'arborescence dans un tiroir, tiré du bord gauche ou
+    // ouvert par ☰ ; « Toutes les BàL » en tête, comme les applications de
+    // messagerie d'Android. Le volet de l'arborescence des volets n'y sert pas.
+    Drawer {
+        id: tiroir
+        edge: Qt.LeftEdge
+        interactive: fenetre.tactile
+        width: Math.min(fenetre.width * 0.85, 360)
+        height: fenetre.height
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+            ItemDelegate {
+                Layout.fillWidth: true
+                text: qsTr("Toutes les BàL")
+                      + (fenetre.nonLusReceptions > 0 ? "  (" + fenetre.nonLusReceptions + ")" : "")
+                font.bold: fenetre.nonLusReceptions > 0
+                highlighted: fenetre.vueUnifiee
+                onClicked: fenetre.ouvrirBoitesUnifiees()
+            }
+            VoletArborescence {
+                id: arborescenceTiroir
+                visible: true
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+        }
+    }
+
+    // Bandeau du glisser d'une ligne : ce qui vient d'être fait, et « Annuler ».
+    Popup {
+        id: bandeauGlissement
+        property string texte: ""
+        x: Math.round((parent.width - width) / 2)
+        y: parent.height - height - 90
+        width: Math.min(parent.width - 24, 460)
+        closePolicy: Popup.NoAutoClose
+        padding: 8
+        // Sombre sur tout fond, comme le bandeau d'Android : il se voit.
+        background: Rectangle {
+            color: "#2b2b2b"
+            radius: 12
+        }
+        RowLayout {
+            anchors.fill: parent
+            spacing: 10
+            Label {
+                text: bandeauGlissement.texte
+                color: "#ffffff"
+                wrapMode: Text.Wrap
+                font.pointSize: fenetre.tailleBase * 1.15
+                Layout.fillWidth: true
+                Layout.leftMargin: 8
+            }
+            // Un gros rond, une flèche de retour : la cible du pouce.
+            RoundButton {
+                id: boutonAnnuler
+                Layout.preferredWidth: 56
+                Layout.preferredHeight: 56
+                highlighted: true
+                Accessible.name: qsTr("Annuler")
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Annuler")
+                onClicked: fenetre.annulerGlissement()
+                contentItem: Canvas {
+                    property color encre: "#ffffff"
+                    onPaint: {
+                        var c = getContext("2d")
+                        c.reset()
+                        var w = width, h = height
+                        var cx = w * 0.53, cy = h * 0.56, r = w * 0.22
+                        c.strokeStyle = encre
+                        c.fillStyle = encre
+                        c.lineWidth = Math.max(2, w * 0.08)
+                        c.lineCap = "round"
+                        c.beginPath()
+                        c.arc(cx, cy, r, Math.PI, Math.PI * 2.3, false)
+                        c.stroke()
+                        var ax = cx - r, ay = cy
+                        c.beginPath()
+                        c.moveTo(ax - w * 0.12, ay - h * 0.03)
+                        c.lineTo(ax + w * 0.12, ay - h * 0.03)
+                        c.lineTo(ax, ay + h * 0.15)
+                        c.closePath()
+                        c.fill()
+                    }
+                }
+            }
+        }
+    }
+
+    // Vue tactile : « Nouveau message » en bouton flottant, en bas à droite de
+    // la liste — l'usage d'Android.
+    RoundButton {
+        visible: fenetre.tactile && fenetre.vue === 1 && fenetre.module === "courrier"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 16
+        z: 10
+        width: 58
+        height: 58
+        text: "+"
+        font.pixelSize: 30
+        highlighted: true
+        Accessible.name: qsTr("Nouveau message")
+        onClicked: fenetre.rediger("nouveau")
+    }
+
+    // Vue tactile : le menu ⋮ — « Comptes… » et « Affichage… » ouvrent leurs
+    // menus à part (des sous-menus se choisissaient mal au doigt), puis ce que
+    // la barre de bureau montre en boutons.
+    Menu {
+        id: menuPlus
+        onAboutToShow: width = fenetre.largeurMenu(menuPlus)
+        MenuItem {
+            text: qsTr("Nouveau message")
+            onTriggered: fenetre.rediger("nouveau")
+        }
+        MenuItem {
+            text: qsTr("Toutes les BàL")
+                  + (fenetre.nonLusReceptions > 0 ? "  (" + fenetre.nonLusReceptions + ")" : "")
+            onTriggered: fenetre.ouvrirBoitesUnifiees()
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Comptes…")
+            onTriggered: Qt.callLater(function() {
+                menuComptes.popup(boutonPlus, boutonPlus.width - Math.max(menuComptes.width, 200), boutonPlus.height)
+            })
+        }
+        MenuItem {
+            text: qsTr("Affichage…")
+            onTriggered: Qt.callLater(function() {
+                menuAffichage.popup(boutonPlus, boutonPlus.width - Math.max(menuAffichage.width, 200), boutonPlus.height)
+            })
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Actualiser")
+            onTriggered: boite.actualiser()
+        }
+        MenuItem {
+            text: qsTr("Dossiers masqués")
+            checkable: true
+            checked: reglages.afficherMasques
+            onTriggered: {
+                reglages.afficherMasques = checked
+                fenetre.rafraichirArborescence()
+            }
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: qsTr("Aide")
+            onTriggered: dlgAide.open()
+        }
+        MenuItem {
+            text: qsTr("À propos de MMail…")
+            onTriggered: dlgAPropos.open()
+        }
+    }
 
     // ------------------------------------------------------------- volets
     Agenda {
@@ -1319,7 +1608,7 @@ ApplicationWindow {
         id: menuAide
         onAboutToShow: width = fenetre.largeurMenu(menuAide)
         MenuItem {
-            text: qsTr("Aide (F1)")
+            text: fenetre.tactile ? qsTr("Aide") : qsTr("Aide (F1)")
             onTriggered: dlgAide.open()
         }
         MenuItem {
@@ -2408,6 +2697,7 @@ ApplicationWindow {
     // ---- liste des messages
 
     function ouvrirDossier(compte, chemin) {
+        tiroir.close()
         // Un dossier choisi dans l'arborescence met fin à une recherche dans
         // toutes les boîtes, même s'il est celui du dernier résultat lu.
         var sortieGlobale = rechercheGlobale || vueUnifiee
@@ -2492,7 +2782,7 @@ ApplicationWindow {
         for (var a = 0; a < c.ajoutes.length; ++a) {
             var n = c.ajoutes[a]
             delete absents[n.uid]
-            if (fenetre.enDeplacement[cleDeplacement(n.uid)] === true || rangExact(n.h, n.uid) >= 0)
+            if (fenetre.masquee(cleDeplacement(n.uid)) || rangExact(n.h, n.uid) >= 0)
                 continue
             modeleMessages.insert(rangInsertion(n.h, n.uid), n)
         }
@@ -2516,7 +2806,7 @@ ApplicationWindow {
     function poserListe(liste, suite) {
         arreterSuite()
         var messages = liste.filter(function(m) {
-            return fenetre.enDeplacement[cleDeplacement(m.uid)] !== true
+            return !fenetre.masquee(cleDeplacement(m.uid))
         })
         var enHaut = listeEnHaut()
         var position = colonneListe.vueMessages.contentY
@@ -2585,7 +2875,7 @@ ApplicationWindow {
         if (!r.suite)
             minuteurSuite.stop()
         var lignes = r.lignes.filter(function(m) {
-            return fenetre.enDeplacement[cleDeplacement(m.uid)] !== true
+            return !fenetre.masquee(cleDeplacement(m.uid))
         })
         if (lignes.length > 0)
             modeleMessages.append(lignes)
@@ -2826,6 +3116,7 @@ ApplicationWindow {
 
     /// Boîte de réception unifiée : les réceptions de tous les comptes.
     function ouvrirBoitesUnifiees() {
+        tiroir.close()
         if (rechercheGlobale)
             sortirRechercheGlobale()
         recherche = ""
@@ -2852,7 +3143,7 @@ ApplicationWindow {
             delete r.segments
             return r
         }).filter(function(r) {
-            return fenetre.enDeplacement[r.compte + "|" + r.chemin + "|" + r.uid] !== true
+            return !fenetre.masquee(r.compte + "|" + r.chemin + "|" + r.uid)
         })
         var cle = function(m) { return fenetre.cleResultat(m.compte, m.chemin, m.uid) }
         var voulues = {}
@@ -3347,6 +3638,93 @@ ApplicationWindow {
         return boite.compteCourant + "|" + boite.dossierCourant + "|" + uid
     }
 
+    // Ligne retirée de la liste : en cours de déplacement, ou glissée et en
+    // attente derrière le bandeau « Annuler ».
+    function masquee(cle) {
+        return enDeplacement[cle] === true || enAttente[cle] === true
+    }
+
+    // Glisser d'une ligne (vue tactile) : la ligne quitte la liste d'emblée,
+    // l'action attend 5 s derrière le bandeau « Annuler », puis part comme
+    // celle de la corbeille de la ligne. Une seule action attend : la suivante
+    // envoie la précédente.
+    property var glissement: null
+    property var enAttente: ({})
+    function glisserLigne(index, genre) {
+        if (index < 0 || index >= modeleMessages.count)
+            return
+        validerGlissement()
+        var r = modeleMessages.get(index)
+        var compte = listeMulti ? r.compte : boite.compteCourant
+        var chemin = listeMulti ? r.chemin : boite.dossierCourant
+        var role = listeMulti ? (r.role || "") : roleCourant
+        var cle = compte + "|" + chemin + "|" + r.uid
+        glissement = { cle: cle, compte: compte, chemin: chemin, uid: r.uid, genre: genre }
+        var attente = {}
+        for (var k in enAttente)
+            attente[k] = true
+        attente[cle] = true
+        enAttente = attente
+        modeleMessages.remove(index)
+        if (!listeMulti && uidCourant === r.uid) {
+            uidCourant = 0
+            colonneLecture.sujetAffiche.text = ""
+            colonneLecture.auteurAffiche.text = ""
+            adresseAffichee = ""
+            afficherTexte(qsTr("Aucun message sélectionné."))
+        }
+        bandeauGlissement.texte = genre === "corbeille" ? qsTr("Message mis à la corbeille.")
+                                 : role === "Junk" ? qsTr("Message remis en boîte de réception.")
+                                 : qsTr("Message classé indésirable.")
+        bandeauGlissement.open()
+        minuterieGlissement.restart()
+    }
+    function retirerDeLAttente(cle) {
+        var attente = {}
+        for (var k in enAttente) {
+            if (k !== cle)
+                attente[k] = true
+        }
+        enAttente = attente
+    }
+    function validerGlissement() {
+        if (!glissement)
+            return
+        minuterieGlissement.stop()
+        bandeauGlissement.close()
+        var g = glissement
+        glissement = null
+        var ok = g.genre === "corbeille" ? boite.supprimerDans(g.compte, g.chemin, String(g.uid))
+                                         : boite.signalerIndesirableDans(g.compte, g.chemin, String(g.uid))
+        retirerDeLAttente(g.cle)
+        if (ok) {
+            var retires = {}
+            for (var u in enDeplacement)
+                retires[u] = true
+            retires[g.cle] = true
+            enDeplacement = retires
+            deplacementsEnVol += 1
+        } else {
+            messageEtat.texte = boite.erreur
+            rafraichirListe(true)
+        }
+    }
+    function annulerGlissement() {
+        if (!glissement)
+            return
+        minuterieGlissement.stop()
+        bandeauGlissement.close()
+        var g = glissement
+        glissement = null
+        retirerDeLAttente(g.cle)
+        rafraichirListe(true)
+    }
+    Timer {
+        id: minuterieGlissement
+        interval: 5000
+        onTriggered: fenetre.validerGlissement()
+    }
+
     function retirerDeLaListe(uids) {
         var retires = {}
         for (var u in enDeplacement)
@@ -3525,6 +3903,19 @@ ApplicationWindow {
     }
 
     onClosing: function(fermeture) {
+        // Vue tactile : le retour arrière d'Android ferme le tiroir, ramène
+        // du message à la liste, puis quitte — la liste est l'écran d'accueil.
+        if (tactile) {
+            validerGlissement()
+            if (tiroir.opened) {
+                fermeture.accepted = false
+                tiroir.close()
+            } else if (vue === 2) {
+                fermeture.accepted = false
+                vue = 1
+            }
+            return
+        }
         // Sur téléphone, le retour arrière ramène de l'agenda au courrier, puis
         // remonte d'un volet avant de quitter.
         if (compact && module === "agenda") {
@@ -3537,6 +3928,22 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        if (identifiantsEssai.taille) {
+            var taille = identifiantsEssai.taille.split("x")
+            width = parseInt(taille[0])
+            height = parseInt(taille[1])
+        }
+        // L'agenda relève, sous Android, de l'application du téléphone ; la
+        // liste est l'écran d'accueil, le tiroir s'ouvre tant qu'aucun dossier
+        // n'est choisi.
+        if (tactile) {
+            module = "courrier"
+            vue = 1
+            Qt.callLater(function() {
+                if (boite.dossierCourant.length === 0 && !vueUnifiee)
+                    tiroir.open()
+            })
+        }
         if (typeof modeControle !== "undefined" && modeControle)
             return
         if (!boite.ouvrirProfil(cheminProfil))

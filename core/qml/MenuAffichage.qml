@@ -15,6 +15,7 @@ import fr.mmedia.mmail.natif
 
 Menu {
     id: menuAffichage
+    title: qsTr("Affichage")
     onAboutToShow: width = fenetre.largeurMenu(menuAffichage)
     Repeater {
         model: fenetre.nomsApparence
@@ -34,11 +35,16 @@ Menu {
         onTriggered: dlgLogiciels.open()
     }
     MenuSeparator {}
+    // Survol et raccourcis : rien de cela au doigt.
     MenuItem {
+        visible: !fenetre.tactile
+        height: visible ? implicitHeight : 0
         text: qsTr("Agrandir la colonne survolée (Ctrl +)")
         onTriggered: fenetre.zoomer(fenetre.colonneActive, 1.1)
     }
     MenuItem {
+        visible: !fenetre.tactile
+        height: visible ? implicitHeight : 0
         text: qsTr("Réduire la colonne survolée (Ctrl −)")
         onTriggered: fenetre.zoomer(fenetre.colonneActive, 1 / 1.1)
     }

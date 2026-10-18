@@ -21,9 +21,12 @@ Menu {
     property string adresse: ""
     property string hote: ""
     property string etat: ""
-    function ouvrir(c, a, h, e) {
+    function ouvrir(c, a, h, e, item, x, y) {
         compte = c; adresse = a; hote = h; etat = e
-        popup()
+        if (item)
+            popup(item, x, y)
+        else
+            popup()
     }
     MenuItem {
         text: qsTr("Modifier ce compte…")
