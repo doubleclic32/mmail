@@ -240,6 +240,10 @@ jobs:
           $env:QT_FORCE_STDERR_LOGGING = "1"
           $env:MMAIL_VERSION_ESSAI = "0.0.1"
           $env:MMAIL_SCENARIO = "mise-a-jour"
+          # Demande authentifiée à l'API de GitHub : sans jeton, la limite de
+          # 60 demandes par heure, partagée entre les travaux de la machine,
+          # laissait la vérification sans réponse (cf. mise_a_jour.rs).
+          $env:MMAIL_JETON_GITHUB = $env:GITHUB_TOKEN
           $env:MMAIL_HOTE = "essai.invalid"
           $env:MMAIL_UTILISATEUR = "essai@essai.invalid"
           $env:MMAIL_MOTDEPASSE = "-"
@@ -249,7 +253,7 @@ jobs:
           $p = Start-Process -FilePath "$dir\MMail.exe" -PassThru `
             -RedirectStandardError "$env:RUNNER_TEMP\maj.err" -RedirectStandardOutput "$env:RUNNER_TEMP\maj.out"
           $ferme = $p.WaitForExit(300000)
-          Get-Content "$env:RUNNER_TEMP\maj.err" | Select-String "scenario|rror|chec"
+          Get-Content "$env:RUNNER_TEMP\maj.err" | Select-String "scenario|rror|chec|mise à jour"
           if (-not $ferme) { Stop-Process $p -Force; throw "MMail ne s'est pas fermé pour la mise à jour" }
           $cle = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{2F1D7A94-6C83-4E51-9B0A-7D3E5C8F1A62}_is1'
           $echeance = (Get-Date).AddMinutes(4)

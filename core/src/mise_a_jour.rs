@@ -102,18 +102,32 @@ const TELECHARGEMENTS: &str = "https://github.com/mmedia-fr/mmail/releases/downl
 /// Taille au-delà de laquelle un paquet est refusé : l'AppImage pèse 50 Mo.
 const TAILLE_MAX_PAQUET: u64 = 400 * 1024 * 1024;
 
-/// Numéro et page de la dernière version publiée ; `None` si GitHub ne répond
-/// pas, ou pas comme attendu.
-fn derniere_version() -> Option<(String, String)> {
-    let reponse = http::requete("GET", PUBLICATIONS, "application/vnd.github+json").ok()?;
+/// Numéro et page de la dernière version publiée ; une erreur si GitHub ne
+/// répond pas, ou pas comme attendu.
+///
+/// `MMAIL_JETON_GITHUB` (essais de la CI seulement) : la demande part
+/// authentifiée. Sans lui, l'API de GitHub n'accepte que 60 demandes par heure
+/// et par adresse — partagées, sur les machines de la CI, entre bien des
+/// travaux : refusée (403), la vérification restait muette et l'essai
+/// « mise à jour assistée » attendait cinq minutes sans rien écrire (échec
+/// intermittent sous Windows, 12 au 18/10).
+fn derniere_version() -> Result<(String, String), String> {
+    let jeton = std::env::var("MMAIL_JETON_GITHUB").unwrap_or_default();
+    let entetes: Vec<(&str, String)> =
+        if jeton.is_empty() { Vec::new() } else { vec![("Authorization", format!("Bearer {jeton}"))] };
+    let demande = http::Demande { entetes: &entetes, ..http::Demande::simple("GET", PUBLICATIONS, "application/vnd.github+json") };
+    let reponse = http::envoyer(&demande).map_err(|e| format!("GitHub injoignable : {e}"))?;
     if reponse.statut != 200 {
-        return None;
+        return Err(format!("GitHub répond {}", reponse.statut));
     }
-    let v: serde_json::Value = serde_json::from_slice(&reponse.corps).ok()?;
-    let version = v["tag_name"].as_str()?.trim_start_matches('v').to_string();
-    let page = v["html_url"].as_str()?.to_string();
+    let v: serde_json::Value = serde_json::from_slice(&reponse.corps).map_err(|e| format!("réponse illisible : {e}"))?;
+    let version = v["tag_name"].as_str().ok_or("réponse sans tag_name")?.trim_start_matches('v').to_string();
+    let page = v["html_url"].as_str().ok_or("réponse sans html_url")?.to_string();
     // Une page ailleurs que sur le dépôt ne s'ouvre pas depuis MMail.
-    page.starts_with("https://github.com/mmedia-fr/mmail/").then_some((version, page))
+    if !page.starts_with("https://github.com/mmedia-fr/mmail/") {
+        return Err(format!("page de publication inattendue : {page}"));
+    }
+    Ok((version, page))
 }
 
 /// Numéro lu chiffre par chiffre : « 0.5.8 » → [0, 5, 8]. Une préversion
@@ -308,7 +322,17 @@ impl qobject::MiseAJour {
     pub fn verifier(self: Pin<&mut Self>) {
         let fil = self.qt_thread();
         let _ = thread::Builder::new().name("mmail-version".into()).spawn(move || {
-            let Some((version, page)) = derniere_version() else { return };
+            let (version, page) = match derniere_version() {
+                Ok(v) => v,
+                Err(e) => {
+                    // Muet pour la personne (la vérification se refera) ; dit
+                    // dans le journal d'un essai.
+                    if std::env::var_os("MMAIL_SCENARIO").is_some() {
+                        eprintln!("mise à jour : vérification impossible — {e}");
+                    }
+                    return;
+                }
+            };
             if plus_recente(&version, &version_actuelle()) {
                 let _ = fil.queue(move |objet: Pin<&mut qobject::MiseAJour>| {
                     objet.disponible(&QString::from(&version), &QString::from(&page));

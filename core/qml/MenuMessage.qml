@@ -76,6 +76,21 @@ Menu {
         enabled: Object.keys(fenetre.selection).length === 1
         onTriggered: fenetre.copierChamp("sujet")
     }
+    MenuSeparator {}
+    MenuItem {
+        text: fenetre.tactile ? qsTr("Imprimer…") : qsTr("Imprimer… (Ctrl+P)")
+        visible: impression.disponible
+        height: visible ? implicitHeight : 0
+        enabled: fenetre.uidCourant > 0
+        onTriggered: fenetre.imprimerMessage()
+    }
+    MenuItem {
+        text: qsTr("Enregistrer en PDF…")
+        visible: Qt.platform.os !== "android"
+        height: visible ? implicitHeight : 0
+        enabled: fenetre.uidCourant > 0
+        onTriggered: fenetre.enregistrerPdf()
+    }
     MenuItem {
         text: qsTr("Afficher la source")
         enabled: Object.keys(fenetre.selection).length === 1

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Ressources de l executable Windows : icone et informations de version,
+// dont FileDescription, le nom que Windows donne aux notifications de MMail
+// (sans elle : MMail.exe ; essai sur le banc du 18/10/2026). Produit par
+// configure_file (CMakeLists.txt). ASCII seulement : rc.exe lit la page de code.
+#include <winver.h>
+
+IDI_ICON1 ICON DISCARDABLE "@CMAKE_CURRENT_SOURCE_DIR@/assets/mmail.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040C04B0"
+    BEGIN
+      VALUE "CompanyName", "SAS M-Media"
+      VALUE "FileDescription", "MMail"
+      VALUE "FileVersion", "@PROJECT_VERSION@"
+      VALUE "InternalName", "MMail"
+      VALUE "LegalCopyright", "SAS M-Media - GPL-3.0-or-later"
+      VALUE "OriginalFilename", "MMail.exe"
+      VALUE "ProductName", "MMail"
+      VALUE "ProductVersion", "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x40C, 1200
+  END
+END

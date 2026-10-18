@@ -14,7 +14,7 @@
 //! sauvegarde de la configuration : elle suit l'utilisateur d'un poste à
 //! l'autre.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +68,8 @@ pub struct Recu {
     pub expediteur: String,
     pub adresse: String,
     pub sujet: String,
+    /// Déjà lu à l'arrivée (lu ailleurs, ou envoyé à soi-même et marqué).
+    pub lu: bool,
 }
 
 /// Ce que les filtres demandent pour des messages d'un même dossier.
@@ -205,12 +207,26 @@ pub fn planifier(filtres: &[Filtre], compte: &str, recus: &[Recu], deja: &dyn Fn
     plan
 }
 
+/// Messages arrivés à signaler (0.6.2, notifications) : non lus, et que les
+/// filtres n'ont ni marqués lus ni rangés ailleurs.
+pub fn a_signaler<'a>(recus: &'a [Recu], plan: &Plan) -> Vec<&'a Recu> {
+    let ecartes: HashSet<u32> = plan
+        .lus
+        .iter()
+        .chain(plan.corbeille.iter())
+        .chain(plan.indesirables.iter())
+        .chain(plan.deplacements.values().flatten())
+        .copied()
+        .collect();
+    recus.iter().filter(|r| !r.lu && !ecartes.contains(&r.uid)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn recu(uid: u32, expediteur: &str, adresse: &str, sujet: &str) -> Recu {
-        Recu { uid, message_id: format!("<{uid}@essai>"), expediteur: expediteur.into(), adresse: adresse.into(), sujet: sujet.into() }
+        Recu { uid, message_id: format!("<{uid}@essai>"), expediteur: expediteur.into(), adresse: adresse.into(), sujet: sujet.into(), lu: false }
     }
 
     fn filtre(json: &str) -> Filtre {
@@ -259,6 +275,15 @@ mod tests {
         assert_eq!(plan.suivis, vec![4]);
         assert!(plan.corbeille.is_empty());
         assert_eq!(plan.touches.len(), 4);
+        // À signaler : ni le relevé (lu et rangé), ni les promotions (indésirables) ;
+        // le message urgent (seulement suivi) et « Bonjour » le sont ; un message
+        // déjà lu ne l'est pas.
+        let mut avec_lu = recus.clone();
+        avec_lu[4].lu = true;
+        let signales: Vec<u32> = a_signaler(&avec_lu, &plan).iter().map(|r| r.uid).collect();
+        assert_eq!(signales, vec![4]);
+        let sans_filtre: Vec<u32> = a_signaler(&recus, &Plan::default()).iter().map(|r| r.uid).collect();
+        assert_eq!(sans_filtre, vec![1, 2, 3, 4, 5]);
         // Un autre compte : le filtre « Banque » ne le vise pas.
         let autre = planifier(&filtres, "autre@x.fr", &recus, &|_| false);
         assert!(autre.deplacements.is_empty() && autre.lus.is_empty());

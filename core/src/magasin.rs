@@ -610,7 +610,7 @@ impl Magasin {
             return Ok((0, Vec::new()));
         };
         let mut requete = self.base.prepare(
-            "SELECT uid, message_id, expediteur, adresse, sujet FROM messages
+            "SELECT uid, message_id, expediteur, adresse, sujet, lu FROM messages
              WHERE folder_id = ?1 AND uid > ?2 ORDER BY uid",
         )?;
         let recus = requete
@@ -621,6 +621,7 @@ impl Magasin {
                     expediteur: l.get(2)?,
                     adresse: l.get(3)?,
                     sujet: l.get(4)?,
+                    lu: l.get::<_, i64>(5)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

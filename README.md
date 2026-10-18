@@ -73,6 +73,14 @@ de projet interne.
 - **« Toutes les BàL »** : les boîtes de réception de tous les comptes en une
   seule liste (les 1 000 messages les plus récents), chacun avec son compte ;
   un message s'y lit, s'y répond, s'y déplace comme ailleurs ;
+- **impression** (menu d'un message › « Imprimer… », ou Ctrl+P) : le message
+  tel qu'il s'affiche — objet, expéditeur, date et pièces jointes en tête —, par
+  la boîte d'impression du système (Windows, Linux) ; « Enregistrer en PDF… »
+  en fait un document A4 ;
+- **notification du nouveau courrier** (Windows, Linux ; « Affichage › Notifier
+  le nouveau courrier ») : quand la fenêtre n'est pas au premier plan, un
+  message arrivé dans une boîte de réception — et que les filtres n'ont ni lu
+  ni rangé — s'annonce ; un clic ramène MMail ;
 - **carnet d'adresses** (« Comptes › Carnet d'adresses… ») : les contacts des
   carnets du serveur (CardDAV — SOGo, le webmail des boîtes Mailcow), relus avec
   les agendas ; à chercher par nom, organisation ou adresse, et à qui écrire. Ils

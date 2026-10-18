@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.6.1 LANGUAGES CXX)
+project(mmail VERSION 0.6.3 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -126,11 +126,51 @@ endif()
 # — sans quoi l'explorateur et les raccourcis affichent une icône générique.
 # Le .h figure dans les sources pour qu'AUTOMOC le traite : sans cela, la classe
 # QObject qu'il declare n'a pas de metaobjet et l'edition de liens echoue.
-set(MMAIL_SOURCES cpp/main.cpp cpp/coffre.h cpp/fenetre.h cpp/installeur.h cpp/lanceur.h cpp/pastille.h cpp/presse_papier.h
+set(MMAIL_SOURCES cpp/main.cpp cpp/coffre.h cpp/fenetre.h cpp/installeur.h cpp/lanceur.h cpp/pastille.h cpp/notifieur.h cpp/impression.h cpp/presse_papier.h
                   cpp/mise_en_forme.h)
 if(WIN32)
-  list(APPEND MMAIL_SOURCES build/mmail.rc)
+  # Icône et informations de version de l'exécutable (cf. build/mmail.rc.in).
+  configure_file(build/mmail.rc.in ${CMAKE_CURRENT_BINARY_DIR}/mmail.rc @ONLY)
+  list(APPEND MMAIL_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/mmail.rc)
 endif()
+
+# Traductions françaises de Qt lui-même — boutons standard des dialogues
+# (« OK », « Annuler », « Fermer »…), boîtes de fichiers —, embarquées dans
+# l'exécutable : sans elles, ces boutons restaient en anglais (constaté sous
+# Android le 18/10/2026, vrai partout). Lues dans les traductions de Qt de la
+# fabrication, ou du Qt hôte pour Android.
+set(MMAIL_QM_DIRS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_TRANSLATIONS}")
+if(QT_HOST_PATH)
+  list(APPEND MMAIL_QM_DIRS "${QT_HOST_PATH}/translations")
+endif()
+list(APPEND MMAIL_QM_DIRS /usr/share/qt6/translations)
+set(MMAIL_QM_CONTENU "// Généré par CMake (CMakeLists.txt) : traductions de Qt embarquées.\n#include <cstddef>\n")
+set(MMAIL_QM_LISTE "")
+foreach(nom qtbase_fr qtdeclarative_fr)
+  set(trouve "")
+  foreach(d IN LISTS MMAIL_QM_DIRS)
+    if(NOT trouve AND EXISTS "${d}/${nom}.qm")
+      set(trouve "${d}/${nom}.qm")
+    endif()
+  endforeach()
+  if(trouve)
+    file(READ "${trouve}" octets HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," octets "${octets}")
+    string(APPEND MMAIL_QM_CONTENU "static const unsigned char ${nom}[] = {${octets}};\n")
+    list(APPEND MMAIL_QM_LISTE "{${nom}, sizeof(${nom})}")
+    message(STATUS "Traduction de Qt embarquée : ${trouve}")
+  else()
+    message(WARNING "Traduction de Qt introuvable : ${nom}.qm (boutons standard en anglais)")
+  endif()
+endforeach()
+list(LENGTH MMAIL_QM_LISTE MMAIL_QM_NOMBRE)
+list(APPEND MMAIL_QM_LISTE "{nullptr, 0}")
+list(JOIN MMAIL_QM_LISTE ", " MMAIL_QM_LISTE)
+string(APPEND MMAIL_QM_CONTENU "struct TraductionQt { const unsigned char* donnees; std::size_t taille; };\n"
+  "extern const TraductionQt traductionsQt[] = {${MMAIL_QM_LISTE}};\n"
+  "extern const std::size_t nombreTraductionsQt = ${MMAIL_QM_NOMBRE};\n")
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/traductions_qt.cpp" CONTENT "${MMAIL_QM_CONTENU}" @ONLY)
+list(APPEND MMAIL_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/traductions_qt.cpp")
 
 qt_add_executable(mmail ${MMAIL_SOURCES})
 # Pas de ressource Qt sous Android : le rcc de l'hote compresse en zstd, absent
@@ -190,6 +230,12 @@ endif()
 if(ANDROID)
   find_package(Qt6 REQUIRED COMPONENTS WebView)
   target_link_libraries(mmail PRIVATE Qt6::WebView)
+else()
+  # Impression d'un message (cf. cpp/impression.h) : la boîte d'impression du
+  # système, qui demande QtWidgets.
+  find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport)
+  target_link_libraries(mmail PRIVATE Qt6::Widgets Qt6::PrintSupport)
+  target_compile_definitions(mmail PRIVATE MMAIL_IMPRESSION)
 endif()
 
 if(ANDROID AND COMMAND qt_add_android_permission)

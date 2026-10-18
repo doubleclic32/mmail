@@ -292,6 +292,8 @@ Connections {
         }
         if (fenetre.essai && fenetre.essai.scenario === "pieces")
             scenarios.etapeScenarioPieces()
+        if (fenetre.essai && fenetre.essai.scenario === "impression" && !brut)
+            Qt.callLater(scenarios.etapeScenarioImpression)
         if (fenetre.essai && fenetre.essai.scenario === "ouvrir-avec")
             scenarios.etapeScenarioOuvrirAvec()
         // Scénario « joindre » : la première pièce du message affiché,
@@ -547,6 +549,19 @@ Connections {
             fenetre.trierRecherche("recents")
             Qt.quit()
         }
+    }
+
+    // Du nouveau courrier (0.6.2) : une notification si la fenêtre n'est pas
+    // au premier plan. Pas sous Android, où MMail ne relève pas le courrier
+    // en arrière-plan.
+    function onNouveauCourrier(compte, nombre, expediteur, sujet) {
+        var titre = nombre > 1 ? qsTr("%1 nouveaux messages").arg(nombre)
+                               : qsTr("Nouveau message de %1").arg(expediteur)
+        var texte = nombre > 1 ? qsTr("Dernier : %1 — %2").arg(expediteur).arg(sujet) : sujet
+        var montrer = reglages.notifications && !fenetre.active && Qt.platform.os !== "android"
+        var faite = montrer ? notifieur.notifier(titre, texte) : false
+        if (fenetre.essai && fenetre.essai.scenario === "notification")
+            scenarios.etapeScenarioNotification(nombre, expediteur, sujet, montrer, faite)
     }
 
     // Des filtres ont agi : leurs déplacements, lancés par le noyau, rendront

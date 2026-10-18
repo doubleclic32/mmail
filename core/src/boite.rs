@@ -680,6 +680,13 @@ pub mod qobject {
         #[cxx_name = "filtresAppliques"]
         fn filtres_appliques(self: Pin<&mut Boite>, compte: i32, touches: i32, deplacements: i32);
 
+        /// Du nouveau courrier dans la boîte de réception d'un compte (0.6.2) :
+        /// `nombre` messages non lus, que les filtres n'ont ni marqués lus ni
+        /// rangés ; l'expéditeur et l'objet du dernier.
+        #[qsignal]
+        #[cxx_name = "nouveauCourrier"]
+        fn nouveau_courrier(self: Pin<&mut Boite>, compte: i32, nombre: i32, expediteur: &QString, sujet: &QString);
+
         /// Corbeille et indésirables d'un compte vidés : `nombre` messages
         /// effacés définitivement. Émis une fois par compte concerné.
         #[qsignal]
@@ -2779,27 +2786,40 @@ impl qobject::Boite {
             let _ = magasin.poser_filtres_etat(compte, chemin, uidvalidity, dernier);
         }
         let filtres = crate::filtres::lire(&magasin.filtres().unwrap_or_default()).unwrap_or_default();
-        if filtres.iter().all(|f| !f.actif) {
-            return 0;
-        }
         let Ok((_, recus)) = magasin.recus_apres(compte, chemin, apres) else {
             return 0;
         };
         if recus.is_empty() {
             return 0;
         }
-        let Some(adresse) =
-            magasin.comptes().ok().and_then(|cs| cs.into_iter().find(|c| c.id == compte)).map(|c| c.adresse)
-        else {
-            return 0;
+        let mut plan = crate::filtres::Plan::default();
+        let adresse =
+            magasin.comptes().ok().and_then(|cs| cs.into_iter().find(|c| c.id == compte)).map(|c| c.adresse);
+        if let (true, Some(adresse)) = (filtres.iter().any(|f| f.actif), adresse) {
+            let ids: Vec<String> = recus.iter().map(|r| r.message_id.clone()).collect();
+            let vus = magasin.filtres_vus(compte, &ids).unwrap_or_default();
+            plan = crate::filtres::planifier(&filtres, &adresse, &recus, &|id| vus.contains(id));
+            if !plan.vide() {
+                let _ = magasin.noter_filtres_vus(compte, &plan.touches);
+            }
+        }
+        // Les arrivées à signaler (0.6.2) — pas pour « appliquer à toute la
+        // boîte » : le nombre, l'expéditeur et l'objet du dernier.
+        let signal = if tout {
+            None
+        } else {
+            let arrivees = crate::filtres::a_signaler(&recus, &plan);
+            arrivees.last().map(|d| {
+                let qui = if d.expediteur.is_empty() { d.adresse.clone() } else { d.expediteur.clone() };
+                (arrivees.len() as i32, qui, d.sujet.clone())
+            })
         };
-        let ids: Vec<String> = recus.iter().map(|r| r.message_id.clone()).collect();
-        let vus = magasin.filtres_vus(compte, &ids).unwrap_or_default();
-        let plan = crate::filtres::planifier(&filtres, &adresse, &recus, &|id| vus.contains(id));
         if plan.vide() {
+            if let Some((nombre, qui, sujet)) = signal {
+                self.as_mut().nouveau_courrier(compte as i32, nombre, &QString::from(&qui), &QString::from(&sujet));
+            }
             return 0;
         }
-        let _ = magasin.noter_filtres_vus(compte, &plan.touches);
         let dossiers = magasin.dossiers(compte).unwrap_or_default();
         let corbeille = dossier_de_role(&dossiers, "Trash");
         let indesirables = dossier_indesirables(&dossiers).map(|j| if j == chemin { "INBOX".to_string() } else { j });
@@ -2829,6 +2849,9 @@ impl qobject::Boite {
             }
         }
         self.as_mut().filtres_appliques(compte as i32, touches, lances);
+        if let Some((nombre, qui, sujet)) = signal {
+            self.as_mut().nouveau_courrier(compte as i32, nombre, &QString::from(&qui), &QString::from(&sujet));
+        }
         touches
     }
 

@@ -29,6 +29,14 @@ Menu {
     }
     MenuSeparator {}
     MenuItem {
+        text: qsTr("Notifier le nouveau courrier")
+        visible: Qt.platform.os !== "android"
+        height: visible ? implicitHeight : 0
+        checkable: true
+        checked: reglages.notifications
+        onTriggered: reglages.notifications = checked
+    }
+    MenuItem {
         text: qsTr("Logiciels d'ouverture des pièces jointes…")
         visible: Qt.platform.os !== "android"
         height: visible ? implicitHeight : 0
