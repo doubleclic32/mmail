@@ -533,11 +533,16 @@ mod tests {
             defi_de("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
-        let p = pkce();
+        let p = pkce().unwrap();
         assert_eq!(p.verificateur.len(), 43, "32 octets en base64url");
         assert!(p.verificateur.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
         assert_eq!(p.defi, defi_de(&p.verificateur));
-        assert_ne!(etat(), etat());
+        assert_ne!(etat().unwrap(), etat().unwrap());
+        // Une panne passagère n'est pas un refus de la personne.
+        let busy = ErreurOAuth::refus("temporarily_unavailable", "");
+        assert!(matches!(busy.vers_erreur("Microsoft"), crate::imap::Erreur::Reseau(_)));
+        let refus = ErreurOAuth::refus("invalid_grant", "AADSTS70008");
+        assert!(matches!(refus.vers_erreur("Microsoft"), crate::imap::Erreur::Refuse(_)));
     }
 
     #[test]

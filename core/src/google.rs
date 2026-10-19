@@ -175,6 +175,32 @@ pub fn rafraichir(client: &str, secret: &str, rafraichissement: &str) -> Result<
     crate::oauth::demander_jeton(POINT_JETON, &corps_rafraichissement(client, secret, rafraichissement))
 }
 
+/// Point de révocation de Google (RFC 7009).
+const POINT_REVOCATION: &str = "https://oauth2.googleapis.com/revoke";
+
+/// Révoque un jeton de rafraîchissement : le compte retiré de MMail ne garde
+/// pas chez Google un accès que plus rien n'utilise (0.6.4). Google retire
+/// avec lui l'accord donné à MMail sur ce compte.
+pub fn revoquer(rafraichissement: &str) -> Result<(), ErreurOAuth> {
+    let corps = format!("token={}", encoder(rafraichissement));
+    let entetes = [("Content-Type", "application/x-www-form-urlencoded".to_string())];
+    let reponse = crate::http::envoyer(&crate::http::Demande {
+        methode: "POST",
+        url: POINT_REVOCATION,
+        accepte: "application/json",
+        entetes: &entetes,
+        corps: corps.as_bytes(),
+        taille_max: 64 * 1024,
+    })
+    .map_err(|e| ErreurOAuth::Reseau(e.to_string()))?;
+    match reponse.statut {
+        200 => Ok(()),
+        // Déjà révoqué ou expiré : le but est atteint.
+        400 => Ok(()),
+        statut => Err(ErreurOAuth::refus(&format!("HTTP {statut}"), "révocation refusée par Google")),
+    }
+}
+
 /// Rafraîchissement d'un compte, avec le client du programme.
 pub(crate) fn rafraichir_compte(rafraichissement: &str) -> Result<ReponseJeton, ErreurOAuth> {
     let (client, secret) = (identifiant_client(), secret_client());

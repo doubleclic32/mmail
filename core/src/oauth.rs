@@ -147,7 +147,36 @@ impl ErreurOAuth {
     pub fn vers_erreur(&self, nom: &str) -> Erreur {
         match self {
             ErreurOAuth::Reseau(_) => Erreur::Reseau(self.texte(nom)),
+            // Une panne passagère du service n'est pas un refus : le compte
+            // n'a pas à être reconnecté, la session reprendra (0.6.4).
+            ErreurOAuth::Refus { .. } if self.passagere() => Erreur::Reseau(self.texte(nom)),
             ErreurOAuth::Refus { .. } => Erreur::Refuse(self.texte(nom)),
+        }
+    }
+
+    /// Vrai pour une panne passagère du service (surcharge, indisponibilité),
+    /// au point de jeton comme dans Graph : il faut réessayer plus tard, pas
+    /// redemander l'accord de la personne.
+    pub fn passagere(&self) -> bool {
+        match self {
+            ErreurOAuth::Refus { code, .. } => matches!(
+                code.as_str(),
+                "temporarily_unavailable"
+                    | "server_error"
+                    | "slow_down"
+                    | "TooManyRequests"
+                    | "ApplicationThrottled"
+                    | "ServiceUnavailable"
+                    | "ErrorServerBusy"
+                    | "InternalServerError"
+                    | "MailboxConcurrency"
+                    | "HTTP 429"
+                    | "HTTP 500"
+                    | "HTTP 502"
+                    | "HTTP 503"
+                    | "HTTP 504"
+            ),
+            ErreurOAuth::Reseau(_) => true,
         }
     }
 }
@@ -174,9 +203,14 @@ pub struct Pkce {
     pub defi: String,
 }
 
-pub fn pkce() -> Pkce {
-    let verificateur = base64url(&alea::<32>());
-    Pkce { defi: defi_de(&verificateur), verificateur }
+pub fn pkce() -> Result<Pkce, ErreurOAuth> {
+    let verificateur = base64url(&alea::<32>()?);
+    Ok(Pkce { defi: defi_de(&verificateur), verificateur })
+}
+
+/// Le défi PKCE et l'état d'une connexion.
+pub fn pkce_et_etat() -> Result<(Pkce, String), ErreurOAuth> {
+    Ok((pkce()?, etat()?))
 }
 
 pub(crate) fn defi_de(verificateur: &str) -> String {
@@ -185,16 +219,19 @@ pub(crate) fn defi_de(verificateur: &str) -> String {
 
 /// Valeur imprévisible pour `state` : une réponse qui ne la rend pas n'est pas
 /// celle de notre demande.
-pub fn etat() -> String {
-    base64url(&alea::<16>())
+pub fn etat() -> Result<String, ErreurOAuth> {
+    Ok(base64url(&alea::<16>()?))
 }
 
-fn alea<const N: usize>() -> [u8; N] {
+/// Octets imprévisibles. Sans source d'aléa, il n'y a pas de connexion sûre
+/// possible : la connexion échoue (une valeur nulle, prévisible, était rendue
+/// jusqu'à la 0.6.3 — rien ne garantissait que le service la refuse).
+fn alea<const N: usize>() -> Result<[u8; N], ErreurOAuth> {
     let mut octets = [0u8; N];
-    // Sans source d'aléa, il n'y a pas de connexion sûre possible : mieux vaut
-    // une valeur nulle, que le service refuse (défi PKCE connu), qu'un arrêt.
-    let _ = rand::SystemRandom::new().fill(&mut octets);
-    octets
+    rand::SystemRandom::new()
+        .fill(&mut octets)
+        .map_err(|_| ErreurOAuth::Reseau("source d'aléa du système indisponible : connexion impossible".into()))?;
+    Ok(octets)
 }
 
 /// Écoute locale qui reçoit le retour du navigateur. Liée à 127.0.0.1 sur un

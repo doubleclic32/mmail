@@ -251,6 +251,10 @@ ApplicationWindow {
     property bool vueUnifiee: false
     property bool unifieeAvantRecherche: false
     readonly property bool listeMulti: rechercheGlobale || vueUnifiee
+    /// Vue Courrier affichée : les raccourcis du courrier n'agissent pas dans
+    /// l'Agenda (Suppr y aurait mis à la corbeille les messages restés choisis
+    /// dans le courrier masqué).
+    readonly property bool courrierActif: module !== "agenda"
     // Version plus récente publiée, et sa page ; vide sinon.
     property string versionNouvelle: ""
     property string pageVersion: ""
@@ -1768,29 +1772,29 @@ ApplicationWindow {
     }
     Shortcut {
         sequences: [StandardKey.Print]
-        enabled: !fenetre.dialogueOuvert() && fenetre.uidCourant > 0 && impression.disponible
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && fenetre.uidCourant > 0 && impression.disponible
         onActivated: fenetre.imprimerMessage()
     }
 
     Shortcut {
         sequences: [StandardKey.Delete]
-        enabled: !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
         onActivated: fenetre.supprimerSelection()
     }
     // Raccourcis d'Outlook : déplacer, marquer lu, marquer non lu.
     Shortcut {
         sequence: "Ctrl+Shift+V"
-        enabled: !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
         onActivated: fenetre.ouvrirDeplacer()
     }
     Shortcut {
         sequence: "Ctrl+Q"
-        enabled: !fenetre.dialogueOuvert()
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert()
         onActivated: fenetre.marquerSelection(true)
     }
     Shortcut {
         sequence: "Ctrl+U"
-        enabled: !fenetre.dialogueOuvert()
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert()
         onActivated: fenetre.marquerSelection(false)
     }
     Shortcut {
@@ -1800,13 +1804,13 @@ ApplicationWindow {
     // Courrier indésirable, comme dans Outlook.
     Shortcut {
         sequence: "Ctrl+Alt+J"
-        enabled: !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0 && !fenetre.dossierDeReprise
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0 && !fenetre.dossierDeReprise
         onActivated: fenetre.signalerIndesirable()
     }
     // Insertion : pose ou retire le drapeau, comme dans Outlook.
     Shortcut {
         sequence: "Ins"
-        enabled: !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && Object.keys(fenetre.selection).length > 0
         onActivated: {
             var uids = fenetre.uidsChoisis()
             var i = fenetre.indexDe(uids[0])
@@ -1822,17 +1826,17 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Ctrl+R"
-        enabled: !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
         onActivated: fenetre.rediger(fenetre.dossierDeReprise ? "brouillon" : "repondre")
     }
     Shortcut {
         sequence: "Ctrl+Shift+R"
-        enabled: !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
         onActivated: fenetre.rediger("repondre_tous")
     }
     Shortcut {
         sequence: "Ctrl+F"
-        enabled: !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && fenetre.uidCourant > 0
         onActivated: fenetre.rediger("transferer")
     }
     // Rechercher, comme dans Outlook (Ctrl+F y transfère).
@@ -1846,7 +1850,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Ctrl+E"
-        enabled: !fenetre.dialogueOuvert()
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert()
         onActivated: {
             colonneListe.champRecherche.forceActiveFocus()
             colonneListe.champRecherche.selectAll()
@@ -1871,7 +1875,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequences: [StandardKey.SelectAll]
-        enabled: !fenetre.dialogueOuvert() && !colonneLecture.vueCorps.activeFocus
+        enabled: fenetre.courrierActif && !fenetre.dialogueOuvert() && !colonneLecture.vueCorps.activeFocus
         onActivated: fenetre.toutChoisir()
     }
 
@@ -2221,6 +2225,22 @@ ApplicationWindow {
             afficherTexte(qsTr("Aucun message sélectionné."))
         }
         messageEtat.texte = qsTr("Message mis à la corbeille.")
+    }
+
+    /// Drapeau d'une ligne : dans « Toutes les BàL » et la recherche globale,
+    /// la ligne peut venir d'un autre compte ou d'un autre dossier que
+    /// l'ouvert — son compte et son dossier partent avec l'UID.
+    function basculerSuiviLigne(compte, chemin, uid, rang, suivi) {
+        if (!listeMulti) {
+            basculerSuivi([uid], suivi)
+            return
+        }
+        if (!boite.marquerSuiviDans(compte, chemin, String(uid), suivi)) {
+            messageEtat.texte = boite.erreur
+            return
+        }
+        if (rang >= 0 && rang < modeleMessages.count && modeleMessages.get(rang).uid === uid)
+            modeleMessages.setProperty(rang, "suivi", suivi)
     }
 
     function basculerSuivi(uids, suivi) {
@@ -4415,6 +4435,71 @@ ApplicationWindow {
                     }
                 })
                 tic.start()
+            }
+            // Scénario « correctifs-064 » : réponse à un message HTML (la
+            // signature entre les lignes vides et le texte cité), raccourcis
+            // du courrier inactifs dans l'Agenda, drapeau d'une ligne de
+            // « Toutes les BàL » posé sur son message.
+            if (essai.scenario === "correctifs-064") {
+                var tic064 = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+                var suivi064 = { n: 0 }
+                tic064.triggered.connect(function() {
+                    suivi064.n += 1
+                    var c = comptesConnus[0]
+                    if (suivi064.n === 8) {
+                        poserIdentite(c.adresse, { nom: "Essai", signature: "Sig texte", html: "<p>Signature <b>HTML</b></p>",
+                                                   nouveaux: false, reponses: true })
+                        var r = ouvrirRedaction(c.compte)
+                        r.remplir({ mode: "repondre", a: "x@exemple.fr", objet: "RE : essai",
+                                    texte: "\n\n____\nDe : X",
+                                    html: "<p><br></p><p><br></p><p>________________________________<br><b>De :</b> X</p>"
+                                          + "<div><table border=\"1\"><tr><td>Lot</td><td>Prix</td></tr></table></div>" })
+                        var h = r.htmlActuel()
+                        var iSig = h.indexOf("Signature"), iTrait = h.indexOf("________________________________")
+                        console.log((h.indexOf("<table") >= 0 && iSig >= 0 && iSig < iTrait && r.miseEnForme)
+                                    ? "scenario: OK réponse HTML, signature avant le texte cité"
+                                    : "scenario: ECHEC réponse HTML " + iSig + " " + iTrait + " " + h.length)
+                        r.conteneur.fermerRedaction()
+                        fenetre.module = "agenda"
+                        console.log(fenetre.courrierActif ? "scenario: ECHEC raccourcis actifs dans l'Agenda"
+                                                          : "scenario: OK raccourcis du courrier inactifs dans l'Agenda")
+                        fenetre.module = "courrier"
+                    } else if (suivi064.n === 10) {
+                        ouvrirBoitesUnifiees()
+                    } else if (suivi064.n === 14) {
+                        // Une ligne d'un autre compte ou d'un autre dossier que
+                        // l'ouvert : celle que la 0.6.3 marquait à tort.
+                        var k = -1
+                        for (var q = 0; q < modeleMessages.count && k < 0; ++q) {
+                            var m = modeleMessages.get(q)
+                            if (m.compte !== boite.compteCourant || m.chemin !== boite.dossierCourant)
+                                k = q
+                        }
+                        if (k < 0) {
+                            console.log("scenario: ECHEC aucune ligne hors du dossier ouvert", boite.compteCourant, boite.dossierCourant)
+                            suivi064.n = 29
+                            return
+                        }
+                        var l = modeleMessages.get(k)
+                        suivi064.ligne = { compte: l.compte, chemin: l.chemin, uid: l.uid, suivi: l.suivi === true }
+                        basculerSuiviLigne(l.compte, l.chemin, l.uid, k, !suivi064.ligne.suivi)
+                        console.log("scenario: drapeau posé sur", l.compte, l.chemin, l.uid, "(ouvert :", boite.compteCourant,
+                                    boite.dossierCourant + ") ->", modeleMessages.get(k).suivi)
+                    } else if (suivi064.n === 20) {
+                        ouvrirDossier(suivi064.ligne.compte, suivi064.ligne.chemin)
+                    } else if (suivi064.n === 26) {
+                        var j = indexDe(suivi064.ligne.uid)
+                        var pose = j >= 0 && modeleMessages.get(j).suivi === !suivi064.ligne.suivi
+                        console.log(pose ? "scenario: OK drapeau de Toutes les BàL sur son message"
+                                         : "scenario: ECHEC drapeau " + j)
+                        if (j >= 0)
+                            basculerSuivi([suivi064.ligne.uid], suivi064.ligne.suivi)
+                    } else if (suivi064.n === 30) {
+                        tic064.stop()
+                        Qt.quit()
+                    }
+                })
+                tic064.start()
             }
             if (essai.scenario.indexOf("mise-a-jour") === 0) {
                 reglagesMiseAJour.version = ""

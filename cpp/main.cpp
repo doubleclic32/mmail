@@ -7,6 +7,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QLockFile>
 #include <QtCore/QRegularExpression>
@@ -55,6 +56,7 @@ extern const std::size_t nombreTraductionsQt;
 #ifdef Q_OS_WIN
 #  include <windows.h>  // GetCommandLineW / CommandLineToArgvW
 #  include <shellapi.h>
+#  include <aclapi.h>   // droits du profil imposé (reserverProfil)
 #endif
 
 #include <cstdio>
@@ -122,13 +124,115 @@ static QString developper(QString chemin)
 /// redirigé partirait sur le réseau, où SQLite en WAL se comporte mal
 /// (décision 18 du dossier de projet). L'administrateur pose alors
 /// « DossierProfil », par exemple D:\MMail\%USERNAME%.
-static QString dossierProfil()
+static QString dossierProfil(bool* impose = nullptr)
 {
-  const QString impose = reglageMachine("MMAIL_DOSSIER_PROFIL", QStringLiteral("DossierProfil"));
-  const QString base = impose.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                                        : developper(impose);
+  const QString reglage = reglageMachine("MMAIL_DOSSIER_PROFIL", QStringLiteral("DossierProfil"));
+  const QString base = reglage.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                                         : developper(reglage);
   QDir().mkpath(base);
+  if (impose)
+    *impose = !reglage.isEmpty();
   return base;
+}
+
+#ifdef Q_OS_WIN
+/// Vrai si `sid` est l'utilisateur, SYSTEM ou le groupe des Administrateurs.
+static bool sidAdmis(PSID sid, PSID utilisateur)
+{
+  if (EqualSid(sid, utilisateur))
+    return true;
+  return IsWellKnownSid(sid, WinLocalSystemSid) || IsWellKnownSid(sid, WinBuiltinAdministratorsSid);
+}
+#endif
+
+/// Profil imposé par la machine (serveur RDS, « DossierProfil ») : réservé à
+/// l'utilisateur, à SYSTEM et aux Administrateurs (0.6.4). Le dossier vit hors
+/// du profil Windows, dont il ne reçoit pas la protection : selon les droits
+/// du dossier parent, les autres utilisateurs du serveur liraient le cache des
+/// messages, l'index et les pièces jointes. Un dossier déjà réservé n'est pas
+/// touché ; sinon ses droits sont remplacés, sans héritage. Rend faux, avec le
+/// motif, si l'utilisateur ne peut pas les poser.
+static bool reserverProfil(const QString& dossier, QString* motif)
+{
+#ifdef Q_OS_WIN
+  const std::wstring chemin = QDir::toNativeSeparators(dossier).toStdWString();
+  HANDLE jeton = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &jeton)) {
+    *motif = QStringLiteral("identité de la session illisible");
+    return false;
+  }
+  DWORD taille = 0;
+  GetTokenInformation(jeton, TokenUser, nullptr, 0, &taille);
+  QByteArray tampon(int(taille), '\0');
+  const bool lu = GetTokenInformation(jeton, TokenUser, tampon.data(), taille, &taille);
+  CloseHandle(jeton);
+  if (!lu) {
+    *motif = QStringLiteral("identité de la session illisible");
+    return false;
+  }
+  PSID utilisateur = reinterpret_cast<TOKEN_USER*>(tampon.data())->User.Sid;
+
+  // Déjà réservé ? Toute entrée qui accorde un droit à un autre compte que
+  // les trois admis le refuse — sauf « Créateur propriétaire » qui ne vaut que
+  // pour les enfants (héritage seul).
+  PACL dacl = nullptr;
+  PSECURITY_DESCRIPTOR descripteur = nullptr;
+  bool reserve = false;
+  if (GetNamedSecurityInfoW(chemin.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                            nullptr, &descripteur) == ERROR_SUCCESS && dacl) {
+    reserve = true;
+    for (DWORD i = 0; i < dacl->AceCount && reserve; ++i) {
+      ACE_HEADER* entete = nullptr;
+      if (!GetAce(dacl, i, reinterpret_cast<void**>(&entete)) || entete->AceType != ACCESS_ALLOWED_ACE_TYPE)
+        continue;
+      PSID sid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(entete)->SidStart;
+      if (IsWellKnownSid(sid, WinCreatorOwnerSid) && (entete->AceFlags & INHERIT_ONLY_ACE))
+        continue;
+      reserve = sidAdmis(sid, utilisateur);
+    }
+  }
+  if (descripteur)
+    LocalFree(descripteur);
+  if (reserve)
+    return true;
+
+  // Utilisateur, SYSTEM et Administrateurs, contrôle total, hérité par tout
+  // ce que le dossier contient ; l'héritage du parent est coupé.
+  BYTE systeme[SECURITY_MAX_SID_SIZE], admins[SECURITY_MAX_SID_SIZE];
+  DWORD tailleSysteme = sizeof(systeme), tailleAdmins = sizeof(admins);
+  CreateWellKnownSid(WinLocalSystemSid, nullptr, systeme, &tailleSysteme);
+  CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admins, &tailleAdmins);
+  EXPLICIT_ACCESS_W acces[3] = {};
+  PSID sids[3] = {utilisateur, systeme, admins};
+  for (int i = 0; i < 3; ++i) {
+    acces[i].grfAccessPermissions = GENERIC_ALL;
+    acces[i].grfAccessMode = SET_ACCESS;
+    acces[i].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    acces[i].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    acces[i].Trustee.ptstrName = static_cast<LPWSTR>(sids[i]);
+  }
+  PACL nouvelle = nullptr;
+  if (SetEntriesInAclW(3, acces, nullptr, &nouvelle) != ERROR_SUCCESS) {
+    *motif = QStringLiteral("liste de droits impossible à composer");
+    return false;
+  }
+  const DWORD issue = SetNamedSecurityInfoW(const_cast<LPWSTR>(chemin.c_str()), SE_FILE_OBJECT,
+                                            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                            nullptr, nullptr, nouvelle, nullptr);
+  LocalFree(nouvelle);
+  if (issue != ERROR_SUCCESS) {
+    *motif = QStringLiteral("droits refusés (erreur %1)").arg(issue);
+    return false;
+  }
+  return true;
+#else
+  // Ailleurs : lecture et écriture au seul propriétaire.
+  const bool pose = QFile::setPermissions(dossier, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                                     QFileDevice::ExeOwner);
+  if (!pose)
+    *motif = QStringLiteral("droits du dossier impossibles à poser");
+  return pose;
+#endif
 }
 
 int main(int argc, char* argv[])
@@ -286,9 +390,26 @@ int main(int argc, char* argv[])
   // MMAIL_PROFIL : un profil jetable pour les essais, qui ne touche pas celui
   // de l'utilisateur.
   const QByteArray profilEssai = qgetenv("MMAIL_PROFIL");
+  bool profilImpose = false;
   const QString profil = profilEssai.isEmpty()
-    ? QDir(dossierProfil()).filePath(QStringLiteral("index.sqlite"))
+    ? QDir(dossierProfil(&profilImpose)).filePath(QStringLiteral("index.sqlite"))
     : QString::fromUtf8(profilEssai);
+  if (profilImpose) {
+    QString motif;
+    if (!reserverProfil(QFileInfo(profil).absolutePath(), &motif)) {
+      // Un profil lisible par les autres utilisateurs du serveur exposerait
+      // leurs messages : MMail ne démarre pas, et dit pourquoi.
+      const QString texte = QStringLiteral(
+        "Le dossier de MMail (%1) est lisible par d'autres utilisateurs de cet ordinateur, et MMail ne peut pas "
+        "le réserver à votre session : %2.\n\nDemandez à votre administrateur de le réserver à votre compte.")
+        .arg(QDir::toNativeSeparators(QFileInfo(profil).absolutePath()), motif);
+      std::fprintf(stderr, "MMail : %s\n", texte.toLocal8Bit().constData());
+#ifdef Q_OS_WIN
+      MessageBoxW(nullptr, reinterpret_cast<LPCWSTR>(texte.utf16()), L"MMail", MB_OK | MB_ICONERROR);
+#endif
+      return 2;
+    }
+  }
   engine.rootContext()->setContextProperty(QStringLiteral("cheminProfil"), profil);
 
   // Un seul MMail par profil. Deux instances videraient l'une sous l'autre

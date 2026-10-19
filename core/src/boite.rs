@@ -332,6 +332,12 @@ pub mod qobject {
         #[cxx_name = "marquerSuivi"]
         fn marquer_suivi(self: Pin<&mut Boite>, uids: &QString, suivi: bool) -> bool;
 
+        /// Comme `marquerSuivi`, pour des messages d'un dossier donné de
+        /// n'importe quel compte (« Toutes les BàL », recherche globale).
+        #[qinvokable]
+        #[cxx_name = "marquerSuiviDans"]
+        fn marquer_suivi_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString, suivi: bool) -> bool;
+
         /// Répond à une demande de confirmation de lecture : l'envoie, ou
         /// l'ignore ; dans les deux cas, la demande ne sera plus posée.
         #[qinvokable]
@@ -1450,7 +1456,6 @@ impl qobject::Boite {
         if neuve == empreinte.to_string() {
             return false;
         }
-        let clair = serde_json::to_vec(&document).unwrap_or_default();
         let fil = self.qt_thread();
         self.as_mut().rust_mut().sauvegarde_en_cours = true;
         let lance = thread::Builder::new().name("mmail-sauvegarde".into()).spawn(move || {
@@ -1458,6 +1463,8 @@ impl qobject::Boite {
             let mut erreurs = Vec::new();
             for (adresse, mot_de_passe) in &comptes {
                 let cles = crate::sauvegarde::cles(adresse, mot_de_passe);
+                // La copie de ce compte ne porte que son mot de passe.
+                let clair = serde_json::to_vec(&crate::sauvegarde::pour_compte(&document, adresse)).unwrap_or_default();
                 match crate::sauvegarde::chiffrer(&cles, &clair)
                     .and_then(|copie| crate::sauvegarde::deposer(&cles, &poste, &copie))
                 {
@@ -1992,9 +1999,14 @@ impl qobject::Boite {
         // montre la connexion : l'écoute locale ne répond pas (retour de Manu
         // du 18/10). La connexion se fait dans une page intégrée à MMail, qui
         // intercepte le retour et le remet à terminer_microsoft.
+        let (pkce, etat) = match crate::oauth::pkce_et_etat() {
+            Ok(v) => v,
+            Err(x) => {
+                self.as_mut().set_erreur(QString::from(&x.to_string()));
+                return QString::default();
+            }
+        };
         if cfg!(target_os = "android") {
-            let pkce = ms::pkce();
-            let etat = ms::etat();
             let url = ms::url_autorisation(&client, ms::REDIRECTION_ANDROID, &pkce.defi, &etat, &indice);
             self.as_mut().rust_mut().attente_microsoft = Some((client, etat, pkce.verificateur, indice));
             self.as_mut().set_erreur(QString::from(""));
@@ -2007,8 +2019,6 @@ impl qobject::Boite {
                 return QString::default();
             }
         };
-        let pkce = ms::pkce();
-        let etat = ms::etat();
         let url = ms::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice);
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
@@ -2107,8 +2117,13 @@ impl qobject::Boite {
                 return QString::default();
             }
         };
-        let pkce = crate::oauth::pkce();
-        let etat = crate::oauth::etat();
+        let (pkce, etat) = match crate::oauth::pkce_et_etat() {
+            Ok(v) => v,
+            Err(x) => {
+                self.as_mut().set_erreur(QString::from(&x.texte("Google")));
+                return QString::default();
+            }
+        };
         let url = g::url_autorisation(&client, &ecoute.redirection, &pkce.defi, &etat, &indice.to_string());
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-google".into()).spawn(move || {
@@ -2242,6 +2257,23 @@ impl qobject::Boite {
 
     pub fn retirer_compte(mut self: Pin<&mut Self>, compte: i32) {
         let id = compte as i64;
+        // Compte Google connecté : son jeton est révoqué chez Google, qui ne
+        // garde pas un accès que plus rien n'utilise. (Microsoft n'offre pas
+        // de révocation d'un jeton à une application publique.)
+        let a_revoquer = self
+            .identites
+            .get(&id)
+            .and_then(|i| i.oauth.clone())
+            .filter(|p| crate::oauth::fournisseur(p) == crate::oauth::Fournisseur::Google)
+            .map(|p| crate::oauth::verrouiller(&p).rafraichissement.clone())
+            .filter(|j| !j.is_empty());
+        if let Some(jeton) = a_revoquer {
+            let _ = thread::Builder::new().name("mmail-revocation".into()).spawn(move || {
+                if let Err(e) = crate::google::revoquer(&jeton) {
+                    eprintln!("MMail : révocation du jeton Google : {}", e.texte("Google"));
+                }
+            });
+        }
         self.as_mut().fermer_session(id);
         {
             let mut noyau = self.as_mut().rust_mut();
@@ -2589,6 +2621,22 @@ impl qobject::Boite {
         }
         if let Some(magasin) = self.magasin.as_ref() {
             let _ = magasin.marquer_suivi(id, &uids, suivi);
+        }
+        self.as_mut().reviser();
+        self.as_mut().envoyer(compte, Commande::MarquerSuivi { chemin, uids, suivi })
+    }
+
+    pub fn marquer_suivi_dans(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, uids: &QString, suivi: bool) -> bool {
+        let compte = compte as i64;
+        let chemin = chemin.to_string();
+        let uids = lire_uids(uids);
+        if uids.is_empty() {
+            return false;
+        }
+        if let Some(id) = self.magasin.as_ref().and_then(|m| m.dossier_id(compte, &chemin).ok()) {
+            if let Some(magasin) = self.magasin.as_ref() {
+                let _ = magasin.marquer_suivi(id, &uids, suivi);
+            }
         }
         self.as_mut().reviser();
         self.as_mut().envoyer(compte, Commande::MarquerSuivi { chemin, uids, suivi })
@@ -3822,6 +3870,8 @@ struct Etabli {
     /// ouvrir ses pièces jointes une à une, y répondre ou le transférer ne le
     /// retélécharge pas, même hors de la fenêtre gardée sur le poste.
     dernier: Option<(String, u32, u32, Vec<u8>)>,
+    /// Envois différés vus réservés, et depuis quand (cf. `differes_interrompus`).
+    differes_reserves: HashMap<u32, i64>,
 }
 
 /// De quoi remettre une issue à l'interface depuis un autre fil que celui du
@@ -4097,6 +4147,7 @@ impl Travail {
             ouvert: None,
             menage: None,
             dernier: None,
+            differes_reserves: HashMap::new(),
         })
     }
 
@@ -4441,16 +4492,81 @@ fn message_entier(e: &mut Etabli, profil: &str, compte: i64, chemin: &str, uid: 
     Ok(octets)
 }
 
-/// Messages du dossier des envois différés (sélectionné) arrivés à échéance,
-/// avec leur `MODSEQ` : ceux qu'un client a déjà réservés (`\Deleted`) en
-/// sont exclus.
-fn differes_echus(client: &mut Client, maintenant: i64) -> Result<Vec<(u32, u64)>, Erreur> {
-    Ok(client
-        .champs("1:*", &redaction::ENTETE_DIFFERE.to_ascii_uppercase())?
-        .into_iter()
-        .filter(|en| !en.supprime() && redaction::echeance(&en.brut).is_some_and(|t| t <= maintenant))
+/// En-têtes lus sur les messages du dossier des envois différés.
+const CHAMPS_DIFFERE: &str = "X-MMAIL-ENVOI-DIFFERE X-MMAIL-POSTE-DIFFERE MESSAGE-ID";
+
+/// Au-delà, une réservation qui n'a pas abouti est tenue pour un envoi
+/// interrompu (arrêt du poste, réponse perdue).
+const RESERVATION_MAX: i64 = 10 * 60;
+
+/// Sur un serveur sans CONDSTORE, délai après l'échéance au-delà duquel un
+/// autre poste que celui d'origine envoie le message (celui-ci est fermé).
+const RELAIS_AUTRE_POSTE: i64 = 15 * 60;
+
+/// Identifiant du poste et du profil qui programment un envoi différé : deux
+/// sessions d'un même serveur RDS n'ont pas le même.
+fn poste_differe(profil: &str) -> String {
+    let empreinte = aws_lc_rs::digest::digest(
+        &aws_lc_rs::digest::SHA256,
+        format!("{}\n{profil}", crate::poste::nom()).as_bytes(),
+    );
+    empreinte.as_ref()[..8].iter().map(|o| format!("{o:02x}")).collect()
+}
+
+/// Valeur d'un champ dans les en-têtes lus par `champs`.
+fn champ_differe(brut: &[u8], nom: &str) -> Option<String> {
+    let texte = String::from_utf8_lossy(brut);
+    texte.lines().find_map(|ligne| {
+        let (cle, valeur) = ligne.split_once(':')?;
+        cle.trim().eq_ignore_ascii_case(nom).then(|| valeur.trim().to_string())
+    })
+}
+
+/// Messages du dossier des envois différés arrivés à échéance, avec leur
+/// `MODSEQ`. Sont exclus ceux qu'un client a réservés (`\Draft`) ou retirés
+/// (`\Deleted`, réservation des versions antérieures à la 0.6.4) ; et, sur un
+/// serveur sans CONDSTORE — où la réservation ne départage pas deux postes —,
+/// ceux qu'un autre poste a programmés, tant qu'il a le temps de les envoyer.
+fn differes_echus(
+    entetes: &[crate::protocole::Entete],
+    maintenant: i64,
+    condstore: bool,
+    poste: &str,
+) -> Vec<(u32, u64)> {
+    entetes
+        .iter()
+        .filter(|en| !en.supprime() && !en.reserve())
+        .filter(|en| {
+            let Some(echeance) = redaction::echeance(&en.brut) else { return false };
+            if echeance > maintenant {
+                return false;
+            }
+            condstore
+                || maintenant >= echeance + RELAIS_AUTRE_POSTE
+                || champ_differe(&en.brut, redaction::ENTETE_POSTE).map_or(true, |p| p == poste)
+        })
         .map(|en| (en.uid, en.modseq))
-        .collect())
+        .collect()
+}
+
+/// Messages réservés dont l'envoi n'a pas abouti : `vus` garde l'heure où ce
+/// fil a vu chacun réservé pour la première fois ; rend ceux qui le sont
+/// depuis `RESERVATION_MAX`, avec leur `Message-ID`.
+fn differes_interrompus(
+    entetes: &[crate::protocole::Entete],
+    vus: &mut HashMap<u32, i64>,
+    maintenant: i64,
+) -> Vec<(u32, String)> {
+    let reserves: Vec<(u32, String)> = entetes
+        .iter()
+        .filter(|en| en.reserve() && !en.supprime() && redaction::echeance(&en.brut).is_some())
+        .map(|en| (en.uid, champ_differe(&en.brut, "Message-ID").unwrap_or_default()))
+        .collect();
+    vus.retain(|uid, _| reserves.iter().any(|(u, _)| u == uid));
+    reserves
+        .into_iter()
+        .filter(|(uid, _)| maintenant - *vus.entry(*uid).or_insert(maintenant) >= RESERVATION_MAX)
+        .collect()
 }
 
 /// Session annexe ouverte sur une autre boîte, retirée de la réserve pour
@@ -4561,12 +4677,15 @@ impl Travail {
                 return Ok((0, Vec::new()));
             }
             let maintenant = maintenant();
-            let echus = differes_echus(&mut e.client, maintenant).map_err(|x| x.to_string())?;
+            let entetes = e.client.champs("1:*", CHAMPS_DIFFERE).map_err(|x| x.to_string())?;
+            let condstore = e.client.condstore();
+            let echus = differes_echus(&entetes, maintenant, condstore, &poste_differe(&self.profil));
+            let interrompus = differes_interrompus(&entetes, &mut e.differes_reserves, maintenant);
             let envoyes = self.dossier_de_role(e, "Sent");
             let (mut nombre, mut erreurs) = (0, Vec::new());
             for (uid, modseq) in echus {
                 // Réservé d'abord : tout MMail ouvert sur le compte fait ce même
-                // relevé chaque minute. Celui qui pose `\Deleted` le premier
+                // relevé chaque minute. Celui qui pose `\Draft` le premier
                 // envoie ; les autres voient le message modifié et passent.
                 match e.client.reserver(uid, modseq) {
                     Ok(true) => {}
@@ -4584,17 +4703,26 @@ impl Travail {
                 let envoi = match envoi {
                     Ok(envoi) => envoi,
                     Err(x) => {
-                        let _ = e.client.marquer(&[uid], "\\Deleted", false);
+                        let _ = e.client.marquer(&[uid], "\\Draft", false);
                         erreurs.push(format!("message {uid} : {x}"));
                         continue;
                     }
                 };
-                if let Err(x) = remettre_message(id, &envoi.de, &envoi.destinataires, &envoi.envoi, envoi.accuse) {
-                    // Pas parti : la réservation est levée, il repartira à la
-                    // prochaine minute.
-                    let _ = e.client.marquer(&[uid], "\\Deleted", false);
-                    erreurs.push(format!("message {uid} : {x}"));
-                    continue;
+                match remettre_message(id, &envoi.de, &envoi.destinataires, &envoi.envoi, envoi.accuse) {
+                    Ok(()) => {}
+                    // Refusé par le serveur : pas parti. La réservation est
+                    // levée, il repartira à la prochaine minute.
+                    Err(x @ Erreur::Refuse(_)) => {
+                        let _ = e.client.marquer(&[uid], "\\Draft", false);
+                        erreurs.push(format!("message {uid} : {x}"));
+                        continue;
+                    }
+                    // Coupure : il a pu partir. Il reste réservé, et sera
+                    // vérifié dans « Éléments envoyés » avant d'être repris.
+                    Err(x) => {
+                        erreurs.push(format!("message {uid} : envoi incertain ({x}) ; vérifié dans 10 min avant d'être repris"));
+                        continue;
+                    }
                 }
                 nombre += 1;
                 // Graph range lui-même la copie d'un compte Microsoft, Gmail
@@ -4603,9 +4731,35 @@ impl Travail {
                     let _ = e.client.deposer(envoyes, &["\\Seen".into()], "", &envoi.copie);
                 }
                 // Parti : il quitte « Envoi différé ». S'il y reste, il garde
-                // `\Deleted` et ne repartira pas.
+                // `\Draft` et ne repartira pas avant d'être retrouvé dans
+                // « Éléments envoyés ».
                 if let Err(x) = e.client.supprimer(&[uid]) {
                     erreurs.push(format!("message {uid} envoyé mais resté dans « {DOSSIER_DIFFERE} » : {x}"));
+                }
+            }
+            // Envois interrompus : partis s'ils sont dans « Éléments envoyés »
+            // (ils quittent alors « Envoi différé »), repris sinon.
+            for (uid, message_id) in interrompus {
+                e.differes_reserves.remove(&uid);
+                let lisible = !message_id.is_empty() && !message_id.contains(['\r', '\n', '"', '\\']);
+                let parti = match (&envoyes, lisible) {
+                    (Some(envoyes), true) => {
+                        self.ailleurs(e, envoyes, |c| c.chercher_message_id(&message_id)).map(|v| !v.is_empty())
+                    }
+                    _ => Err("dossier des éléments envoyés introuvable".to_string()),
+                };
+                let _ = assurer_selection(&mut e.client, &dossier);
+                match parti {
+                    Ok(true) => {
+                        let _ = e.client.supprimer(&[uid]);
+                    }
+                    Ok(false) => {
+                        let _ = e.client.marquer(&[uid], "\\Draft", false);
+                        erreurs.push(format!("message {uid} : envoi interrompu, repris"));
+                    }
+                    Err(x) => erreurs.push(format!(
+                        "message {uid} : envoi interrompu, à vérifier ({x}) ; il reste réservé dans « {DOSSIER_DIFFERE} »"
+                    )),
                 }
             }
             Ok((nombre, erreurs))
@@ -4717,6 +4871,23 @@ impl Travail {
                 }
             }
         }
+        if mode != "brouillon" && !p.html.is_empty() {
+            // Images du message cité : remises en fichiers, dans le dossier
+            // dont l'envoi réintègre les images.
+            let dossier = dossier_images_redaction(&self.profil).join(format!("{}-{uid}-{}", self.compte, serie_signature()));
+            let mut html = std::mem::take(&mut p.html);
+            for (rang, (type_mime, contenu)) in std::mem::take(&mut p.images).into_iter().enumerate() {
+                let repere = format!("\"{}{rang}\"", crate::rendu::REPERE_IMAGE);
+                let fichier = dossier.join(format!("c{rang}.{}", crate::rendu::extension_image(&type_mime)));
+                let adresse = (std::fs::create_dir_all(&dossier).is_ok() && std::fs::write(&fichier, &contenu).is_ok())
+                    .then(|| crate::rendu::url_fichier(&fichier));
+                html = match adresse {
+                    Some(adresse) => html.replace(&repere, &format!("\"{adresse}\"")),
+                    None => html.replace(&repere, "\"\""),
+                };
+            }
+            p.html = html;
+        }
         if mode == "transferer" || mode == "brouillon" {
             // Pièces reprises : écrites à part, elles se joignent ensuite comme
             // n'importe quel fichier.
@@ -4746,8 +4917,13 @@ impl Travail {
             return Err("aucun destinataire".into());
         }
         let dossier = self.dossier_differe(e, true)?.ok_or("dossier des envois différés introuvable")?;
+        let copie = [
+            format!("{}: {}\r\n", redaction::ENTETE_POSTE, poste_differe(&self.profil)).as_bytes(),
+            &f.copie[..],
+        ]
+        .concat();
         e.client
-            .deposer(&dossier, &["\\Seen".into()], "", &f.copie)
+            .deposer(&dossier, &["\\Seen".into()], "", &copie)
             .map_err(|x| format!("mise en attente : {x}"))?;
         let _ = self.effacer_repris(e, r);
         let _ = synchro::arborescence(&mut e.client, &e.magasin, self.compte);
@@ -5144,7 +5320,20 @@ fn ecrire_piece_de(
         }
     };
     std::fs::write(&fichier, &contenu).map_err(|x| format!("{} : {x}", fichier.display()))?;
+    marquer_provenance(&fichier);
     Ok(fichier)
+}
+
+/// Marque un fichier reçu par courrier comme « provenant d'Internet » (zone 3,
+/// flux `Zone.Identifier`) : Office l'ouvre en mode protégé et n'en exécute
+/// pas les macros, SmartScreen avertit avant de lancer un programme (0.6.4).
+/// Sans effet hors de Windows ou sur un disque qui ne garde pas de flux.
+fn marquer_provenance(fichier: &Path) {
+    if cfg!(windows) {
+        let mut flux = fichier.as_os_str().to_owned();
+        flux.push(":Zone.Identifier");
+        let _ = std::fs::write(PathBuf::from(flux), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
 }
 
 fn echec(etape: &'static str, message: String, erreur: &Echec) -> Issue {
@@ -5572,26 +5761,60 @@ mod tests {
     #[test]
     fn differes_echus_sans_ceux_deja_reserves() {
         use crate::simule::{echange, session, DOVECOT};
-        let entete = |t: i64| format!("X-MMail-Envoi-Differe: {t}\r\n\r\n");
-        let fetch = |seq: u32, uid: u32, modseq: u64, drapeaux: &str, t: i64| {
-            let e = entete(t);
+        let fetch = |seq: u32, uid: u32, modseq: u64, drapeaux: &str, t: i64, poste: &str| {
+            let mut e = format!("X-MMail-Envoi-Differe: {t}\r\nMessage-ID: <m{uid}@x>\r\n");
+            if !poste.is_empty() {
+                e.push_str(&format!("X-MMail-Poste-Differe: {poste}\r\n"));
+            }
+            e.push_str("\r\n");
             format!(
                 "* {seq} FETCH (UID {uid} FLAGS ({drapeaux}) INTERNALDATE \"05-Oct-2026 10:00:00 +0200\" \
-                 RFC822.SIZE 9 MODSEQ ({modseq}) BODY[HEADER.FIELDS (X-MMAIL-ENVOI-DIFFERE)] {{{}}}\r\n{e})\r\n",
+                 RFC822.SIZE 9 MODSEQ ({modseq}) BODY[HEADER.FIELDS ({CHAMPS_DIFFERE})] {{{}}}\r\n{e})\r\n",
                 e.len()
             )
         };
         let reponses = [
-            fetch(1, 11, 300, "", 1_000),
-            fetch(2, 12, 301, "\\Deleted", 1_000),
-            fetch(3, 13, 302, "", 9_000),
+            fetch(1, 11, 300, "", 1_000, ""),
+            fetch(2, 12, 301, "\\Deleted", 1_000, ""),
+            fetch(3, 13, 302, "", 9_000, ""),
+            fetch(4, 14, 303, "\\Draft", 1_000, ""),
+            fetch(5, 15, 304, "", 4_500, "autre"),
+            fetch(6, 16, 305, "", 4_500, "moi"),
         ]
         .concat();
         let (mut client, journal) =
             session(DOVECOT, vec![echange("UID FETCH 1:* (UID FLAGS INTERNALDATE RFC822.SIZE MODSEQ", &reponses, "OK")]);
-        // 12 est réservé par un autre poste, 13 n'est pas échu.
-        assert_eq!(differes_echus(&mut client, 5_000).unwrap(), vec![(11, 300)]);
-        assert!(journal.lock().unwrap()[0].contains("X-MMAIL-ENVOI-DIFFERE"));
+        let entetes = client.champs("1:*", CHAMPS_DIFFERE).unwrap();
+        assert!(journal.lock().unwrap()[0].contains("X-MMAIL-POSTE-DIFFERE"));
+        // 12 est retiré, 14 réservé par un autre MMail, 13 pas échu. Avec
+        // CONDSTORE, la réservation départage les postes : 15 part d'ici aussi.
+        assert_eq!(differes_echus(&entetes, 5_000, true, "moi"), vec![(11, 300), (15, 304), (16, 305)]);
+        // Sans CONDSTORE, 15 est laissé à son poste…
+        assert_eq!(differes_echus(&entetes, 5_000, false, "moi"), vec![(11, 300), (16, 305)]);
+        // … tant qu'il a le temps de l'envoyer.
+        assert_eq!(
+            differes_echus(&entetes, 4_500 + RELAIS_AUTRE_POSTE, false, "moi"),
+            vec![(11, 300), (15, 304), (16, 305)]
+        );
+
+        // 14 est réservé : interrompu s'il l'est encore 10 min plus tard.
+        let mut vus = HashMap::new();
+        assert!(differes_interrompus(&entetes, &mut vus, 5_000).is_empty());
+        assert!(differes_interrompus(&entetes, &mut vus, 5_000 + RESERVATION_MAX - 1).is_empty());
+        assert_eq!(differes_interrompus(&entetes, &mut vus, 5_000 + RESERVATION_MAX), vec![(14, "<m14@x>".to_string())]);
+        // Une réservation levée sort du suivi.
+        let sans: Vec<_> = entetes.iter().filter(|e| e.uid != 14).cloned().collect();
+        assert!(differes_interrompus(&sans, &mut vus, 9_000).is_empty());
+        assert!(vus.is_empty());
+    }
+
+    #[test]
+    fn poste_d_origine_d_un_envoi_differe() {
+        let a = poste_differe("/home/a/profil/index.sqlite");
+        assert_eq!(a.len(), 16);
+        assert_eq!(a, poste_differe("/home/a/profil/index.sqlite"));
+        assert_ne!(a, poste_differe("D:\\MMail\\gmartin\\index.sqlite"), "deux profils d'un même poste diffèrent");
+        assert_eq!(champ_differe(b"X-MMail-Poste-Differe: abc\r\nMessage-ID: <x@y>\r\n", "message-id").as_deref(), Some("<x@y>"));
     }
 
     fn ligne(uid: u32, h: i64, lu: bool) -> MessageLocal {

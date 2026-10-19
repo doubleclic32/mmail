@@ -280,6 +280,11 @@ pub fn ouverture_risquee(nom: &str) -> bool {
         "appxbundle", "msix", "msixbundle", "iso", "img", "vhd", "vhdx", "scf", "sct",
         "settingcontent-ms", "sh", "run", "desktop", "appimage", "apk", "py", "pl",
         "command", "app", "pkg", "dmg",
+        // Aide compilée, compléments Office qui exécutent du code dès
+        // l'ouverture, connexions de données, bases Access (0.6.4).
+        "chm", "hlp", "xll", "xla", "xlam", "ppam", "iqy", "slk", "mde", "mdb", "accde", "ade",
+        "adp", "library-ms", "searchconnector-ms", "jnlp", "xbap", "msu", "ocx", "ws", "wiz",
+        "diagcab", "mht", "mhtml",
     ];
     let Some((_, extension)) = nom.rsplit_once('.') else {
         return false;

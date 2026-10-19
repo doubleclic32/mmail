@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.6.3 LANGUAGES CXX)
+project(mmail VERSION 0.6.4 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -41,7 +41,8 @@ if(NOT CxxQt_FOUND)
   include(FetchContent)
   FetchContent_Declare(CxxQt
     GIT_REPOSITORY https://github.com/kdab/cxx-qt-cmake.git
-    GIT_TAG 0.10.0)
+    # 0.10.0, par son commit : une étiquette peut être déplacée.
+    GIT_TAG 64e63f560737b3b7f85ef8267c5918e4b8176d5a)
   FetchContent_MakeAvailable(CxxQt)
 endif()
 
@@ -75,7 +76,8 @@ include(FetchContent)
 # son CMakeLists, moins l'installation.
 FetchContent_Declare(qtkeychain
   GIT_REPOSITORY https://github.com/frankosterfeld/qtkeychain.git
-  GIT_TAG 0.15.0
+  # 0.15.0, par son commit.
+  GIT_TAG ad7344c45a86a4f66cbafc4b081b5f7b876cb0b7
   # Répertoire inexistant : les sources sont récupérées, sans add_subdirectory.
   SOURCE_SUBDIR sans-cmake)
 FetchContent_MakeAvailable(qtkeychain)
@@ -191,7 +193,8 @@ target_compile_definitions(mmail PRIVATE MMAIL_VERSION="${PROJECT_VERSION}")
 # interfaces du shell. shlwapi : associations des types de fichiers (cf.
 # cpp/lanceur.h).
 if(WIN32)
-  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid)
+  # advapi32 : droits du profil imposé par la machine (cf. reserverProfil).
+  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid advapi32)
 endif()
 
 # Compteur du lanceur sous Linux (cf. cpp/pastille.h) : un signal D-Bus.

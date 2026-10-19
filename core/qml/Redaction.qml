@@ -148,6 +148,15 @@ Page {
         if (p.html && p.html.length > 0) {
             miseEnForme = true
             mef.poserHtml(p.html)
+            // Réponse ou transfert d'un message HTML : la signature entre les
+            // deux lignes vides et le texte cité, comme en texte brut.
+            var iH = identiteChoisie()
+            if (p.mode !== "brouillon" && iH.reponses) {
+                if (iH.html.length > 0)
+                    mef.insererHtml(2, iH.html + "<p><br></p><p><br></p>")
+                else if (iH.signature.length > 0)
+                    mef.inserer(2, iH.signature + "\n\n")
+            }
         } else {
             var i = identiteChoisie()
             var avecSignature = p.mode !== "brouillon" && i.reponses
@@ -318,8 +327,14 @@ Page {
         if (!modifie)
             oublierGarde()
         signaler(qsTr("Brouillon enregistré à %1.").arg(Qt.formatTime(new Date(), "hh:mm")), false)
-        if (fermerApresEnregistrement)
-            conteneur.fermerRedaction()
+        if (fermerApresEnregistrement) {
+            // Du texte tapé pendant l'enregistrement serait perdu à la
+            // fermeture : il part d'abord, la fenêtre se ferme ensuite.
+            if (modifie)
+                enregistrer()
+            else
+                conteneur.fermerRedaction()
+        }
     }
 
     function echouer(message) {

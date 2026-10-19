@@ -14,7 +14,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::protocole::{self, Dossier, Entete, EtatDossier, Statut, MARQUEUR};
 
@@ -24,6 +24,21 @@ pub(crate) const DELAI: Duration = Duration::from_secs(30);
 /// Délai d'établissement de la connexion : un serveur injoignable doit être
 /// signalé vite, pas au bout des deux minutes du système.
 const DELAI_CONNEXION: Duration = Duration::from_secs(15);
+
+/// Bornes d'une réponse du serveur (0.6.4) : un serveur défaillant ou piégé
+/// qui annonce un littéral démesuré, ou n'achève jamais une ligne, ne doit
+/// pas épuiser la mémoire du poste — ni, sur un serveur RDS, celle de tous.
+/// Une ligne hors littéral : une réponse `SEARCH` d'un million d'UID tient
+/// en 8 Mio. Un littéral : le plus gros message qu'Office 365 accepte fait
+/// 150 Mo.
+const LIGNE_MAX: usize = 64 * 1024 * 1024;
+const LITTERAL_MAX: usize = 200 * 1024 * 1024;
+const REPONSE_MAX: usize = 512 * 1024 * 1024;
+
+/// Durée au-delà de laquelle une commande qui n'est pas achevée est
+/// abandonnée, la session avec elle : `DELAI` borne chaque lecture, pas un
+/// serveur qui distille sa réponse octet par octet.
+const ECHEANCE_COMMANDE: Duration = Duration::from_secs(30 * 60);
 
 /// Ce que rend l'ouverture d'un dossier : son état, et — en reprise QRESYNC —
 /// ce qui a changé depuis la dernière visite.
@@ -110,6 +125,8 @@ pub struct Client {
     selection: Option<String>,
     /// Étiquette de la commande `IDLE` en cours, s'il y en a une.
     idle: Option<String>,
+    /// Échéance de la commande en cours (`ECHEANCE_COMMANDE`).
+    echeance: Option<Instant>,
 }
 
 impl Client {
@@ -136,6 +153,7 @@ impl Client {
             qresync: false,
             selection: None,
             idle: None,
+            echeance: None,
         };
         // Salutation : une seule ligne non étiquetée.
         let salutation = client.lire_ligne()?;
@@ -424,15 +442,20 @@ impl Client {
         Ok(())
     }
 
-    /// Réserve un message du dossier sélectionné en le marquant `\Deleted`,
-    /// à condition que personne ne l'ait modifié depuis le `MODSEQ` lu
+    /// Réserve un message du dossier sélectionné en le marquant `\Draft`, à
+    /// condition que personne ne l'ait modifié depuis le `MODSEQ` lu
     /// (`UNCHANGEDSINCE`, RFC 7162 § 3.1.3). Rend faux si un autre client l'a
     /// touché entre-temps — il l'a sans doute réservé lui-même. Sans CONDSTORE,
     /// ou sans `MODSEQ` connu, le marquage se fait sans condition.
+    ///
+    /// `\Draft` et non `\Deleted` (jusqu'à la 0.6.3) : un message réservé dont
+    /// l'envoi est interrompu ne doit ni disparaître à la purge d'un autre
+    /// logiciel, ni être perdu de vue ; `\Draft` est l'un des drapeaux que tout
+    /// serveur garde, Office 365 compris, qui refuse les mots-clés.
     pub fn reserver(&mut self, uid: u32, modseq: u64) -> Resultat<bool> {
         let condition =
             if self.condstore() && modseq > 0 { format!(" (UNCHANGEDSINCE {modseq})") } else { String::new() };
-        let (texte, _) = self.commande(&format!("UID STORE {uid}{condition} +FLAGS.SILENT (\\Deleted)"))?;
+        let (texte, _) = self.commande(&format!("UID STORE {uid}{condition} +FLAGS.SILENT (\\Draft)"))?;
         // Échec de la condition : « OK [MODIFIED 7] », la commande réussit
         // sans rien marquer.
         Ok(!texte.lines().any(|l| l.contains("[MODIFIED")))
@@ -617,7 +640,10 @@ impl Client {
         };
         self.flux.write_all(b"DONE\r\n")?;
         self.flux.flush()?;
-        Ok(self.lire_reponse(&etiquette)?.0)
+        self.echeance = Some(Instant::now() + ECHEANCE_COMMANDE);
+        let reponse = self.lire_reponse(&etiquette);
+        self.echeance = None;
+        Ok(reponse?.0)
     }
 
     /// Maintient la session et laisse le serveur signaler ses changements.
@@ -640,18 +666,29 @@ impl Client {
         self.flux
             .write_all(format!("{etiquette} {commande}\r\n").as_bytes())?;
         self.flux.flush()?;
-        self.lire_reponse(&etiquette)
+        self.echeance = Some(Instant::now() + ECHEANCE_COMMANDE);
+        let reponse = self.lire_reponse(&etiquette);
+        self.echeance = None;
+        reponse
     }
 
     /// Lit jusqu'à la ligne étiquetée qui clôt la commande.
     fn lire_reponse(&mut self, etiquette: &str) -> Resultat<(String, Vec<Vec<u8>>)> {
         let mut texte = String::new();
         let mut litteraux: Vec<Vec<u8>> = Vec::new();
+        let mut total = 0usize;
         loop {
             let mut ligne = self.lire_ligne()?;
             // Un littéral suspend la ligne : « … {123} » puis 123 octets bruts,
             // puis la suite de la même ligne logique.
             while let Some(taille) = taille_litteral(&ligne) {
+                total = total.saturating_add(taille);
+                if taille > LITTERAL_MAX || total > REPONSE_MAX {
+                    // La session ne peut plus être lue : elle est abandonnée.
+                    return Err(Erreur::Reseau(format!(
+                        "le serveur annonce {taille} octets d'un coup, au-delà de ce que MMail accepte"
+                    )));
+                }
                 let donnees = self.lire_octets(taille)?;
                 let indice = litteraux.len();
                 litteraux.push(donnees);
@@ -662,6 +699,10 @@ impl Client {
                 ligne.push_str(&self.lire_ligne()?);
             }
             let terminee = ligne.starts_with(etiquette);
+            total = total.saturating_add(ligne.len());
+            if total > REPONSE_MAX {
+                return Err(Erreur::Reseau("réponse du serveur démesurée".into()));
+            }
             texte.push_str(&ligne);
             texte.push('\n');
             if terminee {
@@ -682,13 +723,20 @@ impl Client {
         Some(String::from_utf8_lossy(&ligne[..fin]).into_owned())
     }
 
-    /// Lit une ligne terminée par CRLF, sans le CRLF.
+    /// Lit une ligne terminée par CRLF, sans le CRLF. La recherche de la fin
+    /// reprend où elle s'était arrêtée : une ligne longue ne se relit pas à
+    /// chaque paquet reçu.
     fn lire_ligne(&mut self) -> Resultat<String> {
+        let mut debut = 0;
         loop {
-            if let Some(fin) = trouver(&self.reste, b"\r\n") {
+            if let Some(fin) = trouver(&self.reste[debut..], b"\r\n").map(|i| i + debut) {
                 let ligne = self.reste.drain(..fin + 2).collect::<Vec<_>>();
                 return Ok(String::from_utf8_lossy(&ligne[..fin]).into_owned());
             }
+            if self.reste.len() > LIGNE_MAX {
+                return Err(Erreur::Reseau("ligne du serveur démesurée".into()));
+            }
+            debut = self.reste.len().saturating_sub(1);
             self.remplir()?;
         }
     }
@@ -702,6 +750,9 @@ impl Client {
     }
 
     fn remplir(&mut self) -> Resultat<()> {
+        if self.echeance.is_some_and(|t| Instant::now() > t) {
+            return Err(Erreur::Reseau("le serveur ne termine pas sa réponse".into()));
+        }
         let mut tampon = [0u8; 16384];
         let lus = self.flux.read(&mut tampon)?;
         if lus == 0 {
@@ -796,6 +847,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn litteral_demesure_coupe_la_session() {
+        use crate::simule::{echange, session};
+        let (mut client, _) =
+            session("UIDPLUS", vec![echange("NOOP", "* 1 FETCH (UID 1 BODY[] {999999999999}\r\n", "OK")]);
+        let e = client.brute("NOOP").unwrap_err();
+        assert!(matches!(e, Erreur::Reseau(ref m) if m.contains("999999999999")), "{e:?}");
+    }
+
+    #[test]
+    fn longue_ligne_lue_en_entier() {
+        use crate::simule::{echange, session};
+        let uids: Vec<String> = (1..=200_000).map(|u| u.to_string()).collect();
+        let reponse = format!("* SEARCH {}\r\n", uids.join(" "));
+        let (mut client, _) = session("UIDPLUS", vec![echange("UID SEARCH ALL", &reponse, "OK")]);
+        let texte = client.brute("UID SEARCH ALL").unwrap();
+        assert!(texte.contains(" 199999 200000"), "ligne de {} octets lue en entier", reponse.len());
+    }
+
+    #[test]
     fn valeurs_de_presentation() {
         assert_eq!(valeur_id("Windows 11 Version 24H2"), "Windows 11 Version 24H2");
         assert_eq!(valeur_id("PC-ÉLODIE\r\n"), "PC-?LODIE??");
@@ -828,8 +898,8 @@ mod tests {
         let (mut client, journal) = session(
             DOVECOT,
             vec![
-                echange("UID STORE 7 (UNCHANGEDSINCE 120) +FLAGS.SILENT (\\Deleted)", "", "OK fait"),
-                echange("UID STORE 8 (UNCHANGEDSINCE 90) +FLAGS.SILENT (\\Deleted)", "", "OK [MODIFIED 8] Conditional STORE failed"),
+                echange("UID STORE 7 (UNCHANGEDSINCE 120) +FLAGS.SILENT (\\Draft)", "", "OK fait"),
+                echange("UID STORE 8 (UNCHANGEDSINCE 90) +FLAGS.SILENT (\\Draft)", "", "OK [MODIFIED 8] Conditional STORE failed"),
             ],
         );
         assert!(client.reserver(7, 120).unwrap());
@@ -841,7 +911,7 @@ mod tests {
     #[test]
     fn reservation_sans_condstore() {
         let (mut client, _) =
-            session("UIDPLUS", vec![echange("UID STORE 7 +FLAGS.SILENT (\\Deleted)", "", "OK fait")]);
+            session("UIDPLUS", vec![echange("UID STORE 7 +FLAGS.SILENT (\\Draft)", "", "OK fait")]);
         assert!(client.reserver(7, 120).unwrap());
     }
 

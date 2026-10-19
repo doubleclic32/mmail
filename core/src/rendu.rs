@@ -571,7 +571,7 @@ pub(crate) fn base64(texte: &str) -> Option<Vec<u8>> {
     Some(sortie)
 }
 
-fn echapper(texte: &str) -> String {
+pub(crate) fn echapper(texte: &str) -> String {
     texte.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 

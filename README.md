@@ -23,7 +23,8 @@ de projet interne.
 - **rédaction** dans une fenêtre à part (un volet sur téléphone) : nouveau
   message, réponse, réponse à tous, transfert — à la manière d'Outlook, avec
   « RE : », « TR : » et le message d'origine sous un bloc « De / Envoyé / À /
-  Objet » ; Cc et Cci ; pièces jointes par « Joindre… » ou glisser-déposer,
+  Objet » — cité en HTML quand il l'est, tableaux et images intégrées compris
+  (ses images distantes et ses feuilles de style sont écartées) ; Cc et Cci ; pièces jointes par « Joindre… » ou glisser-déposer,
   celles d'un message transféré reprises d'office ; une capture d'écran se
   colle dans le corps (Ctrl+V) et une image glissée sur le corps s'y insère,
   intégrée au message à l'envoi ; envoi par la soumission
@@ -45,8 +46,12 @@ de projet interne.
 - **envoi différé** : le message attend sur le serveur, dans un dossier
   « Envoi différé » créé au besoin, et part à l'heure dite si MMail est ouvert
   — sur ce poste ou un autre ; sinon à la prochaine ouverture. Le premier MMail
-  qui le réserve (CONDSTORE) l'envoie, les autres le laissent : il ne part
-  qu'une fois ;
+  qui le réserve (`\Draft`, sous condition CONDSTORE) l'envoie, les autres le
+  laissent : il ne part qu'une fois. Sur un serveur sans CONDSTORE (Office
+  365), seul le poste qui l'a programmé l'envoie, un autre prenant le relais
+  quinze minutes après l'heure dite. Un envoi interrompu (arrêt du poste,
+  réponse perdue) est repris dix minutes plus tard s'il n'est pas dans
+  « Éléments envoyés », retiré s'il y est ;
 - **corbeille sur chaque ligne** : au survol de la souris, une corbeille en bout
   de ligne envoie ce message à la corbeille de sa boîte sans l'ouvrir — dans un
   dossier comme dans « Toutes les BàL » ; le message affiché et la sélection ne
@@ -168,7 +173,9 @@ de projet interne.
   encore, sinon les téléchargements ; clic droit, « Ouvrir avec… » un logiciel choisi, pour
   cette fois ou pour tous les fichiers du même type — retenu sur ce poste
   seulement, revu par « Logiciels d'ouverture… » (menu « Affichage ») ; sans
-  choix, le logiciel du système. Sous Windows, un type que le système ne sait
+  choix, le logiciel du système. Sous Windows, une pièce enregistrée ou ouverte
+  porte la marque « provenant d'Internet » : Office l'ouvre en mode protégé,
+  SmartScreen avertit avant de lancer un programme. Sous Windows, un type que le système ne sait
   pas ouvrir fait choisir le logiciel par MMail, qui le retient d'emblée :
   choisi dans la fenêtre de Windows, il lui échappait. Un programme ou un
   script (`.exe`, `.js`, `.bat`…) ne s'ouvre pas depuis MMail, il s'enregistre ;
@@ -348,7 +355,9 @@ normalement. L'ajout s'ouvrira à tous quand Google aura publié l'application
 ### Lien de configuration
 
 Un administrateur peut préparer un ou plusieurs comptes, mot de passe compris,
-derrière une adresse HTTPS **à usage unique**. La personne la colle dans
+derrière une adresse HTTPS **à usage unique**, celle du service de M-Media
+(`https://agent.mmedia.fr/mmail/<jeton>`) : MMail refuse tout autre lien, qui
+pourrait détourner des mots de passe vers un serveur piégé. La personne la colle dans
 « Comptes › Ajouter avec un lien de configuration… », sans rien saisir
 d'autre ; les mots de passe vont au coffre du système sans être affichés.
 
@@ -390,6 +399,9 @@ sur-le-champ.
 Elle est **chiffrée sur le poste**, par une clé tirée de l'adresse et du mot de
 passe de chaque compte (PBKDF2-HMAC-SHA256, 600 000 tours) : chaque compte en
 porte une copie (AES-256-GCM), que le service qui la range ne peut pas lire.
+La copie d'un compte ne porte que **son** mot de passe : connaître celui d'une
+boîte partagée ne donne pas ceux des autres comptes, qui sont redemandés à la
+restauration.
 D'où la restauration sans code à garder : sur un poste neuf, dès que le premier
 compte est ajouté — à la main ou par un lien de configuration —, MMail propose
 de reprendre la configuration sauvegardée. « Comptes › Restaurer une
@@ -448,7 +460,7 @@ variable d'environnement :
 
 | Valeur | Variable | Effet |
 |---|---|---|
-| `DossierProfil` | `MMAIL_DOSSIER_PROFIL` | emplacement du profil, variables développées — par exemple `D:\MMail\%USERNAME%`. Un profil itinérant ou redirigé partirait sur le réseau, où l'index SQLite se comporte mal |
+| `DossierProfil` | `MMAIL_DOSSIER_PROFIL` | emplacement du profil, variables développées — par exemple `D:\MMail\%USERNAME%`. Un profil itinérant ou redirigé partirait sur le réseau, où l'index SQLite se comporte mal. MMail réserve ce dossier à l'utilisateur, à SYSTEM et aux Administrateurs (droits sans héritage), et refuse de démarrer s'il ne peut pas le faire |
 | `JoursCache` | `MMAIL_JOURS_CACHE` | jours de messages gardés sur le poste (31 par défaut ; 0 : aucun) |
 | `AvisVersion` | `MMAIL_AVIS_VERSION` | 0 : ne pas signaler les nouvelles versions (parc dont l'administrateur déploie les mises à jour) |
 

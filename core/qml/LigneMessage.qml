@@ -331,14 +331,14 @@ SwipeDelegate {
         Accessible.name: qsTr("Suivi")
         Accessible.checkable: true
         Accessible.checked: model.suivi === true
-        Accessible.onPressAction: fenetre.basculerSuivi([model.uid], model.suivi !== true)
-        Accessible.onToggleAction: fenetre.basculerSuivi([model.uid], model.suivi !== true)
+        Accessible.onPressAction: fenetre.basculerSuiviLigne(model.compte, model.chemin, model.uid, index, model.suivi !== true)
+        Accessible.onToggleAction: fenetre.basculerSuiviLigne(model.compte, model.chemin, model.uid, index, model.suivi !== true)
         MouseArea {
             id: survolDrapeau
             anchors.fill: parent
             anchors.margins: -4
             hoverEnabled: true
-            onClicked: fenetre.basculerSuivi([model.uid], model.suivi !== true)
+            onClicked: fenetre.basculerSuiviLigne(model.compte, model.chemin, model.uid, index, model.suivi !== true)
         }
     }
 

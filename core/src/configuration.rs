@@ -190,10 +190,35 @@ pub fn analyser_autoconfig(xml: &str, adresse: &str) -> Option<ServeurImap> {
         })
 }
 
+/// Adresse des liens de configuration du service de M-Media. `MMAIL_LIENS` la
+/// remplace pour les essais — en HTTPS, comme elle.
+fn prefixe_liens() -> String {
+    std::env::var("MMAIL_LIENS")
+        .ok()
+        .filter(|p| p.starts_with("https://"))
+        .unwrap_or_else(|| "https://agent.mmedia.fr/mmail/".to_string())
+}
+
+/// Vrai pour un lien du service de M-Media : `<préfixe><jeton>`, le jeton
+/// fait de lettres, de chiffres, de `-` et de `_`. Un lien de configuration
+/// apporte des mots de passe, que MMail garde : un document venu d'ailleurs
+/// pourrait les détourner vers un serveur piégé (0.6.4).
+pub fn lien_reconnu(lien: &str) -> bool {
+    let prefixe = prefixe_liens();
+    lien.strip_prefix(prefixe.as_str()).is_some_and(|jeton| {
+        (8..=128).contains(&jeton.len()) && jeton.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    })
+}
+
 /// Interroge un lien de configuration et rend son document. POST : le serveur
 /// qui l'a préparé le détruit en le remettant ; une simple visite dans un
 /// navigateur, en GET, ne le consomme pas.
 pub fn lire_lien(lien: &str) -> Resultat<String> {
+    if !lien_reconnu(lien) {
+        return Err(Erreur::Refuse(
+            "ce lien ne vient pas de M-Media (il doit commencer par https://agent.mmedia.fr/mmail/)".into(),
+        ));
+    }
     let reponse = http::requete("POST", lien, "application/json")?;
     match reponse.statut {
         200 => String::from_utf8(reponse.corps)
@@ -230,6 +255,17 @@ mod tests {
          <socketType>SSL</socketType>
       </incomingServer>
     </emailProvider></clientConfig>"#;
+
+    #[test]
+    fn liens_du_service_seuls() {
+        assert!(lien_reconnu("https://agent.mmedia.fr/mmail/Ab3_dEf-9xYz0123456789ab"));
+        assert!(!lien_reconnu("https://agent.mmedia.fr/mmail/"));
+        assert!(!lien_reconnu("https://agent.mmedia.fr/mmail/sauvegardes/x/y"), "« / » hors du jeton");
+        assert!(!lien_reconnu("https://agent.mmedia.fr.piege.com/mmail/Ab3dEf9xYz012345"));
+        assert!(!lien_reconnu("http://agent.mmedia.fr/mmail/Ab3dEf9xYz012345"));
+        assert!(!lien_reconnu("https://exemple.com/mmail/Ab3dEf9xYz012345"));
+        assert!(lire_lien("https://exemple.com/mmail/Ab3dEf9xYz012345").is_err());
+    }
 
     #[test]
     fn serveur_mailcow() {

@@ -574,7 +574,8 @@ fn reservation_par_deux_postes() {
     assert!(a.reserver(uid, modseq_a).expect("STORE A"), "le premier poste doit réserver");
     assert!(!b.reserver(uid, modseq_b).expect("STORE B"), "le second poste ne doit pas réserver");
     let vu_par_b = b.champs(&uid.to_string(), "MESSAGE-ID").expect("FETCH B après");
-    assert!(vu_par_b[0].supprime(), "la réservation doit se voir des autres postes");
+    assert!(vu_par_b[0].reserve(), "la réservation doit se voir des autres postes");
+    assert!(!vu_par_b[0].supprime(), "un message réservé n'est pas marqué pour la purge (0.6.4)");
     a.supprimer(&[uid]).expect("purge");
     assert!(compter(&mut a, "INBOX", &id).is_empty());
 }

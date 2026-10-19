@@ -131,6 +131,11 @@ impl Entete {
     pub fn supprime(&self) -> bool {
         self.drapeaux.iter().any(|d| d.eq_ignore_ascii_case("\\Deleted"))
     }
+
+    /// Envoi différé réservé par un MMail (`\Draft`, cf. `Client::reserver`).
+    pub fn reserve(&self) -> bool {
+        self.drapeaux.iter().any(|d| d.eq_ignore_ascii_case("\\Draft"))
+    }
 }
 
 /// Compteurs d'un dossier rendus par `STATUS` (ou `LIST … RETURN (STATUS …)`).

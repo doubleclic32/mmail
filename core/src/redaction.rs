@@ -358,6 +358,9 @@ pub fn images_du_brouillon(brut: &[u8]) -> Vec<(String, String, Vec<u8>)> {
 /// différés) : jamais dans ce qui part chez le destinataire.
 pub const ENTETE_DIFFERE: &str = "X-MMail-Envoi-Differe";
 pub const ENTETE_ACCUSE: &str = "X-MMail-Accuse-Remise";
+/// Poste qui a programmé un envoi différé (`boite::poste_differe`) : sur un
+/// serveur sans CONDSTORE, lui seul l'envoie à l'heure dite.
+pub const ENTETE_POSTE: &str = "X-MMail-Poste-Differe";
 
 /// Ce que le noyau rend à la fenêtre de rédaction pour la pré-remplir.
 #[derive(Debug, Default, Clone, Serialize, PartialEq)]
@@ -375,6 +378,11 @@ pub struct Preparation {
     /// Chemins des pièces reprises (transfert, brouillon), remplis par le fil
     /// de travail après extraction.
     pub pieces: Vec<String>,
+    /// Images du message cité (réponse, transfert) : type MIME et octets,
+    /// désignées dans `html` par `mmail-image:N`. Le fil de travail les écrit
+    /// en fichiers avant de rendre la préparation à la fenêtre.
+    #[serde(skip)]
+    pub images: Vec<(String, Vec<u8>)>,
     pub brouillon_uid: u32,
     pub brouillon_chemin: String,
     pub origine_chemin: String,
@@ -497,6 +505,13 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
         bloc
     };
     p.texte = citation;
+    // Un message d'origine en HTML est cité en HTML — tableaux, mise en forme
+    // et images intégrées compris —, comme dans Outlook ; le texte reste la
+    // version brute de la rédaction.
+    if let Some(corps) = crate::rendu::corps_html(brut) {
+        p.html = citation_html(&de, m.date(), &a, &cc, &objet, &corps.html);
+        p.images = corps.images;
+    }
 
     if mode == "transferer" {
         p.objet = prefixer(&objet, "TR");
@@ -534,6 +549,64 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
         }
     }
     p
+}
+
+/// Bloc cité en HTML : deux lignes pour écrire, le trait et l'en-tête « De /
+/// Envoyé / À / Cc / Objet », puis le corps assaini de l'original. Ses
+/// feuilles de style sont écartées — elles régiraient toute la rédaction —,
+/// et ses images distantes aussi : la fenêtre de rédaction irait les
+/// chercher, et dirait à l'expéditeur que le message a été rouvert.
+fn citation_html(
+    de: &[(String, String)],
+    date: Option<&DateTime>,
+    a: &[(String, String)],
+    cc: &[(String, String)],
+    objet: &str,
+    corps: &str,
+) -> String {
+    let e = crate::rendu::echapper;
+    let mut html = String::from("<p><br></p><p><br></p><p>________________________________<br>");
+    html.push_str(&format!("<b>De :</b> {}<br>", e(&joindre(de))));
+    if let Some(date) = date {
+        html.push_str(&format!("<b>Envoyé :</b> {}<br>", e(&date_longue(date))));
+    }
+    html.push_str(&format!("<b>À :</b> {}<br>", e(&joindre(a))));
+    if !cc.is_empty() {
+        html.push_str(&format!("<b>Cc :</b> {}<br>", e(&joindre(cc))));
+    }
+    html.push_str(&format!("<b>Objet :</b> {}</p>", e(objet)));
+    html.push_str("<div>");
+    html.push_str(&sans_images_distantes(sans_feuilles_de_style(corps)));
+    html.push_str("</div>");
+    html
+}
+
+/// Le corps assaini sans les feuilles de style que `rendu` place en tête.
+fn sans_feuilles_de_style(corps: &str) -> &str {
+    match corps.strip_prefix("<style>").and_then(|reste| reste.find("</style>").map(|i| &reste[i + 8..])) {
+        Some(reste) => reste,
+        None => corps,
+    }
+}
+
+/// Retire les balises `<img>` des images distantes (repère `mmail-distante:`).
+fn sans_images_distantes(html: &str) -> String {
+    let mut sortie = String::with_capacity(html.len());
+    let mut reste = html;
+    while let Some(i) = reste.find("<img") {
+        sortie.push_str(&reste[..i]);
+        let Some(fin) = reste[i..].find('>') else {
+            reste = "";
+            break;
+        };
+        let balise = &reste[i..i + fin + 1];
+        if !balise.contains(crate::rendu::REPERE_DISTANTE) {
+            sortie.push_str(balise);
+        }
+        reste = &reste[i + fin + 1..];
+    }
+    sortie.push_str(reste);
+    sortie
 }
 
 // ------------------------------------------------ confirmation de lecture
@@ -635,7 +708,7 @@ pub fn preparer_envoi_differe(brut: &[u8], maintenant: i64) -> Result<EnvoiDiffe
     }
     let accuse = m.header_raw(ENTETE_ACCUSE).is_some();
     let date = format!("Date: {}", Date::new(maintenant).to_rfc822());
-    let propres = [ENTETE_DIFFERE, ENTETE_ACCUSE, "Date"];
+    let propres = [ENTETE_DIFFERE, ENTETE_ACCUSE, ENTETE_POSTE, "Date"];
     Ok(EnvoiDiffere {
         de,
         destinataires,
@@ -735,6 +808,43 @@ mod tests {
         let t = preparer(ORIGINAL.as_bytes(), "repondre_tous", &propres);
         assert_eq!(t.cc, "Noël <noel@exemple.fr>; compta@exemple.fr", "sans soi-même");
         assert_eq!(t.origine_mode, "repondre_tous");
+    }
+
+    #[test]
+    fn reponse_a_un_message_html() {
+        let original = "From: \"Martin, Hélène\" <helene@exemple.fr>\r\n\
+            To: moi@exemple.fr\r\n\
+            Subject: Devis <toiture>\r\n\
+            Date: Tue, 29 Sep 2026 10:33:00 +0200\r\n\
+            Message-ID: <origine.2@exemple.fr>\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/related; boundary=\"b\"\r\n\r\n\
+            --b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+            <html><head><style>p { font-size: 6pt }</style></head><body>\
+            <table border=\"1\"><tr><td>Lot</td><td>Prix</td></tr><tr><td>Toiture</td><td>12 000 €</td></tr></table>\
+            <img src=\"cid:logo@x\"><img src=\"https://suivi.exemple.com/pixel.gif\" width=\"1\">\
+            </body></html>\r\n\
+            --b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\n\
+            iVBORw0KGgo=\r\n--b--\r\n";
+        let r = preparer(original.as_bytes(), "repondre", &["moi@exemple.fr".to_string()]);
+        assert!(r.html.starts_with("<p><br></p><p><br></p><p>________________________________<br><b>De :</b> "), "{}", r.html);
+        assert!(r.html.contains("&quot;Martin, Hélène&quot;") || r.html.contains("\"Martin, Hélène\""), "{}", r.html);
+        assert!(r.html.contains("<b>Objet :</b> Devis &lt;toiture&gt;</p>"), "objet échappé : {}", r.html);
+        assert!(r.html.contains("<td>Toiture</td>"), "le tableau est cité : {}", r.html);
+        assert!(r.html.contains("\"mmail-image:0\""), "l'image intégrée est gardée : {}", r.html);
+        assert_eq!(r.images.len(), 1);
+        assert_eq!(r.images[0].0, "image/png");
+        assert!(!r.html.contains("mmail-distante"), "image distante retirée : {}", r.html);
+        assert!(!r.html.contains("suivi.exemple.com"));
+        assert!(!r.html.contains("<style>"), "feuilles de style de l'original écartées : {}", r.html);
+        assert!(r.texte.contains("Objet : Devis <toiture>"), "la version texte reste");
+
+        let t = preparer(original.as_bytes(), "transferer", &[]);
+        assert!(t.html.contains("<td>Toiture</td>"));
+        assert_eq!(t.images.len(), 1);
+
+        let simple = preparer(ORIGINAL.as_bytes(), "repondre", &[]);
+        assert_eq!(simple.html, "", "un original en texte brut est cité en texte");
     }
 
     #[test]

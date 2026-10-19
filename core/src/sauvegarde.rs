@@ -11,7 +11,10 @@
 //! configuration, saisie — retrouve donc la sauvegarde sans code à garder.
 //! Chaque compte en porte une copie, chiffrée par sa propre clé ; un
 //! changement de mot de passe rend illisibles les copies antérieures, et la
-//! suivante se fait avec le nouveau.
+//! suivante se fait avec le nouveau. La copie d'un compte ne porte que **son**
+//! mot de passe (`pour_compte`, 0.6.4) : qui connaît celui d'un seul compte —
+//! une boîte partagée — n'apprend pas ceux des autres ; ils sont redemandés à
+//! la restauration.
 //!
 //! Chaque poste range sa copie sous son propre numéro, tiré au hasard : deux
 //! postes ne s'écrasent pas, et la restauration propose le poste à reprendre.
@@ -420,6 +423,20 @@ pub fn empreinte(document: &Document) -> String {
     hexa(digest::digest(&digest::SHA256, &texte).as_ref())
 }
 
+/// La copie destinée au compte `adresse` : le même document, sans autre mot
+/// de passe que le sien. Elle est chiffrée par la clé tirée de ce mot de
+/// passe : elle n'apprend rien de plus à qui le connaît déjà.
+pub fn pour_compte(document: &Document, adresse: &str) -> Document {
+    let adresse = adresse.trim().to_lowercase();
+    let mut copie = document.clone();
+    for c in &mut copie.comptes {
+        if c.adresse.trim().to_lowercase() != adresse {
+            c.mot_de_passe = None;
+        }
+    }
+    copie
+}
+
 /// Lit le texte d'une copie déchiffrée.
 pub fn lire_document(clair: &[u8]) -> Option<Document> {
     let d: Document = serde_json::from_slice(clair).ok()?;
@@ -550,6 +567,43 @@ mod tests {
         assert_ne!(a.identifiant, d.identifiant);
         // L'identifiant ne livre pas la clé.
         assert_ne!(a.identifiant, hexa(&a.cle));
+    }
+
+    #[test]
+    fn copie_par_compte_sans_les_autres_mots_de_passe() {
+        let compte = |adresse: &str, mot: Option<&str>| CompteSauve {
+            adresse: adresse.into(),
+            hote: "mail.exemple.fr".into(),
+            hote_envoi: String::new(),
+            auth: String::new(),
+            port: 993,
+            utilisateur: adresse.into(),
+            mot_de_passe: mot.map(Into::into),
+            replie: false,
+            dossiers: Vec::new(),
+            agendas: Vec::new(),
+        };
+        let document = Document {
+            mmail: "sauvegarde".into(),
+            version: 1,
+            date: 1,
+            poste: "poste".into(),
+            programme: "0.6.4".into(),
+            comptes: vec![compte("nom@exemple.fr", Some("secret")), compte("partagee@exemple.fr", Some("commun"))],
+            reglages: serde_json::json!({}),
+            images: BTreeMap::new(),
+            filtres: String::new(),
+        };
+        let a = pour_compte(&document, " Nom@Exemple.fr");
+        assert_eq!(a.comptes.len(), 2, "tous les comptes restent dans la copie");
+        assert_eq!(a.comptes[0].mot_de_passe.as_deref(), Some("secret"));
+        assert_eq!(a.comptes[1].mot_de_passe, None, "le mot de passe d'un autre compte ne part pas");
+        let b = pour_compte(&document, "partagee@exemple.fr");
+        assert_eq!(b.comptes[0].mot_de_passe, None);
+        assert_eq!(b.comptes[1].mot_de_passe.as_deref(), Some("commun"));
+        let texte = String::from_utf8(serde_json::to_vec(&b).unwrap()).unwrap();
+        assert!(!texte.contains("secret"));
+        assert_eq!(a.comptes[0].hote, document.comptes[0].hote, "le reste du document est inchangé");
     }
 
     #[test]
