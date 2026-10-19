@@ -262,6 +262,40 @@ QtObject {
         attente.start()
     }
 
+    /// Scénario d'essai « envoyes » : sans connexion, le dossier des envoyés
+    /// du premier compte s'ouvre sur l'index ; sa première ligne doit nommer
+    /// les destinataires (« À : … »), et non l'expéditeur.
+    function etapeScenarioEnvoyes() {
+        var c = comptesConnus[0]
+        var envoyes = JSON.parse(boite.arborescence(false)).filter(function(l) {
+            return l.genre === "dossier" && l.compte === c.compte && l.role === "Sent"
+        })
+        if (envoyes.length === 0) {
+            console.log("scenario: envoyés : aucun dossier d'envoyés ECHEC")
+            return
+        }
+        ouvrirDossier(c.compte, envoyes[0].chemin)
+        var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 1500 }', fenetre)
+        attente.triggered.connect(function() {
+            var ligne = colonneListe.vueMessages.itemAtIndex(0)
+            var texte = ligne ? ligne.auteurLigne : ""
+            console.log("scenario: envoyés,", fenetre.roleCourant, "|", modeleMessages.count, "messages | 1re ligne :",
+                        texte, texte.indexOf(qsTr("À : ")) === 0 ? "OK" : "ECHEC")
+        })
+        attente.start()
+    }
+
+    /// Scénario d'essai « suggestion » : sans connexion, l'entrée du menu « ? »
+    /// ouvre une rédaction adressée à `adresseSuggestions`, version et système
+    /// dans l'objet.
+    function etapeScenarioSuggestion() {
+        var r = envoyerSuggestion()
+        var a = r ? r.contenu().a : ""
+        var objet = r ? r.contenu().objet : ""
+        console.log("scenario: suggestion,", a, "|", objet,
+                    a === adresseSuggestions && objet.indexOf(Qt.application.version) > 0 ? "OK" : "ECHEC")
+    }
+
     /// Scénario « mesure-recherche » : temps d'une recherche dans le dossier
     /// ouvert (index seul, hors connexion), du retour à la liste entière, et
     /// d'une recherche dans toutes les boîtes.

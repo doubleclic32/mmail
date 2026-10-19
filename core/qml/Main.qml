@@ -258,6 +258,8 @@ ApplicationWindow {
     // Version plus récente publiée, et sa page ; vide sinon.
     property string versionNouvelle: ""
     property string pageVersion: ""
+    // Destinataire de « Envoyer une suggestion… » (menu « ? »).
+    readonly property string adresseSuggestions: "suggestions.mmail@mmedia.fr"
     // Bandeau de mise à jour : "" (caché), "proposee", "telechargement",
     // "prete" ou "echec".
     property string etatMiseAJour: ""
@@ -1193,7 +1195,7 @@ ApplicationWindow {
         // toutes les boîtes (dossier de chaque message) sont donc
         // déclarés d'avance, puis la ligne est retirée.
         ListElement {
-            uid: 0; h: 0; expediteur: ""; adresse: ""; sujet: ""; date: ""; taille: 0
+            uid: 0; h: 0; expediteur: ""; adresse: ""; destinataires: ""; sujet: ""; date: ""; taille: 0
             lu: false; repondu: false; reponduTous: false; transfere: false; pieces: false
             suivi: false; importance: 0
             compte: 0; chemin: ""; dossier: ""; role: ""; cheminAffiche: ""
@@ -1632,6 +1634,10 @@ ApplicationWindow {
         MenuItem {
             text: fenetre.tactile ? qsTr("Aide") : qsTr("Aide (F1)")
             onTriggered: dlgAide.open()
+        }
+        MenuItem {
+            text: qsTr("Envoyer une suggestion…")
+            onTriggered: fenetre.envoyerSuggestion()
         }
         MenuItem {
             text: qsTr("À propos de MMail…")
@@ -3735,6 +3741,24 @@ ApplicationWindow {
         ouvrirRedaction(compte).remplir({ a: adresse, objet: objet, mode: "nouveau" })
     }
 
+    /// « Envoyer une suggestion… » (menu « ? ») : une rédaction depuis le
+    /// compte ouvert, l'objet portant la version et le système. Sans compte,
+    /// la messagerie du poste prend le relais.
+    function envoyerSuggestion() {
+        var systemes = { windows: "Windows", linux: "Linux", android: "Android", osx: "macOS", macos: "macOS" }
+        var objet = qsTr("Suggestion pour MMail %1 (%2)").arg(Qt.application.version)
+                                                          .arg(systemes[Qt.platform.os] || Qt.platform.os)
+        var compte = boite.compteCourant > 0 ? boite.compteCourant
+                   : (comptesConnus.length > 0 ? comptesConnus[0].compte : 0)
+        if (compte === 0) {
+            Qt.openUrlExternally("mailto:" + adresseSuggestions + "?subject=" + encodeURIComponent(objet))
+            return null
+        }
+        var r = ouvrirRedaction(compte)
+        r.remplir({ a: adresseSuggestions, objet: objet, mode: "nouveau" })
+        return r
+    }
+
     /// Signale la sélection comme indésirable — ou, depuis le dossier des
     /// indésirables, comme légitime. Le filtre du serveur l'apprend au
     /// déplacement (Mailcow : Rspamd, par IMAPSieve).
@@ -4569,6 +4593,22 @@ ApplicationWindow {
                 var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 1500 }', fenetre)
                 attente.triggered.connect(scenarios.etapeScenarioHorsLigne)
                 attente.start()
+                return
+            }
+            // Scénario « envoyes » : aucune connexion ; la liste des envoyés
+            // nomme les destinataires.
+            if (essai.scenario === "envoyes") {
+                var attenteEnvoyes = Qt.createQmlObject('import QtQuick; Timer { interval: 1500 }', fenetre)
+                attenteEnvoyes.triggered.connect(scenarios.etapeScenarioEnvoyes)
+                attenteEnvoyes.start()
+                return
+            }
+            // Scénario « suggestion » : aucune connexion ; l'entrée du menu « ? »
+            // ouvre la rédaction.
+            if (essai.scenario === "suggestion") {
+                var attenteSuggestion = Qt.createQmlObject('import QtQuick; Timer { interval: 1500 }', fenetre)
+                attenteSuggestion.triggered.connect(scenarios.etapeScenarioSuggestion)
+                attenteSuggestion.start()
                 return
             }
             if (identifiantsEssai.utilisateur2)

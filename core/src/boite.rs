@@ -5513,11 +5513,12 @@ fn json_messages(messages: &[MessageLocal]) -> String {
 
 fn json_message(m: &MessageLocal) -> String {
     format!(
-        r#"{{"uid":{},"h":{},"expediteur":{},"adresse":{},"sujet":{},"date":{},"taille":{},"lu":{},"repondu":{},"reponduTous":{},"transfere":{},"pieces":{},"suivi":{},"importance":{}}}"#,
+        r#"{{"uid":{},"h":{},"expediteur":{},"adresse":{},"destinataires":{},"sujet":{},"date":{},"taille":{},"lu":{},"repondu":{},"reponduTous":{},"transfere":{},"pieces":{},"suivi":{},"importance":{}}}"#,
         m.uid,
         m.horodatage,
         texte_json(&m.expediteur),
         texte_json(&m.adresse),
+        texte_json(&m.destinataires),
         texte_json(&m.sujet),
         texte_json(&m.date),
         m.taille,
@@ -5946,11 +5947,13 @@ mod tests {
         let json = json_messages(&[MessageLocal {
             uid: 3,
             expediteur: "Service \"compta\"".into(),
+            destinataires: "Dupont, Jean; Marie".into(),
             sujet: "Réunion d'équipe".into(),
             lu: true,
             ..Default::default()
         }]);
         assert!(json.contains(r#""uid":3"#));
+        assert!(json.contains(r#""destinataires":"Dupont, Jean; Marie""#));
         assert!(json.contains(r#""lu":true"#));
         assert!(json.contains(r#""pieces":false"#));
         assert!(json.contains("Réunion"));

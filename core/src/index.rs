@@ -44,6 +44,7 @@ pub fn ligne_index(entete: &Entete) -> MessageLocal {
         // À défaut de nom d'affichage, l'adresse fait l'affaire.
         ligne.expediteur = if nom.is_empty() { ligne.adresse.clone() } else { nom };
     }
+    ligne.destinataires = destinataires(&message);
     // La date interne du serveur sert de repli : un message peut arriver sans
     // en-tête Date, ou avec une date fantaisiste.
     ligne.date = match message.date() {
@@ -497,6 +498,31 @@ fn premier_contact(adresses: &Address<'_>) -> (String, String) {
         .unwrap_or_default()
 }
 
+/// Destinataires, nommés comme dans la liste d'Outlook (« Nom; Nom ») : ceux
+/// de `To`, à défaut ceux de `Cc` ; chacun par son nom d'affichage, à défaut
+/// son adresse. La liste les montre à la place de l'expéditeur dans les
+/// éléments envoyés, où l'expéditeur est partout soi-même.
+fn destinataires(message: &Message<'_>) -> String {
+    let noms = |adresses: Option<&Address<'_>>| -> Vec<String> {
+        adresses
+            .map(|a| {
+                a.iter()
+                    .filter_map(|c| {
+                        let nom = c.name().unwrap_or_default().trim();
+                        let texte = if nom.is_empty() { c.address().unwrap_or_default().trim() } else { nom };
+                        (!texte.is_empty()).then(|| texte.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut liste = noms(message.to());
+    if liste.is_empty() {
+        liste = noms(message.cc());
+    }
+    liste.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +602,20 @@ mod tests {
         let ligne = ligne_index(&entete("From: brut@exemple.fr\r\nSubject: Objet\r\n\r\n"));
         assert_eq!(ligne.expediteur, "brut@exemple.fr");
         assert_eq!(ligne.adresse, "brut@exemple.fr");
+    }
+
+    #[test]
+    fn destinataires_de_to_a_defaut_de_cc() {
+        let ligne = ligne_index(&entete(
+            "From: Moi <moi@exemple.fr>\r\n\
+             To: \"Dupont, Jean\" <jean@exemple.fr>, marie@exemple.fr\r\n\
+             Cc: Copie <copie@exemple.fr>\r\n\r\n",
+        ));
+        assert_eq!(ligne.destinataires, "Dupont, Jean; marie@exemple.fr");
+        let ligne = ligne_index(&entete("From: moi@exemple.fr\r\nCc: =?UTF-8?Q?Ren=C3=A9?= <rene@exemple.fr>\r\n\r\n"));
+        assert_eq!(ligne.destinataires, "René");
+        // En copie cachée seulement : rien à montrer.
+        assert_eq!(ligne_index(&entete("From: moi@exemple.fr\r\n\r\n")).destinataires, "");
     }
 
     #[test]

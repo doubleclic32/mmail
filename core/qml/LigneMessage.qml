@@ -25,7 +25,7 @@ SwipeDelegate {
     // dit ce que la ligne montre — expéditeur, objet, date, puis les marques —,
     // et non un bouton muet.
     Accessible.role: Accessible.ListItem
-    Accessible.name: [model.expediteur, model.sujet, fenetre.dateCourte(model.date),
+    Accessible.name: [auteurLigne, model.sujet, fenetre.dateCourte(model.date),
                       model.lu ? "" : qsTr("non lu"),
                       model.importance > 0 ? qsTr("importance haute") : model.importance < 0 ? qsTr("importance basse") : "",
                       model.pieces === true ? qsTr("pièce jointe") : "",
@@ -43,6 +43,11 @@ SwipeDelegate {
     // tiers de la largeur : lâchée passé le tiers, la ligne part. L'action
     // attend derrière le bandeau « Annuler » (cf. fenetre.glisserLigne).
     readonly property string roleLigne: fenetre.listeMulti ? (model.role || "") : fenetre.roleCourant
+    // Éléments envoyés : les destinataires, comme Outlook, plutôt que
+    // l'expéditeur, partout soi-même (demande de Fabienne, 18/10). Tant que
+    // le dossier n'a pas été relu, ou sans « À » ni « Cc », l'expéditeur.
+    readonly property string auteurLigne: roleLigne === "Sent" && (model.destinataires || "") !== ""
+                                          ? qsTr("À : %1").arg(model.destinataires) : model.expediteur
     swipe.enabled: fenetre.tactile
     swipe.left: roleLigne === "Trash" ? null : fondIndesirable
     swipe.right: roleLigne === "Trash" ? null : fondCorbeille
@@ -134,7 +139,7 @@ SwipeDelegate {
             // (au survol de la souris seulement : rien au doigt).
             Layout.rightMargin: 8 + (fenetre.compact ? 0 : corbeilleLigne.width + 6)
             Label {
-                text: model.expediteur
+                text: ligne.auteurLigne
                 color: ligne.highlighted ? fenetre.palette.highlightedText : fenetre.palette.windowText
                 font.bold: !model.lu
                 elide: Text.ElideRight

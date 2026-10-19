@@ -42,7 +42,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 15;
+const VERSION_SCHEMA: i32 = 16;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -174,6 +174,9 @@ pub struct MessageLocal {
     pub message_id: String,
     pub expediteur: String,
     pub adresse: String,
+    /// Destinataires (`To`, à défaut `Cc`), affichés à la place de
+    /// l'expéditeur dans les éléments envoyés (cf. `index::destinataires`).
+    pub destinataires: String,
     pub sujet: String,
     pub date: String,
     /// Date interne du serveur en secondes Unix : la clef de tri.
@@ -532,6 +535,19 @@ impl Magasin {
                      adresse  TEXT NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS fiches_courriels_fiche ON fiches_courriels(fiche_id);",
+            )?;
+        }
+        // Version 16 : les destinataires, que la liste des éléments envoyés
+        // montre à la place de l'expéditeur (demande de Fabienne, 18/10). Les
+        // dossiers d'envoyés sont relus à leur prochaine ouverture, en-têtes
+        // seulement ; reconnus à leur rôle ou, faute de SPECIAL-USE (OVH), à
+        // leur nom — un dossier pris à tort n'y perd qu'une relecture.
+        if version < 16 {
+            self.ajouter_colonne("messages", "destinataires", "TEXT NOT NULL DEFAULT ''")?;
+            self.base.execute(
+                "UPDATE folders SET uidvalidity = 0
+                 WHERE role = 'Sent' OR nom LIKE '%sent%' OR nom LIKE '%envoy%'",
+                [],
             )?;
         }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
@@ -1064,12 +1080,12 @@ impl Magasin {
                 let mut insertion = transaction.prepare(
                     "INSERT OR IGNORE INTO messages
                        (folder_id, uid, message_id, expediteur, adresse, sujet, date, horodatage,
-                        taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                        taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous, destinataires)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 )?;
                 let mut mise_a_jour = transaction.prepare(
                     "UPDATE messages SET lu = ?3, repondu = ?4, suivi = ?6, importance = ?7, transfere = ?8, repondu_tous = ?9,
-                        pieces = CASE WHEN pieces_certain = 1 THEN pieces ELSE ?5 END
+                        pieces = CASE WHEN pieces_certain = 1 THEN pieces ELSE ?5 END, destinataires = ?10
                      WHERE folder_id = ?1 AND uid = ?2",
                 )?;
                 // Un expéditeur compte une fois par message nouveau dans l'index.
@@ -1095,7 +1111,8 @@ impl Magasin {
                         m.suivi as i32,
                         m.importance as i32,
                         m.transfere as i32,
-                        m.repondu_tous as i32
+                        m.repondu_tous as i32,
+                        m.destinataires
                     ])? == 1;
                     if nouveau {
                         if !m.adresse.is_empty() {
@@ -1111,7 +1128,8 @@ impl Magasin {
                             m.suivi as i32,
                             m.importance as i32,
                             m.transfere as i32,
-                            m.repondu_tous as i32
+                            m.repondu_tous as i32,
+                            m.destinataires
                         ])?;
                     }
                 }
@@ -1925,22 +1943,23 @@ fn lire_dossier(l: &rusqlite::Row<'_>) -> rusqlite::Result<DossierLocal> {
 /// boîtes, boîte de réception unifiée.
 const SELECT_TROUVE: &str = "SELECT m.uid, m.message_id, m.expediteur, m.adresse, m.sujet, m.date, m.horodatage,
         m.taille, m.lu, m.repondu, m.pieces, m.suivi, m.importance, m.transfere, m.repondu_tous,
-        f.account_id, f.chemin, f.nom, f.separateur, f.role
+        m.destinataires, f.account_id, f.chemin, f.nom, f.separateur, f.role
      FROM messages m JOIN folders f ON f.id = m.folder_id";
 
 fn lire_trouve(l: &rusqlite::Row<'_>) -> rusqlite::Result<Trouve> {
     Ok(Trouve {
         message: lire_message(l)?,
-        compte: l.get(15)?,
-        chemin: l.get(16)?,
-        nom_dossier: l.get(17)?,
-        separateur: l.get(18)?,
-        role: l.get(19)?,
+        compte: l.get(16)?,
+        chemin: l.get(17)?,
+        nom_dossier: l.get(18)?,
+        separateur: l.get(19)?,
+        role: l.get(20)?,
     })
 }
 
 const SELECT_MESSAGE: &str = "SELECT uid, message_id, expediteur, adresse, sujet, date,
-        horodatage, taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous
+        horodatage, taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous,
+        destinataires
      FROM messages";
 
 fn lire_message(l: &rusqlite::Row<'_>) -> rusqlite::Result<MessageLocal> {
@@ -1960,6 +1979,7 @@ fn lire_message(l: &rusqlite::Row<'_>) -> rusqlite::Result<MessageLocal> {
         importance: l.get::<_, i32>(12)?.clamp(-1, 1) as i8,
         transfere: l.get::<_, i32>(13)? != 0,
         repondu_tous: l.get::<_, i32>(14)? != 0,
+        destinataires: l.get(15)?,
     })
 }
 
@@ -2426,6 +2446,34 @@ mod tests {
         let c = &m.comptes().unwrap()[0];
         assert_eq!(c.auth, "", "mot de passe pour les comptes déjà là");
         assert!(!c.microsoft());
+    }
+
+    #[test]
+    fn migration_version_16_fait_relire_les_envoyes() {
+        let m = Magasin::en_memoire().unwrap();
+        let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        // Un dossier d'envoyés désigné par SPECIAL-USE, un autre par son seul
+        // nom (OVH), et une boîte de réception qui n'a rien à relire.
+        m.poser_dossiers(
+            compte,
+            &[dossier("INBOX", &[]), dossier("Copies", &["\\Sent"]), dossier("Éléments envoyés", &[])],
+        )
+        .unwrap();
+        let ids: Vec<i64> =
+            ["INBOX", "Copies", "Éléments envoyés"].iter().map(|c| m.dossier_id(compte, c).unwrap()).collect();
+        for &id in &ids {
+            m.poser_etat(id, &EtatDossier { uid_validity: 42, ..Default::default() }).unwrap();
+            m.poser_messages(id, &[MessageLocal { uid: 1, ..Default::default() }]).unwrap();
+        }
+        // Retour à un index de version 15, sans les destinataires.
+        m.base.execute_batch("ALTER TABLE messages DROP COLUMN destinataires; PRAGMA user_version = 15;").unwrap();
+        m.migrer().unwrap();
+        let validites: Vec<u32> = ids.iter().map(|&id| m.dossier(id).unwrap().unwrap().uid_validity).collect();
+        assert_eq!(validites, vec![42, 0, 0], "seuls les envoyés sont relus");
+        // La relecture des en-têtes complète un message déjà connu.
+        m.poser_messages(ids[1], &[MessageLocal { uid: 1, destinataires: "Jean".into(), ..Default::default() }])
+            .unwrap();
+        assert_eq!(m.message(ids[1], 1).unwrap().unwrap().destinataires, "Jean");
     }
 
     #[test]
