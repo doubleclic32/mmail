@@ -436,7 +436,8 @@ document.
 Le serveur reste la référence : MMail garde sur le poste un **index** (dossiers,
 en-têtes des messages, favoris, ordre des comptes, événements des agendas) et,
 pour lire hors connexion, les **messages des 31 derniers jours**, entiers, en
-fichiers `.eml`.
+fichiers `.eml` — ceux de 10 Mio au plus : un message plus gros, une grosse
+pièce jointe le plus souvent, reste sur le serveur.
 La boîte de réception et chaque dossier ouvert se préchargent en arrière-plan ;
 au-delà de la fenêtre, un message est relu sur le serveur.
 
@@ -459,7 +460,7 @@ que Qt les nomme) et `x-poste` (le nom de l'ordinateur ; « Android » sur un
 téléphone). Le serveur peut l'inscrire à son journal : c'est ce qui permet de
 compter les postes où MMail fonctionne.
 
-**Serveur partagé (RDS).** Deux réglages valent pour toute la machine, dans
+**Serveur partagé (RDS).** Ces réglages valent pour toute la machine, dans
 `HKLM\Software\M-Media\MMail` (ou `/etc/xdg/M-Media/MMail.conf`), ou par
 variable d'environnement :
 
@@ -467,6 +468,7 @@ variable d'environnement :
 |---|---|---|
 | `DossierProfil` | `MMAIL_DOSSIER_PROFIL` | emplacement du profil, variables développées — par exemple `D:\MMail\%USERNAME%`. Un profil itinérant ou redirigé partirait sur le réseau, où l'index SQLite se comporte mal. MMail réserve ce dossier à l'utilisateur, à SYSTEM et aux Administrateurs (droits sans héritage), et refuse de démarrer s'il ne peut pas le faire |
 | `JoursCache` | `MMAIL_JOURS_CACHE` | jours de messages gardés sur le poste (31 par défaut ; 0 : aucun) |
+| `TailleCache` | `MMAIL_TAILLE_CACHE` | taille, en Mio, au-delà de laquelle un message n'est pas gardé sur le poste (10 par défaut ; 0 : sans plafond) |
 | `AvisVersion` | `MMAIL_AVIS_VERSION` | 0 : ne pas signaler les nouvelles versions (parc dont l'administrateur déploie les mises à jour) |
 
 Un seul MMail s'ouvre par profil : un second lancement ramène au premier plan

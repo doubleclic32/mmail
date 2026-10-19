@@ -27,6 +27,12 @@ pub fn echange(attendu: &str, reponses: &str, fin: &str) -> Echange {
     Echange { attendu: attendu.into(), reponses: reponses.into(), fin: fin.into() }
 }
 
+/// Une commande attendue, à laquelle le serveur commence de répondre puis
+/// coupe la connexion : ni fin, ni rien d'autre à lire.
+pub fn coupure(attendu: &str, reponses: &str) -> Echange {
+    echange(attendu, reponses, "")
+}
+
 /// Commandes reçues, sans étiquette, littéraux remplacés par « {n octets} ».
 pub type Journal = Arc<Mutex<Vec<String>>>;
 
@@ -123,7 +129,9 @@ impl FluxSimule {
             self.idle = None;
         }
         self.sortie.extend(echange.reponses.as_bytes());
-        self.sortie.extend(format!("{etiquette} {}\r\n", echange.fin).as_bytes());
+        if !echange.fin.is_empty() {
+            self.sortie.extend(format!("{etiquette} {}\r\n", echange.fin).as_bytes());
+        }
     }
 }
 

@@ -267,6 +267,11 @@ int main(int argc, char* argv[])
   const QString joursCache = reglageMachine("MMAIL_JOURS_CACHE", QStringLiteral("JoursCache"));
   if (!joursCache.isEmpty())
     qputenv("MMAIL_JOURS_CACHE", joursCache.toUtf8());
+  // Taille au-delà de laquelle un message n'est pas gardé (10 Mio par défaut,
+  // 0 : sans plafond), de même.
+  const QString tailleCache = reglageMachine("MMAIL_TAILLE_CACHE", QStringLiteral("TailleCache"));
+  if (!tailleCache.isEmpty())
+    qputenv("MMAIL_TAILLE_CACHE", tailleCache.toUtf8());
 
   // Système du poste et sa version, que le noyau donne au serveur IMAP en se
   // présentant (commande ID) : Qt les nomme sur toutes les cibles, Rust non.

@@ -4,9 +4,10 @@
 //! Ce que la base porte : les comptes, l'arborescence des dossiers avec leur
 //! état de synchronisation et leur état purement local (masquage, favoris),
 //! l'index des messages (en-têtes décodés), et la file des déplacements entre
-//! boîtes en cours (`pending_ops`, décision 16). Les corps ne sont pas
-//! conservés — ils sont lus au besoin sur le serveur ; la fenêtre glissante de
-//! la décision 17 viendra plus tard.
+//! boîtes en cours (`pending_ops`, décision 16). Les corps n'y sont pas : ceux
+//! de la fenêtre gardée sur le poste (décision 17) sont des fichiers à part
+//! (`cache`), l'index ne notant que leur état ; les autres sont lus au besoin
+//! sur le serveur.
 //!
 //! Le schéma reprend les noms décidés au dossier pour que la suite s'y pose
 //! sans renommer : `accounts`, `folders`, `messages`, `pending_ops`.
@@ -278,6 +279,11 @@ impl Magasin {
         // obligatoirement sur un disque local (décision 18) — SQLite en WAL se
         // comporte mal sur un partage réseau.
         base.pragma_update(None, "journal_mode", "WAL")?;
+        // En WAL, NORMAL ne met pas l'index en danger : une coupure de courant
+        // peut perdre les dernières validations, que la synchronisation
+        // suivante refait ; mais une validation n'attend plus le disque — le
+        // préchargement en fait une par message (0.6.6).
+        base.pragma_update(None, "synchronous", "NORMAL")?;
         // L'interface lit pendant que les fils de travail écrivent, chacun par
         // sa propre connexion : une lecture qui tombe sur un verrou attend
         // plutôt que d'échouer.
@@ -350,7 +356,47 @@ impl Magasin {
         )?;
         let magasin = Magasin { base };
         magasin.migrer()?;
+        magasin.poser_versions()?;
         Ok(magasin)
+    }
+
+    /// Numéro de version de chaque dossier, augmenté par l'index lui-même à
+    /// toute écriture de ses messages, quelle que soit la connexion qui écrit :
+    /// la liste affichée se sait à jour sans relire le dossier (0.6.6). Table et
+    /// déclencheurs se posent à chaque ouverture, hors du schéma numéroté — un
+    /// index déjà migré les reçoit sans changer de version.
+    fn poser_versions(&self) -> Resultat<()> {
+        self.base.execute_batch(
+            "CREATE TABLE IF NOT EXISTS versions_dossiers (
+                 folder_id INTEGER PRIMARY KEY,
+                 version   INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TRIGGER IF NOT EXISTS version_ajout AFTER INSERT ON messages BEGIN
+                 INSERT OR IGNORE INTO versions_dossiers (folder_id) VALUES (NEW.folder_id);
+                 UPDATE versions_dossiers SET version = version + 1 WHERE folder_id = NEW.folder_id;
+             END;
+             CREATE TRIGGER IF NOT EXISTS version_modif AFTER UPDATE ON messages BEGIN
+                 INSERT OR IGNORE INTO versions_dossiers (folder_id) VALUES (OLD.folder_id), (NEW.folder_id);
+                 UPDATE versions_dossiers SET version = version + 1
+                  WHERE folder_id IN (OLD.folder_id, NEW.folder_id);
+             END;
+             CREATE TRIGGER IF NOT EXISTS version_retrait AFTER DELETE ON messages BEGIN
+                 INSERT OR IGNORE INTO versions_dossiers (folder_id) VALUES (OLD.folder_id);
+                 UPDATE versions_dossiers SET version = version + 1 WHERE folder_id = OLD.folder_id;
+             END;",
+        )?;
+        Ok(())
+    }
+
+    /// Version d'un dossier (cf. `poser_versions`) : elle change à chaque
+    /// écriture de ses messages, et à elle seule.
+    pub fn version_dossier(&self, dossier: i64) -> Resultat<i64> {
+        Ok(self
+            .base
+            .prepare_cached("SELECT version FROM versions_dossiers WHERE folder_id = ?1")?
+            .query_row(params![dossier], |l| l.get(0))
+            .optional()?
+            .unwrap_or(0))
     }
 
     /// Porte un index d'une version antérieure du schéma à la version courante.
@@ -1140,24 +1186,39 @@ impl Magasin {
     }
 
     /// Applique des drapeaux rendus par le serveur à des messages connus.
-    pub fn poser_drapeaux(&self, dossier: i64, drapeaux: &[(u32, Vec<String>)]) -> Resultat<()> {
+    /// Rend le nombre de messages dont un drapeau a réellement changé : sans
+    /// QRESYNC, chaque veille repasse les drapeaux de tout le dossier, et une
+    /// ligne inchangée n'est pas réécrite (ni sa version, ni le disque).
+    pub fn poser_drapeaux(&self, dossier: i64, drapeaux: &[(u32, Vec<String>)]) -> Resultat<usize> {
+        let mut changes = 0;
         for lot in drapeaux.chunks(LOT_ECRITURE) {
             let transaction = self.base.unchecked_transaction()?;
-            for (uid, liste) in lot {
-                let lu = liste.iter().any(|d| d.eq_ignore_ascii_case("\\Seen"));
-                let repondu = protocole::porte(liste, protocole::REPONDU);
-                let transfere = protocole::porte(liste, protocole::TRANSFERE);
-                let repondu_tous = protocole::porte(liste, protocole::REPONDU_TOUS);
-                let suivi = liste.iter().any(|d| d.eq_ignore_ascii_case("\\Flagged"));
-                transaction.execute(
+            {
+                let mut requete = transaction.prepare_cached(
                     "UPDATE messages SET lu = ?3, repondu = ?4, suivi = ?5, transfere = ?6, repondu_tous = ?7
-                     WHERE folder_id = ?1 AND uid = ?2",
-                    params![dossier, uid, lu as i32, repondu as i32, suivi as i32, transfere as i32, repondu_tous as i32],
+                     WHERE folder_id = ?1 AND uid = ?2
+                       AND (lu, repondu, suivi, transfere, repondu_tous) IS NOT (?3, ?4, ?5, ?6, ?7)",
                 )?;
+                for (uid, liste) in lot {
+                    let lu = liste.iter().any(|d| d.eq_ignore_ascii_case("\\Seen"));
+                    let repondu = protocole::porte(liste, protocole::REPONDU);
+                    let transfere = protocole::porte(liste, protocole::TRANSFERE);
+                    let repondu_tous = protocole::porte(liste, protocole::REPONDU_TOUS);
+                    let suivi = liste.iter().any(|d| d.eq_ignore_ascii_case("\\Flagged"));
+                    changes += requete.execute(params![
+                        dossier,
+                        uid,
+                        lu as i32,
+                        repondu as i32,
+                        suivi as i32,
+                        transfere as i32,
+                        repondu_tous as i32
+                    ])?;
+                }
             }
             transaction.commit()?;
         }
-        Ok(())
+        Ok(changes)
     }
 
     // ------------------------------------------------------ correspondants
@@ -1216,7 +1277,8 @@ impl Magasin {
     /// désormais sur ce que les en-têtes laissaient supposer.
     pub fn poser_pieces(&self, dossier: i64, uid: u32, pieces: bool) -> Resultat<()> {
         self.base.execute(
-            "UPDATE messages SET pieces = ?3, pieces_certain = 1 WHERE folder_id = ?1 AND uid = ?2",
+            "UPDATE messages SET pieces = ?3, pieces_certain = 1
+             WHERE folder_id = ?1 AND uid = ?2 AND (pieces, pieces_certain) IS NOT (?3, 1)",
             params![dossier, uid, pieces as i32],
         )?;
         Ok(())
@@ -1227,7 +1289,7 @@ impl Magasin {
         let transaction = self.base.unchecked_transaction()?;
         for uid in uids {
             transaction.execute(
-                "UPDATE messages SET suivi = ?3 WHERE folder_id = ?1 AND uid = ?2",
+                "UPDATE messages SET suivi = ?3 WHERE folder_id = ?1 AND uid = ?2 AND suivi IS NOT ?3",
                 params![dossier, uid, suivi as i32],
             )?;
         }
@@ -1240,7 +1302,7 @@ impl Magasin {
         let transaction = self.base.unchecked_transaction()?;
         for uid in uids {
             transaction.execute(
-                "UPDATE messages SET lu = ?3 WHERE folder_id = ?1 AND uid = ?2",
+                "UPDATE messages SET lu = ?3 WHERE folder_id = ?1 AND uid = ?2 AND lu IS NOT ?3",
                 params![dossier, uid, lu as i32],
             )?;
         }
@@ -1462,14 +1524,14 @@ impl Magasin {
 
     /// Messages d'un dossier reçus depuis `depuis` et pas encore gardés, du
     /// plus récent au plus ancien : identifiant et UID.
-    pub fn a_garder(&self, dossier: i64, depuis: i64, nombre: usize) -> Resultat<Vec<(i64, u32)>> {
-        let mut requete = self.base.prepare(
+    pub fn a_garder(&self, dossier: i64, depuis: i64, nombre: usize, taille_max: i64) -> Resultat<Vec<(i64, u32)>> {
+        let mut requete = self.base.prepare_cached(
             "SELECT id, uid FROM messages
-             WHERE folder_id = ?1 AND body_state = 'headers' AND horodatage >= ?2
+             WHERE folder_id = ?1 AND body_state = 'headers' AND horodatage >= ?2 AND taille <= ?4
              ORDER BY horodatage DESC, uid DESC LIMIT ?3",
         )?;
         let liste = requete
-            .query_map(params![dossier, depuis, nombre as i64], |l| Ok((l.get(0)?, l.get(1)?)))?
+            .query_map(params![dossier, depuis, nombre as i64, taille_max], |l| Ok((l.get(0)?, l.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(liste)
     }
@@ -1999,6 +2061,44 @@ mod tests {
         MessageLocal { uid, horodatage, lu, sujet: format!("m{uid}"), ..Default::default() }
     }
 
+    #[test]
+    fn version_du_dossier_a_chaque_ecriture_de_ses_messages() {
+        let (m, compte, id) = boite();
+        m.poser_dossiers(compte, &[dossier("INBOX", &[]), dossier("Autre", &[])]).unwrap();
+        let autre = m.dossier_id(compte, "Autre").unwrap();
+        assert_eq!(m.version_dossier(id).unwrap(), 0);
+        let msg = |uid: u32| MessageLocal { uid, horodatage: uid as i64, ..Default::default() };
+        m.poser_messages(id, &[msg(1), msg(2)]).unwrap();
+        let v1 = m.version_dossier(id).unwrap();
+        assert!(v1 > 0);
+        // Les drapeaux tels quels : rien n'est écrit, la version ne bouge pas.
+        assert_eq!(m.poser_drapeaux(id, &[(1, vec![]), (2, vec![])]).unwrap(), 0);
+        assert_eq!(m.version_dossier(id).unwrap(), v1);
+        assert_eq!(m.poser_drapeaux(id, &[(1, vec!["\\Seen".into()]), (2, vec![])]).unwrap(), 1);
+        let v2 = m.version_dossier(id).unwrap();
+        assert!(v2 > v1);
+        m.retirer(id, &[2]).unwrap();
+        assert!(m.version_dossier(id).unwrap() > v2);
+        // L'autre dossier n'a pas bougé.
+        assert_eq!(m.version_dossier(autre).unwrap(), 0);
+        // Une seconde connexion voit les écritures de la première (index sur
+        // disque : la version vit dans l'index, pas dans la connexion).
+        let dir = std::env::temp_dir().join(format!("mmail-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let chemin = dir.join("index.sqlite");
+        let a = Magasin::ouvrir(chemin.to_str().unwrap()).unwrap();
+        let b = Magasin::ouvrir(chemin.to_str().unwrap()).unwrap();
+        let c = a.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        a.poser_dossiers(c, &[dossier("INBOX", &[])]).unwrap();
+        let d = a.dossier_id(c, "INBOX").unwrap();
+        let avant = b.version_dossier(d).unwrap();
+        a.poser_messages(d, &[msg(7)]).unwrap();
+        assert!(b.version_dossier(d).unwrap() > avant);
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn boite() -> (Magasin, i64, i64) {
         let m = Magasin::en_memoire().unwrap();
         let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
@@ -2016,18 +2116,24 @@ mod tests {
         let d = m.dossier_id(c, "INBOX").unwrap();
         let msg = |uid: u32, horodatage: i64| MessageLocal { uid, horodatage, ..Default::default() };
         m.poser_messages(d, &[msg(1, 100), msg(2, 5_000), msg(3, 9_000)]).unwrap();
-        let ids: Vec<i64> = m.a_garder(d, 1_000, 10).unwrap().into_iter().map(|(id, _)| id).collect();
-        let uids: Vec<u32> = m.a_garder(d, 1_000, 10).unwrap().into_iter().map(|(_, u)| u).collect();
+        let ids: Vec<i64> = m.a_garder(d, 1_000, 10, i64::MAX).unwrap().into_iter().map(|(id, _)| id).collect();
+        let uids: Vec<u32> = m.a_garder(d, 1_000, 10, i64::MAX).unwrap().into_iter().map(|(_, u)| u).collect();
         // Les plus récents d'abord, rien d'avant la fenêtre.
         assert_eq!(uids, vec![3, 2]);
         m.poser_etat_corps(ids[0], "full").unwrap();
         m.poser_etat_corps(ids[1], "echec").unwrap();
-        assert!(m.a_garder(d, 1_000, 10).unwrap().is_empty());
+        assert!(m.a_garder(d, 1_000, 10, i64::MAX).unwrap().is_empty());
         assert_eq!(m.gardes().unwrap(), HashSet::from([ids[0]]));
         // Une synchronisation ne remet pas l'état à zéro.
         m.poser_messages(d, &[msg(3, 9_000)]).unwrap();
         assert_eq!(m.gardes().unwrap(), HashSet::from([ids[0]]));
         assert_eq!(m.identite_message(d, 3).unwrap().map(|(id, h, _)| (id, h)), Some((ids[0], 9_000)));
+        // Au-delà du plafond de taille, un message n'est pas gardé.
+        let gros = MessageLocal { uid: 4, horodatage: 9_500, taille: 30_000_000, ..Default::default() };
+        m.poser_messages(d, &[gros, MessageLocal { uid: 5, horodatage: 9_400, taille: 2_000, ..Default::default() }])
+            .unwrap();
+        let uids: Vec<u32> = m.a_garder(d, 1_000, 10, 10 * 1024 * 1024).unwrap().into_iter().map(|(_, u)| u).collect();
+        assert_eq!(uids, vec![5]);
         assert!(m.gardes_perimes(9_000).unwrap().is_empty());
         assert_eq!(m.gardes_perimes(9_001).unwrap(), vec![ids[0]]);
     }

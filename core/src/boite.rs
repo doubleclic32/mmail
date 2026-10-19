@@ -1234,11 +1234,14 @@ pub struct BoiteRust {
 /// date et l'empreinte de ses champs — de quoi ne lui renvoyer que ce qui a
 /// changé. Un gros dossier part par pages (0.5.9) : `fin` est la clé (date,
 /// UID) du dernier message envoyé tant qu'il en reste ; les changements ne
-/// portent que jusque-là, la suite arrive avec les pages.
+/// portent que jusque-là, la suite arrive avec les pages. `version` : celle du
+/// dossier dans l'index au moment de l'envoi — tant qu'elle n'a pas bougé,
+/// rien n'est à relire (0.6.6).
 struct ListeEnvoyee {
     dossier: i64,
     empreintes: Vec<(u32, i64, u64)>,
     fin: Option<(i64, u32)>,
+    version: i64,
 }
 
 /// Messages de la première page d'une liste : de quoi remplir l'écran le plus
@@ -2086,17 +2089,23 @@ impl qobject::Boite {
 
     pub fn dossier_existe(&self, url: &QString) -> bool {
         let url = url.to_string();
-        if let Some(chemin) = crate::rendu::chemin_de_url(&url) {
-            return chemin.is_dir();
-        }
-        // « file://serveur/partage/… » : un partage réseau, sous Windows
-        // « \\serveur\partage\… ».
-        let partage = url
-            .get(..7)
-            .filter(|p| p.eq_ignore_ascii_case("file://"))
-            .and_then(|_| crate::rendu::decoder_pourcent(&url[7..]))
-            .filter(|reste| !reste.is_empty() && !reste.starts_with('/'));
-        cfg!(windows) && partage.is_some_and(|reste| std::path::Path::new(&format!(r"\\{}", reste.replace('/', r"\"))).is_dir())
+        let chemin = match crate::rendu::chemin_de_url(&url) {
+            Some(chemin) => chemin,
+            None => {
+                // « file://serveur/partage/… » : un partage réseau, sous Windows
+                // « \\serveur\partage\… ».
+                let partage = url
+                    .get(..7)
+                    .filter(|p| p.eq_ignore_ascii_case("file://"))
+                    .and_then(|_| crate::rendu::decoder_pourcent(&url[7..]))
+                    .filter(|reste| !reste.is_empty() && !reste.starts_with('/'));
+                match partage {
+                    Some(reste) if cfg!(windows) => PathBuf::from(format!(r"\\{}", reste.replace('/', r"\"))),
+                    _ => return false,
+                }
+            }
+        };
+        dossier_present(chemin)
     }
 
     pub fn google_ajout_ouvert(&self) -> bool {
@@ -2457,12 +2466,19 @@ impl qobject::Boite {
             return QString::from(r#"{"complet":[],"suite":false}"#);
         };
         let id = *id;
+        // Lue avant les messages : une écriture qui tombe entre les deux
+        // laisse une version plus ancienne que la liste, et le rafraîchissement
+        // suivant relit — jamais l'inverse.
+        let version = magasin.version_dossier(id).unwrap_or(-1);
         if let Some(liste) = self.liste.as_ref().filter(|l| l.dossier == id && !complet) {
+            if version >= 0 && liste.version == version {
+                return QString::from(AUCUN_CHANGEMENT);
+            }
             let fin = liste.fin;
             let apres = magasin.messages_jusqua(id, fin).unwrap_or_default();
             let empreintes = empreintes_de(&apres);
             if let Some(json) = changements(&liste.empreintes, &apres, &empreintes) {
-                self.as_mut().rust_mut().liste = Some(ListeEnvoyee { dossier: id, empreintes, fin });
+                self.as_mut().rust_mut().liste = Some(ListeEnvoyee { dossier: id, empreintes, fin, version });
                 return QString::from(&json);
             }
         }
@@ -2470,7 +2486,7 @@ impl qobject::Boite {
         let page = magasin.messages_page(id, None, PREMIERE_PAGE).unwrap_or_default();
         let fin = (page.len() == PREMIERE_PAGE).then(|| page.last().map(|m| (m.horodatage, m.uid))).flatten();
         let json = format!(r#"{{"complet":{},"suite":{}}}"#, json_messages(&page), fin.is_some());
-        self.as_mut().rust_mut().liste = Some(ListeEnvoyee { dossier: id, empreintes: empreintes_de(&page), fin });
+        self.as_mut().rust_mut().liste = Some(ListeEnvoyee { dossier: id, empreintes: empreintes_de(&page), fin, version });
         QString::from(&json)
     }
 
@@ -3217,25 +3233,42 @@ impl qobject::Boite {
         let Some((compte, chemin, dossier)) = self.courant.clone() else {
             return false;
         };
-        // Pièce d'un message gardé sur le poste : écrite sans réseau.
-        if let Some((octets, _)) = self.sur_le_poste(dossier, uid as u32) {
+        let (uid, indice) = (uid as u32, indice as usize);
+        // Pièce d'un message gardé sur le poste : écrite sans réseau, et hors
+        // du fil de l'interface — la lecture du message, son décodage et
+        // l'écriture, sur un partage réseau parfois, la figeaient (0.6.6).
+        let garde = self.magasin.as_ref().and_then(|m| m.garde_sur_le_poste(dossier, uid).ok().flatten());
+        if let Some((id, _)) = garde {
             let ouvrir = destination.is_none() && !joindre;
-            let travail = dossier_travail_piece(&self.profil, compte, uid as u32, indice as usize, joindre);
-            return match ecrire_piece_de(&octets, indice as usize, destination, &travail, ouvrir) {
-                Ok(fichier) => {
-                    self.as_mut().recevoir(compte, Issue::Piece { fichier, ouvrir, joindre });
-                    true
-                }
-                Err(m) => {
-                    self.as_mut().set_erreur(QString::from(&format!("pièce jointe : {m}")));
-                    false
-                }
-            };
+            let travail = dossier_travail_piece(&self.profil, compte, uid, indice, joindre);
+            let profil = self.profil.clone();
+            let fil = self.qt_thread();
+            let demande = PieceDuPoste { compte, chemin: chemin.clone(), uid, indice, destination: destination.clone(), joindre };
+            let lancement = thread::Builder::new().name("mmail-piece".into()).spawn(move || {
+                let issue = Cache::du_profil(&profil)
+                    .lire(id)
+                    .map(|octets| ecrire_piece_de(&octets, indice, demande.destination.clone(), &travail, ouvrir));
+                let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.piece_du_poste(demande, issue));
+            });
+            if lancement.is_ok() {
+                return true;
+            }
         }
-        self.as_mut().envoyer(
-            compte,
-            Commande::Piece { chemin, uid: uid as u32, indice: indice as usize, destination, joindre },
-        )
+        self.as_mut().envoyer(compte, Commande::Piece { chemin, uid, indice, destination, joindre })
+    }
+
+    /// Fin, sur le fil Qt, de l'écriture d'une pièce d'un message gardé sur le
+    /// poste. Si son fichier manquait, le fil du compte la relit sur le serveur.
+    fn piece_du_poste(mut self: Pin<&mut Self>, d: PieceDuPoste, issue: Option<Result<PathBuf, String>>) {
+        let ouvrir = d.destination.is_none() && !d.joindre;
+        match issue {
+            Some(Ok(fichier)) => self.as_mut().recevoir(d.compte, Issue::Piece { fichier, ouvrir, joindre: d.joindre }),
+            Some(Err(m)) => self.as_mut().set_erreur(QString::from(&format!("pièce jointe : {m}"))),
+            None => {
+                let PieceDuPoste { compte, chemin, uid, indice, destination, joindre } = d;
+                self.as_mut().envoyer(compte, Commande::Piece { chemin, uid, indice, destination, joindre });
+            }
+        }
     }
 
     fn demander(mut self: Pin<&mut Self>, uid: i32, brut: bool, distantes: bool) -> bool {
@@ -3262,7 +3295,7 @@ impl qobject::Boite {
                 let lancement = thread::Builder::new().name("mmail-affichage".into()).spawn(move || {
                     let preparation = Cache::du_profil(&profil).lire(id).and_then(|octets| {
                         let atelier = dossier_affichage(&profil);
-                        rendre_si_actuel(numero, || preparer_lu(&octets, brut, distantes, compte, &atelier, !lu))
+                        rendre_si_actuel(numero, &octets, brut, distantes, compte, &atelier, !lu)
                     });
                     if AFFICHAGE.load(Ordering::SeqCst) == numero {
                         let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| {
@@ -3306,14 +3339,6 @@ impl qobject::Boite {
         }
     }
 
-    /// Un message du dossier ouvert gardé sur le poste, et s'il est lu. Le
-    /// fichier n'est lu que si l'index le dit gardé : l'identifiant d'un
-    /// message supprimé peut être réattribué, et son fichier traîner encore.
-    fn sur_le_poste(&self, dossier: i64, uid: u32) -> Option<(Vec<u8>, bool)> {
-        let (id, lu) = self.magasin.as_ref()?.garde_sur_le_poste(dossier, uid).ok()??;
-        Cache::du_profil(&self.profil).lire(id).map(|octets| (octets, lu))
-    }
-
     /// Lance le fil de travail d'un compte, avec des commandes à traiter dès la
     /// connexion ouverte.
     fn lancer(mut self: Pin<&mut Self>, compte: i64, commandes: Vec<Commande>) -> bool {
@@ -3323,13 +3348,16 @@ impl qobject::Boite {
         self.as_mut().fermer_session(compte);
 
         let generation = self.generation + 1;
-        let attente = Arc::new(AtomicUsize::new(1 + commandes.len()));
+        // La connexion, et les seules commandes qui comptent : les autres ne
+        // le décomptent jamais, et l'indicateur d'activité tournait sans fin
+        // (revue du 19/10, n° 13).
+        let attente = Arc::new(AtomicUsize::new(1 + commandes.iter().filter(|c| c.comptee()).count()));
         let (envoi, reception) = mpsc::channel();
         for commande in commandes {
             let _ = envoi.send(commande);
         }
         let travail = Travail {
-            fil: self.qt_thread(),
+            fil: Destinataire::Qt(self.qt_thread()),
             compte,
             generation,
             attente: attente.clone(),
@@ -3844,7 +3872,7 @@ fn dossiers_a_vider(dossiers: &[DossierLocal]) -> Vec<String> {
 // -------------------------------------------------------------- fil de travail
 
 struct Travail {
-    fil: CxxQtThread<qobject::Boite>,
+    fil: Destinataire,
     compte: i64,
     generation: u64,
     attente: Arc<AtomicUsize>,
@@ -3874,10 +3902,19 @@ struct Etabli {
     differes_reserves: HashMap<u32, i64>,
 }
 
+/// À qui le fil d'un compte remet ses issues : l'objet Qt — ou, dans les
+/// tests du fil, un canal (0.6.6).
+#[derive(Clone)]
+enum Destinataire {
+    Qt(CxxQtThread<qobject::Boite>),
+    #[cfg(test)]
+    Essai(mpsc::Sender<Issue>),
+}
+
 /// De quoi remettre une issue à l'interface depuis un autre fil que celui du
 /// compte (l'envoi SMTP).
 struct Retour {
-    fil: CxxQtThread<qobject::Boite>,
+    fil: Destinataire,
     compte: i64,
     generation: u64,
 }
@@ -3888,13 +3925,21 @@ impl Retour {
     fn remettre(&self, issue: Issue, toujours: bool) {
         let generation = self.generation;
         let compte = self.compte;
-        // Échoue seulement si l'objet Qt n'existe plus : rien à faire alors.
-        let _ = self.fil.queue(move |boite: Pin<&mut qobject::Boite>| {
-            let a_jour = boite.sessions.get(&compte).map(|s| s.generation) == Some(generation);
-            if a_jour || toujours {
-                boite.recevoir(compte, issue);
+        match &self.fil {
+            // Échoue seulement si l'objet Qt n'existe plus : rien à faire alors.
+            Destinataire::Qt(fil) => {
+                let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| {
+                    let a_jour = boite.sessions.get(&compte).map(|s| s.generation) == Some(generation);
+                    if a_jour || toujours {
+                        boite.recevoir(compte, issue);
+                    }
+                });
             }
-        });
+            #[cfg(test)]
+            Destinataire::Essai(canal) => {
+                let _ = canal.send(issue);
+            }
+        }
     }
 }
 
@@ -4005,7 +4050,7 @@ impl Travail {
     }
 
     fn executer(self, identifiants: Identifiants, reception: Receiver<Commande>) {
-        let mut etabli = match self.etablir(&identifiants) {
+        let etabli = match self.etablir(&identifiants) {
             Ok(etabli) => etabli,
             Err(issue) => {
                 // La connexion et les commandes qui l'attendaient sont perdues ;
@@ -4018,6 +4063,12 @@ impl Travail {
             }
         };
         drop(identifiants);
+        self.travailler(etabli, reception);
+    }
+
+    /// Traite les commandes d'une session établie, jusqu'à la fermeture du
+    /// canal par l'interface ou la perte de la session.
+    fn travailler(self, mut etabli: Etabli, reception: Receiver<Commande>) {
         self.terminer(1);
         self.remettre(Issue::Connecte);
 
@@ -4804,7 +4855,7 @@ impl Travail {
             e.menage = Some(Instant::now());
         }
         let dossier = e.magasin.dossier_id(self.compte, chemin)?;
-        let a_faire = e.magasin.a_garder(dossier, limite, LOT + 1)?;
+        let a_faire = e.magasin.a_garder(dossier, limite, LOT + 1, crate::cache::taille_max())?;
         if a_faire.is_empty() {
             return Ok(false);
         }
@@ -4812,12 +4863,19 @@ impl Travail {
         assurer_selection(&mut e.client, chemin)?;
         let mut faits = 0;
         let mut octets_lus = 0;
+        let mut ecriture_impossible = false;
         for (id, uid) in a_faire.iter().take(LOT) {
             match e.client.corps(*uid) {
                 Ok(octets) => {
                     octets_lus += octets.len();
-                    let etat = if cache.ecrire(*id, &octets).is_ok() { "full" } else { "echec" };
-                    e.magasin.poser_etat_corps(*id, etat)?;
+                    if cache.ecrire(*id, &octets).is_err() {
+                        // Disque plein, droits : le message reste à garder, et
+                        // le préchargement s'arrête jusqu'à la veille suivante
+                        // — marqué en échec, il ne l'aurait jamais été (0.6.6).
+                        ecriture_impossible = true;
+                        break;
+                    }
+                    e.magasin.poser_etat_corps(*id, "full")?;
                 }
                 Err(Erreur::Reseau(m)) => return Err(Echec::Imap(Erreur::Reseau(m))),
                 // Disparu entre-temps, ou refusé : pas de nouvel essai.
@@ -4833,7 +4891,7 @@ impl Travail {
                 assurer_selection(&mut e.client, &avant)?;
             }
         }
-        Ok(a_faire.len() > faits)
+        Ok(!ecriture_impossible && a_faire.len() > faits)
     }
 
     /// La rédaction, ses images locales autorisées remplacées par `cid:`, et
@@ -5094,7 +5152,12 @@ fn lire_corps(
                 .message_complet(uid)?
                 .ok_or_else(|| Echec::Imap(Erreur::Refuse(format!("message {uid} disparu"))))?;
             if let Some((mid, horodatage, _)) = e.magasin.identite_message(id, uid)? {
-                if horodatage >= crate::cache::limite(maintenant()) && cache.ecrire(mid, &complet.octets).is_ok() {
+                // Même règle qu'au préchargement : récent, et sous le plafond
+                // de taille.
+                if horodatage >= crate::cache::limite(maintenant())
+                    && complet.octets.len() as i64 <= crate::cache::taille_max()
+                    && cache.ecrire(mid, &complet.octets).is_ok()
+                {
                     e.magasin.poser_etat_corps(mid, "full")?;
                 }
             }
@@ -5105,8 +5168,7 @@ fn lire_corps(
             (complet.octets, !deja)
         }
     };
-    let Some(lu) = rendre_si_actuel(numero, || preparer_lu(&octets, brut, distantes, compte, atelier, confirmation_possible))
-    else {
+    let Some(lu) = rendre_si_actuel(numero, &octets, brut, distantes, compte, atelier, confirmation_possible) else {
         return Ok(None);
     };
     // Le message entier dit s'il porte des pièces jointes : cela prime sur ce
@@ -5124,8 +5186,26 @@ fn lire_corps(
 
 /// De quoi afficher un message entier : sa source, son HTML assaini et ses
 /// images, ou son texte ; ses pièces jointes ; la confirmation de lecture
-/// demandée, si `confirmation_possible`.
-fn preparer_lu(octets: &[u8], brut: bool, distantes: bool, compte: i64, atelier: &Path, confirmation_possible: bool) -> Lu {
+/// demandée, si `confirmation_possible`. `None` si sa demande n'est plus la
+/// dernière (cf. `AFFICHAGE`).
+///
+/// Seule l'écriture des images tient le verrou de l'atelier : l'analyse et le
+/// téléchargement des images distantes se font avant, si bien qu'un hôte
+/// d'images lent ne fige plus l'affichage des autres messages ; et un message
+/// quitté abandonne ses téléchargements entre deux lots (0.6.6).
+fn rendre_si_actuel(
+    numero: u64,
+    octets: &[u8],
+    brut: bool,
+    distantes: bool,
+    compte: i64,
+    atelier: &Path,
+    confirmation_possible: bool,
+) -> Option<Lu> {
+    let actuel = || AFFICHAGE.load(Ordering::SeqCst) == numero;
+    if !actuel() {
+        return None;
+    }
     let confirmation = if brut || !confirmation_possible {
         String::new()
     } else {
@@ -5133,20 +5213,30 @@ fn preparer_lu(octets: &[u8], brut: bool, distantes: bool, compte: i64, atelier:
     };
     let invitation = if brut { None } else { crate::invitation::extraire(octets) };
     let mut lu = Lu { texte: String::new(), brut, html: false, bloquees: 0, pieces: String::new(), confirmation, invitation };
+    lu.pieces = json_pieces(&crate::index::pieces_jointes(octets));
     if brut {
         lu.texte = String::from_utf8_lossy(octets).into_owned();
     } else if let Some(corps) = crate::rendu::corps_html(octets) {
+        let telechargees = if distantes {
+            telecharger(&corps.distantes, &actuel)?
+        } else {
+            vec![None; corps.distantes.len()]
+        };
+        let _verrou = ATELIER.lock().unwrap_or_else(|e| e.into_inner());
+        if !actuel() {
+            return None;
+        }
         // Les images ne servent qu'à l'affichage : si leur écriture échoue,
         // le message s'affiche sans elles plutôt que pas du tout.
-        let (html, bloquees) = poser_images(corps, compte, distantes, atelier);
+        let (html, bloquees) = poser_images(corps, compte, telechargees, atelier);
         lu.texte = html;
         lu.html = true;
         lu.bloquees = bloquees;
+        return Some(lu);
     } else {
         lu.texte = crate::index::corps_affichable(octets);
     }
-    lu.pieces = json_pieces(&crate::index::pieces_jointes(octets));
-    lu
+    actuel().then_some(lu)
 }
 
 /// Numéro de la dernière demande d'affichage d'un message, d'où qu'elle vienne.
@@ -5154,15 +5244,32 @@ fn preparer_lu(octets: &[u8], brut: bool, distantes: bool, compte: i64, atelier:
 /// abandonné : il effacerait, en posant ses images, celles du message affiché.
 static AFFICHAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Un seul rendu à la fois dans le dossier d'affichage : le fil du compte et
-/// les fils d'affichage local y effacent puis y écrivent des images.
+/// Une seule écriture d'images à la fois dans le dossier d'affichage : le fil
+/// du compte et les fils d'affichage local y effacent puis y écrivent.
 static ATELIER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Rend un message si sa demande est toujours la dernière, sous le verrou de
-/// l'atelier ; `None` sinon.
-fn rendre_si_actuel(numero: u64, rendre: impl FnOnce() -> Lu) -> Option<Lu> {
-    let _verrou = ATELIER.lock().unwrap_or_else(|e| e.into_inner());
-    (AFFICHAGE.load(Ordering::SeqCst) == numero).then(rendre)
+/// Vrai si `chemin` est un dossier présent, sans attendre plus d'une seconde :
+/// un partage réseau ou un lecteur réseau dont le serveur ne répond pas fait
+/// attendre le système plusieurs secondes, et la question vient du fil de
+/// l'interface (0.6.6). Faute de réponse à temps, le dossier est tenu pour
+/// absent ; le fil qui le teste finit seul.
+fn dossier_present(chemin: PathBuf) -> bool {
+    let (envoi, reponse) = std::sync::mpsc::channel();
+    let lance = thread::Builder::new().name("mmail-dossier".into()).spawn(move || {
+        let _ = envoi.send(chemin.is_dir());
+    });
+    lance.is_ok() && reponse.recv_timeout(Duration::from_secs(1)).unwrap_or(false)
+}
+
+/// Une pièce jointe demandée d'un message gardé sur le poste, de quoi la
+/// redemander au serveur si son fichier manque.
+struct PieceDuPoste {
+    compte: i64,
+    chemin: String,
+    uid: u32,
+    indice: usize,
+    destination: Option<PathBuf>,
+    joindre: bool,
 }
 
 /// Ce qu'il faut, une fois un message du poste rendu, pour terminer son
@@ -5183,11 +5290,16 @@ struct Local {
 static SERIE_AFFICHAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Écrit les images d'un message HTML dans le dossier de travail du compte, et
-/// remplace leurs repères par l'adresse des fichiers. Les images distantes ne
-/// sont téléchargées que si `distantes` ; sinon elles cèdent la place à un
-/// aplat discret, aux dimensions annoncées. Rend le HTML et le nombre d'images
-/// distantes non affichées.
-fn poser_images(corps: crate::rendu::CorpsHtml, compte: i64, distantes: bool, atelier: &Path) -> (String, usize) {
+/// remplace leurs repères par l'adresse des fichiers. Les images distantes
+/// sont celles déjà téléchargées (`telechargees`, une par adresse) ; les
+/// autres cèdent la place à un aplat discret, aux dimensions annoncées. Rend
+/// le HTML et le nombre d'images distantes non affichées.
+fn poser_images(
+    corps: crate::rendu::CorpsHtml,
+    compte: i64,
+    telechargees: Vec<Option<(String, Vec<u8>)>>,
+    atelier: &Path,
+) -> (String, usize) {
     use crate::rendu::{extension_image, REPERE_DISTANTE, REPERE_IMAGE};
     let serie = SERIE_AFFICHAGE.fetch_add(1, Ordering::Relaxed);
     let prefixe = format!("{compte}-");
@@ -5212,7 +5324,6 @@ fn poser_images(corps: crate::rendu::CorpsHtml, compte: i64, distantes: bool, at
         let adresse = ecrire(format!("i{rang}.{}", extension_image(type_mime)), octets).unwrap_or_default();
         html = html.replace(&format!("\"{REPERE_IMAGE}{rang}\""), &format!("\"{adresse}\""));
     }
-    let telechargees = if distantes { telecharger(&corps.distantes) } else { vec![None; corps.distantes.len()] };
     let aplat = ecrire("aplat.png".to_string(), APLAT_PNG).unwrap_or_default();
     let mut bloquees = 0;
     for (rang, image) in telechargees.into_iter().enumerate() {
@@ -5242,8 +5353,10 @@ const APLAT_PNG: &[u8] = &[
 
 /// Images distantes d'un message, à la demande de l'utilisateur : HTTPS seul,
 /// 5 Mo par image, quatre téléchargements à la fois. Une image qui ne vient
-/// pas reste un aplat — rien n'empêche l'affichage du message.
-fn telecharger(adresses: &[String]) -> Vec<Option<(String, Vec<u8>)>> {
+/// pas reste un aplat — rien n'empêche l'affichage du message. `None` si
+/// `actuel` cesse d'être vrai : vérifié entre deux lots, il abandonne les
+/// téléchargements d'un message que l'utilisateur a quitté.
+fn telecharger(adresses: &[String], actuel: &dyn Fn() -> bool) -> Option<Vec<Option<(String, Vec<u8>)>>> {
     const TAILLE: usize = 5 * 1024 * 1024;
     const MAX: usize = 60;
     const EN_PARALLELE: usize = 4;
@@ -5252,6 +5365,9 @@ fn telecharger(adresses: &[String]) -> Vec<Option<(String, Vec<u8>)>> {
         .filter(|&i| adresses[i].to_ascii_lowercase().starts_with("https://"))
         .collect();
     for lot in a_faire.chunks(EN_PARALLELE) {
+        if !actuel() {
+            return None;
+        }
         let lus: Vec<(usize, Option<(String, Vec<u8>)>)> = thread::scope(|portee| {
             let fils: Vec<_> = lot
                 .iter()
@@ -5271,7 +5387,7 @@ fn telecharger(adresses: &[String]) -> Vec<Option<(String, Vec<u8>)>> {
             resultats[i] = image;
         }
     }
-    resultats
+    Some(resultats)
 }
 
 
@@ -5535,6 +5651,9 @@ fn json_message(m: &MessageLocal) -> String {
 /// Au-delà, l'interface relit la liste entière plutôt que d'appliquer les
 /// changements un à un.
 const CHANGEMENTS_MAX: usize = 2000;
+
+/// Réponse de `changements_liste` quand la version du dossier n'a pas bougé.
+const AUCUN_CHANGEMENT: &str = r#"{"retires":[],"ajoutes":[],"modifies":[]}"#;
 
 /// UID, date et empreinte de chaque message d'une liste.
 fn empreintes_de(liste: &[MessageLocal]) -> Vec<(u32, i64, u64)> {
@@ -6159,5 +6278,115 @@ mod tests {
         assert_eq!(chemin_de_url("file:///C:/Users/x%231/i0.png"), Some(PathBuf::from("C:/Users/x#1/i0.png")));
         assert_eq!(chemin_de_url("file://serveur/partage/x.png"), None);
         assert_eq!(chemin_de_url("https://exemple.fr/x.png"), None);
+    }
+
+    /// Un fil de compte sur le faux serveur, ses issues remises à un canal :
+    /// index en mémoire, une boîte de réception, profil jetable.
+    fn fil_d_essai(client: Client, nom: &str) -> (Travail, Etabli, Receiver<Issue>) {
+        let magasin = Magasin::en_memoire().unwrap();
+        let compte = magasin.compte("essai@exemple.fr", "h", 993, "essai@exemple.fr").unwrap();
+        let inbox = crate::protocole::Dossier { chemin: "INBOX".into(), separateur: "/".into(), attributs: vec![] };
+        magasin.poser_dossiers(compte, &[inbox]).unwrap();
+        let racine = std::env::temp_dir().join(format!("mmail-fil-{}-{nom}", std::process::id()));
+        let (envoi, issues) = mpsc::channel();
+        let travail = Travail {
+            fil: Destinataire::Essai(envoi),
+            compte,
+            generation: 1,
+            attente: Arc::new(AtomicUsize::new(0)),
+            atelier: racine.join("atelier"),
+            profil: racine.join("index.sqlite").to_string_lossy().into_owned(),
+        };
+        let etabli = Etabli {
+            client,
+            magasin,
+            annexes: HashMap::new(),
+            identites: HashMap::new(),
+            ouvert: None,
+            menage: None,
+            dernier: None,
+            differes_reserves: HashMap::new(),
+        };
+        (travail, etabli, issues)
+    }
+
+    /// Comme `lancer` : la connexion, et les seules commandes comptées.
+    fn attente_initiale(travail: &Travail, commandes: &[Commande]) -> Arc<AtomicUsize> {
+        travail.attente.store(1 + commandes.iter().filter(|c| c.comptee()).count(), Ordering::SeqCst);
+        travail.attente.clone()
+    }
+
+    /// Le fil d'un compte (revue du 19/10, n° 9 et 13) : la boîte de réception
+    /// relue à la connexion, une commande de l'interface traitée, et le canal
+    /// fermé par l'interface qui termine la session — `attente`, qui fait
+    /// tourner l'indicateur d'activité, revenu à zéro.
+    #[test]
+    fn fil_de_travail_jusqu_a_la_fermeture_du_canal() {
+        use crate::simule::{echange, session};
+        let (client, journal) = session(
+            "UIDPLUS",
+            vec![
+                echange(
+                    "SELECT \"INBOX\"",
+                    "* 0 EXISTS\r\n* OK [UIDVALIDITY 7] v\r\n* OK [UIDNEXT 1] n\r\n",
+                    "OK [READ-WRITE] fait",
+                ),
+                echange("LIST \"\" \"*\"", "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n", "OK fait"),
+                echange("STATUS \"INBOX\" (MESSAGES UNSEEN)", "* STATUS \"INBOX\" (MESSAGES 0 UNSEEN 0)\r\n", "OK fait"),
+                echange("LOGOUT", "* BYE\r\n", "OK fait"),
+            ],
+        );
+        let (travail, etabli, issues) = fil_d_essai(client, "fermeture");
+        let commandes = vec![Commande::Arborescence];
+        let attente = attente_initiale(&travail, &commandes);
+        let (envoi, reception) = mpsc::channel();
+        for commande in commandes {
+            envoi.send(commande).unwrap();
+        }
+        let fil = thread::spawn(move || travail.travailler(etabli, reception));
+        let mut recues = Vec::new();
+        while recues.len() < 3 {
+            recues.push(issues.recv_timeout(Duration::from_secs(10)).expect("issue du fil"));
+        }
+        // La connexion ; la boîte de réception surveillée relue la première
+        // fois, d'où l'arborescence ; puis la commande de l'interface.
+        assert!(matches!(recues.as_slice(), [Issue::Connecte, Issue::Arborescence, Issue::Arborescence]));
+        drop(envoi);
+        fil.join().expect("le fil finit sans panique");
+        assert_eq!(attente.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            journal.lock().unwrap().as_slice(),
+            ["SELECT \"INBOX\"", "LIST \"\" \"*\"", "STATUS \"INBOX\" (MESSAGES UNSEEN)", "LOGOUT"]
+        );
+    }
+
+    /// Session perdue en pleine commande : le fil s'arrête, les commandes qui
+    /// attendaient rendent leur issue avant l'échec, et `attente` revient à
+    /// zéro — une commande non comptée (préchargement) n'y laisse rien.
+    #[test]
+    fn fil_de_travail_coupe_en_pleine_commande() {
+        use crate::simule::{coupure, session};
+        let (client, journal) = session("UIDPLUS", vec![coupure("SELECT \"INBOX\"", "* 3 EXISTS\r\n")]);
+        let (travail, etabli, issues) = fil_d_essai(client, "coupure");
+        let commandes = vec![
+            Commande::Arborescence,
+            Commande::MarquerSuivi { chemin: "INBOX".into(), uids: vec![1], suivi: true },
+            Commande::Precharger { chemin: "Archives".into() },
+        ];
+        let attente = attente_initiale(&travail, &commandes);
+        assert_eq!(attente.load(Ordering::SeqCst), 3);
+        let (envoi, reception) = mpsc::channel();
+        for commande in commandes {
+            envoi.send(commande).unwrap();
+        }
+        // Le fil rend la main de lui-même : la session est perdue.
+        travail.travailler(etabli, reception);
+        assert_eq!(attente.load(Ordering::SeqCst), 0);
+        let recues: Vec<Issue> = issues.try_iter().collect();
+        assert!(matches!(recues.first(), Some(Issue::Connecte)));
+        assert!(matches!(recues.last(), Some(Issue::Echec { session_perdue: true, .. })));
+        // Ni LOGOUT sur une connexion morte, ni commande après la coupure.
+        assert_eq!(journal.lock().unwrap().as_slice(), ["SELECT \"INBOX\""]);
+        drop(envoi);
     }
 }

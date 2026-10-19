@@ -2,11 +2,11 @@
 //! Messages gardés sur le poste (décision 17) : de quoi lire, hors connexion,
 //! ce qui est arrivé récemment.
 //!
-//! Un message de moins d'un mois — arbitrage de Manu du 2026-10-01, le même
-//! sur toutes les cibles — est gardé entier, tel que le serveur le conserve,
-//! dans un fichier `.eml` nommé par son identifiant dans l'index (décision
-//! 14) : l'affichage, la source et les pièces jointes s'y lisent sans réseau.
-//! Au-delà, il est relu sur le serveur. Le serveur reste la référence : ce
+//! Un message de moins d'un mois — arbitrage de Manu du 2026-10-01 ; durée et
+//! taille réglables pour la machine (`jours`, `taille_max`) — est gardé entier,
+//! tel que le serveur le conserve, dans un fichier `.eml` nommé par son
+//! identifiant dans l'index (décision 14) : l'affichage, la source et les
+//! pièces jointes s'y lisent sans réseau. Au-delà, il est relu sur le serveur. Le serveur reste la référence : ce
 //! cache se reconstruit, rien ne s'y perd.
 
 use std::collections::HashSet;
@@ -24,6 +24,27 @@ pub fn jours() -> i64 {
             .and_then(|v| v.trim().parse().ok())
             .filter(|j| (0..=3650).contains(j))
             .unwrap_or(31)
+    })
+}
+
+/// Taille au-delà de laquelle un message n'est pas gardé sur le poste, en
+/// octets : 10 Mio, sauf réglage de la machine (`MMAIL_TAILLE_CACHE`, en Mio ;
+/// 0 : sans plafond). Quelques grosses pièces jointes font l'essentiel d'un
+/// cache — 2 Go pour 5 206 messages sur un serveur RDS (15/10) — et un
+/// message plus gros reste lu sur le serveur à l'ouverture (0.6.6).
+pub fn taille_max() -> i64 {
+    static TAILLE: OnceLock<i64> = OnceLock::new();
+    *TAILLE.get_or_init(|| {
+        let mio: i64 = std::env::var("MMAIL_TAILLE_CACHE")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|m| (0..=100 * 1024).contains(m))
+            .unwrap_or(10);
+        if mio == 0 {
+            i64::MAX
+        } else {
+            mio * 1024 * 1024
+        }
     })
 }
 

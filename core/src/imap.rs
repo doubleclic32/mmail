@@ -2,15 +2,17 @@
 //! Client IMAP : lecture, synchronisation et tri.
 //!
 //! Écrit ici plutôt que pris d'une bibliothèque : le sous-ensemble utile est
-//! petit, et la synchronisation incrémentale à venir (QRESYNC, décision 15 du
-//! dossier de projet) n'est couverte par aucune crate. Le serveur visé est
-//! Dovecot, et lui seul — il annonce QRESYNC, CONDSTORE, UIDPLUS, MOVE et
-//! SPECIAL-USE.
+//! petit, et la synchronisation incrémentale (QRESYNC, décision 15 du dossier
+//! de projet) n'est couverte par aucune crate. Le serveur visé d'abord est
+//! Dovecot — il annonce QRESYNC, CONDSTORE, UIDPLUS, MOVE et SPECIAL-USE ;
+//! Office 365, Gmail et les autres s'en passent, chacune de ces extensions
+//! ayant son repli.
 //!
 //! TLS par `rustls` : pas d'OpenSSL à compiler pour Android. Les autorités de
 //! certification sont celles du système sur le bureau, celles de Mozilla sous
 //! Android (cf. `configuration_tls`).
 
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -39,6 +41,11 @@ const REPONSE_MAX: usize = 512 * 1024 * 1024;
 /// abandonnée, la session avec elle : `DELAI` borne chaque lecture, pas un
 /// serveur qui distille sa réponse octet par octet.
 const ECHEANCE_COMMANDE: Duration = Duration::from_secs(30 * 60);
+
+/// STATUS envoyés d'un coup sans LIST-STATUS : quelques kilo-octets dans
+/// chaque sens, qui tiennent dans les tampons du système — le serveur n'est
+/// jamais bloqué sur ses réponses pendant que MMail écrit encore.
+const RAFALE_STATUS: usize = 50;
 
 /// Ce que rend l'ouverture d'un dossier : son état, et — en reprise QRESYNC —
 /// ce qui a changé depuis la dernière visite.
@@ -284,13 +291,16 @@ impl Client {
             return Ok((dossiers, protocole::analyser_status(&texte)));
         }
         let dossiers = self.dossiers()?;
+        let commandes: Vec<String> = dossiers
+            .iter()
+            .filter(|d| d.selectionnable())
+            .map(|d| format!("STATUS {} (MESSAGES UNSEEN)", citer(&d.chemin)))
+            .collect();
+        // Un STATUS par dossier, envoyés par rafales et non un à un : cent
+        // dossiers ne font plus cent allers-retours à chaque veille (0.6.6).
         let mut statuts = Vec::new();
-        for dossier in dossiers.iter().filter(|d| d.selectionnable()) {
-            let (texte, _) = self.commande(&format!(
-                "STATUS {} (MESSAGES UNSEEN)",
-                citer(&dossier.chemin)
-            ))?;
-            statuts.extend(protocole::analyser_status(&texte));
+        for rafale in commandes.chunks(RAFALE_STATUS) {
+            statuts.extend(protocole::analyser_status(&self.rafale(rafale)?));
         }
         Ok((dossiers, statuts))
     }
@@ -678,31 +688,8 @@ impl Client {
         let mut litteraux: Vec<Vec<u8>> = Vec::new();
         let mut total = 0usize;
         loop {
-            let mut ligne = self.lire_ligne()?;
-            // Un littéral suspend la ligne : « … {123} » puis 123 octets bruts,
-            // puis la suite de la même ligne logique.
-            while let Some(taille) = taille_litteral(&ligne) {
-                total = total.saturating_add(taille);
-                if taille > LITTERAL_MAX || total > REPONSE_MAX {
-                    // La session ne peut plus être lue : elle est abandonnée.
-                    return Err(Erreur::Reseau(format!(
-                        "le serveur annonce {taille} octets d'un coup, au-delà de ce que MMail accepte"
-                    )));
-                }
-                let donnees = self.lire_octets(taille)?;
-                let indice = litteraux.len();
-                litteraux.push(donnees);
-                ligne = format!(
-                    "{}{MARQUEUR}{indice}{MARQUEUR}",
-                    &ligne[..ligne.rfind('{').unwrap_or(ligne.len())]
-                );
-                ligne.push_str(&self.lire_ligne()?);
-            }
+            let ligne = self.lire_ligne_logique(&mut litteraux, &mut total)?;
             let terminee = ligne.starts_with(etiquette);
-            total = total.saturating_add(ligne.len());
-            if total > REPONSE_MAX {
-                return Err(Erreur::Reseau("réponse du serveur démesurée".into()));
-            }
             texte.push_str(&ligne);
             texte.push('\n');
             if terminee {
@@ -714,6 +701,78 @@ impl Client {
                 };
             }
         }
+    }
+
+    /// Une ligne de réponse entière, littéraux compris : `total` cumule la
+    /// taille de la réponse en cours, bornée.
+    fn lire_ligne_logique(&mut self, litteraux: &mut Vec<Vec<u8>>, total: &mut usize) -> Resultat<String> {
+        let mut ligne = self.lire_ligne()?;
+        // Un littéral suspend la ligne : « … {123} » puis 123 octets bruts,
+        // puis la suite de la même ligne logique.
+        while let Some(taille) = taille_litteral(&ligne) {
+            *total = total.saturating_add(taille);
+            if taille > LITTERAL_MAX || *total > REPONSE_MAX {
+                // La session ne peut plus être lue : elle est abandonnée.
+                return Err(Erreur::Reseau(format!(
+                    "le serveur annonce {taille} octets d'un coup, au-delà de ce que MMail accepte"
+                )));
+            }
+            let donnees = self.lire_octets(taille)?;
+            let indice = litteraux.len();
+            litteraux.push(donnees);
+            ligne = format!(
+                "{}{MARQUEUR}{indice}{MARQUEUR}",
+                &ligne[..ligne.rfind('{').unwrap_or(ligne.len())]
+            );
+            ligne.push_str(&self.lire_ligne()?);
+        }
+        *total = total.saturating_add(ligne.len());
+        if *total > REPONSE_MAX {
+            return Err(Erreur::Reseau("réponse du serveur démesurée".into()));
+        }
+        Ok(ligne)
+    }
+
+    /// Envoie plusieurs commandes d'un coup, puis lit leurs réponses : un seul
+    /// aller-retour au lieu d'un par commande (RFC 3501 § 5.5 — seulement pour
+    /// des commandes sans effet l'une sur l'autre, comme STATUS). Rend le texte
+    /// de toutes les réponses, dans l'ordre où elles arrivent — le serveur peut
+    /// terminer les commandes dans le désordre ; une commande refusée
+    /// n'empêche pas les autres, seule une erreur de réseau interrompt.
+    fn rafale(&mut self, commandes: &[String]) -> Resultat<String> {
+        let mut attendues = HashSet::new();
+        let mut envoi = String::new();
+        for commande in commandes {
+            self.compteur += 1;
+            let etiquette = format!("m{:04}", self.compteur);
+            envoi.push_str(&format!("{etiquette} {commande}\r\n"));
+            attendues.insert(etiquette);
+        }
+        self.flux.write_all(envoi.as_bytes())?;
+        self.flux.flush()?;
+        self.echeance = Some(Instant::now() + ECHEANCE_COMMANDE);
+        let mut texte = String::new();
+        let mut litteraux = Vec::new();
+        let mut total = 0usize;
+        let issue = loop {
+            if attendues.is_empty() {
+                break Ok(texte);
+            }
+            match self.lire_ligne_logique(&mut litteraux, &mut total) {
+                Ok(ligne) => {
+                    if let Some(etiquette) = ligne.split(' ').next().filter(|e| attendues.contains(*e)) {
+                        let etiquette = etiquette.to_string();
+                        attendues.remove(&etiquette);
+                        continue;
+                    }
+                    texte.push_str(&ligne);
+                    texte.push('\n');
+                }
+                Err(err) => break Err(err),
+            }
+        };
+        self.echeance = None;
+        issue
     }
 
     /// Ligne complète déjà reçue, s'il y en a une.
@@ -906,6 +965,40 @@ mod tests {
         // Un autre client l'a touché depuis le relevé : il n'est pas à nous.
         assert!(!client.reserver(8, 90).unwrap());
         assert_eq!(journal.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn compteurs_par_rafale_sans_list_status() {
+        let (mut client, journal) = session(
+            "UIDPLUS MOVE",
+            vec![
+                echange(
+                    "LIST \"\" \"*\"",
+                    "* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n* LIST (\\Noselect) \"/\" \"Archives\"\r\n\
+                     * LIST (\\HasNoChildren) \"/\" \"Archives/2025\"\r\n* LIST (\\HasNoChildren) \"/\" \"Retire\"\r\n",
+                    "OK fait",
+                ),
+                echange("STATUS \"INBOX\" (MESSAGES UNSEEN)", "* STATUS \"INBOX\" (MESSAGES 12 UNSEEN 3)\r\n", "OK fait"),
+                echange(
+                    "STATUS \"Archives/2025\" (MESSAGES UNSEEN)",
+                    "* STATUS \"Archives/2025\" (MESSAGES 40 UNSEEN 0)\r\n",
+                    "OK fait",
+                ),
+                echange("STATUS \"Retire\" (MESSAGES UNSEEN)", "", "NO droits retirés"),
+            ],
+        );
+        let (dossiers, statuts) = client.dossiers_et_compteurs().unwrap();
+        assert_eq!(dossiers.len(), 4);
+        // Le dossier non sélectionnable n'est pas interrogé ; celui que le
+        // serveur refuse n'empêche pas les autres.
+        assert_eq!(
+            statuts,
+            vec![
+                Statut { chemin: "INBOX".into(), messages: 12, non_lus: 3 },
+                Statut { chemin: "Archives/2025".into(), messages: 40, non_lus: 0 },
+            ]
+        );
+        assert_eq!(journal.lock().unwrap().len(), 4);
     }
 
     #[test]

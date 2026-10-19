@@ -70,14 +70,20 @@ pub struct Bilan {
     /// Vrai si le dossier a été relu en entier (première visite, rupture
     /// d'`UIDVALIDITY` ou réconciliation).
     pub complet: bool,
-    /// Messages dont les drapeaux ont changé ailleurs (reprise QRESYNC).
+    /// Vrai si l'index du dossier a été refait : première visite, ou rupture
+    /// d'`UIDVALIDITY` qui l'a vidé.
+    pub reconstruit: bool,
+    /// Messages dont les drapeaux ont changé ailleurs — ceux que l'index
+    /// avait autrement, et eux seuls.
     pub drapeaux: usize,
 }
 
 impl Bilan {
-    /// Vrai si la liste affichée du dossier n'est plus à jour.
+    /// Vrai si la liste affichée du dossier n'est plus à jour. Une
+    /// réconciliation qui n'a rien trouvé ne la touche pas : sans QRESYNC,
+    /// chaque veille en fait une (0.6.6).
     pub fn change_la_liste(&self) -> bool {
-        self.nouveaux > 0 || self.retires > 0 || self.drapeaux > 0 || self.complet
+        self.nouveaux > 0 || self.retires > 0 || self.drapeaux > 0 || self.reconstruit
     }
 }
 
@@ -117,32 +123,34 @@ pub fn synchroniser(
             id,
             &EtatDossier { uid_validity: etat.uid_validity, ..Default::default() },
         )?;
-        let (nouveaux, retires) = reconcilier(client, magasin, id, &etat, true)?;
+        let (nouveaux, retires, _) = reconcilier(client, magasin, id, &etat, true)?;
         bilan.complet = true;
+        bilan.reconstruit = true;
         bilan.nouveaux = nouveaux;
         bilan.retires = retires;
     } else if selection.reprise {
         magasin.retirer_intervalles(id, &selection.disparus)?;
         bilan.retires = selection.disparus.iter().map(|(a, b)| (b - a + 1) as usize).sum();
-        magasin.poser_drapeaux(id, &selection.drapeaux)?;
-        bilan.drapeaux = selection.drapeaux.len();
+        bilan.drapeaux = magasin.poser_drapeaux(id, &selection.drapeaux)?;
         if etat.uid_next > local.uid_next {
             bilan.nouveaux = lire_depuis(client, magasin, id, local.uid_next.max(1))?;
         }
     } else {
-        let (nouveaux, retires) = reconcilier(client, magasin, id, &etat, false)?;
+        let (nouveaux, retires, drapeaux) = reconcilier(client, magasin, id, &etat, false)?;
         bilan.complet = true;
         bilan.nouveaux = nouveaux;
         bilan.retires = retires;
+        bilan.drapeaux = drapeaux;
     }
 
     // Contrôle de cohérence : l'index doit compter autant de messages que le
     // serveur. Un écart se répare par la liste des UID, sans tout relire.
     if !bilan.complet && magasin.uids(id)?.len() as u32 != etat.messages {
-        let (nouveaux, retires) = reconcilier(client, magasin, id, &etat, false)?;
+        let (nouveaux, retires, drapeaux) = reconcilier(client, magasin, id, &etat, false)?;
         bilan.complet = true;
         bilan.nouveaux += nouveaux;
         bilan.retires += retires;
+        bilan.drapeaux += drapeaux;
     }
 
     magasin.poser_etat(id, &etat)?;
@@ -169,20 +177,21 @@ fn lire_depuis(client: &mut Client, magasin: &Magasin, id: i64, depuis: u32) -> 
 /// `tout_relire` (première visite, ou index à reconstituer). Les en-têtes
 /// viennent par paquets, les plus récents d'abord, et chaque paquet est écrit
 /// aussitôt : la mémoire reste bornée, et une coupure ne perd que le paquet
-/// en cours.
+/// en cours. Rend les nombres de messages lus, retirés, et dont les
+/// drapeaux ont changé.
 fn reconcilier(
     client: &mut Client,
     magasin: &Magasin,
     id: i64,
     etat: &EtatDossier,
     tout_relire: bool,
-) -> Result<(usize, usize), Echec> {
+) -> Result<(usize, usize, usize), Echec> {
     if etat.messages == 0 {
         // « 1:* » sur un dossier vide fait répondre une erreur à certains
         // serveurs ; et ce qui traînait dans l'index n'existe plus.
         let connus = magasin.uids(id)?;
         magasin.retirer(id, &connus)?;
-        return Ok((0, connus.len()));
+        return Ok((0, connus.len(), 0));
     }
     let serveur = client.tous_les_drapeaux()?;
     let presents: HashSet<u32> = serveur.iter().map(|(u, _)| *u).collect();
@@ -190,7 +199,7 @@ fn reconcilier(
 
     let perimes: Vec<u32> = connus.difference(&presents).copied().collect();
     magasin.retirer(id, &perimes)?;
-    magasin.poser_drapeaux(id, &serveur)?;
+    let drapeaux = magasin.poser_drapeaux(id, &serveur)?;
 
     let mut manquants: Vec<u32> = if tout_relire {
         presents.iter().copied().collect()
@@ -208,7 +217,7 @@ fn reconcilier(
         nouveaux += lignes.len();
         magasin.poser_messages(id, &lignes)?;
     }
-    Ok((nouveaux, perimes.len()))
+    Ok((nouveaux, perimes.len(), drapeaux))
 }
 
 /// Range dans l'index les messages que le serveur a trouvés et que l'index
@@ -391,6 +400,36 @@ mod tests {
         assert_eq!(uids, vec![1, 2, 3, 6, 7]);
         // L'état du dossier reste celui de la dernière visite.
         assert_eq!(m.dossier(id).unwrap().unwrap().uid_next, 4);
+    }
+
+    /// Sans QRESYNC (Office 365, Gmail…), chaque veille réconcilie le dossier
+    /// ouvert : sans changement, ni écriture ni liste à relire (0.6.6).
+    #[test]
+    fn reconciliation_sans_changement_ne_touche_pas_la_liste() {
+        let (m, compte, id) = index_connu();
+        let select = "* 3 EXISTS\r\n* OK [UIDVALIDITY 1] v\r\n* OK [UIDNEXT 4] n\r\n";
+        let drapeaux = |deux: &str| {
+            format!("* 1 FETCH (UID 1 FLAGS ())\r\n* 2 FETCH (UID 2 FLAGS ({deux}))\r\n* 3 FETCH (UID 3 FLAGS ())\r\n")
+        };
+        let (mut client, _) = session(
+            "UIDPLUS",
+            vec![
+                echange("SELECT \"INBOX\"", select, "OK [READ-WRITE] fait"),
+                echange("UID FETCH 1:* (UID FLAGS)", &drapeaux(""), "OK"),
+                echange("SELECT \"INBOX\"", select, "OK [READ-WRITE] fait"),
+                echange("UID FETCH 1:* (UID FLAGS)", &drapeaux("\\Seen"), "OK"),
+            ],
+        );
+        let version = m.version_dossier(id).unwrap();
+        let bilan = synchroniser(&mut client, &m, compte, "INBOX").unwrap();
+        assert_eq!((bilan.nouveaux, bilan.retires, bilan.drapeaux), (0, 0, 0));
+        assert!(!bilan.change_la_liste());
+        assert_eq!(m.version_dossier(id).unwrap(), version);
+        // Lu ailleurs : la liste est à relire.
+        let bilan = synchroniser(&mut client, &m, compte, "INBOX").unwrap();
+        assert_eq!(bilan.drapeaux, 1);
+        assert!(bilan.change_la_liste());
+        assert!(m.version_dossier(id).unwrap() > version);
     }
 
     #[test]
