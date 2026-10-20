@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Dialogue « Nom et signature » d’un compte.
+// Dialogue « Nom et signature » d’un compte, ou de l’une de ses autres
+// adresses d’envoi (0.6.7).
 //
 // Sorti de Main.qml tel quel (0.5.16, découpage) : les noms employés sans
 // être déclarés ici (fenetre, boite, reglages…) sont ceux de Main.qml,
@@ -21,21 +22,45 @@ Dialog {
     width: Math.min(760, fenetre.width - 24)
     standardButtons: Dialog.Ok | Dialog.Cancel
     property string note: ""
+    // Ce qui a été chargé, pour une adresse d'envoi qui reprend l'identité de
+    // son compte : inchangé, rien ne lui est écrit, et elle continue de la
+    // suivre.
+    property string chargee: ""
+    // Avertissement de cette reprise : une information, pas une erreur.
+    property string noteReprise: ""
     function ouvrir(compte) {
         var i = 0
-        for (var k = 0; k < fenetre.comptesConnus.length; ++k)
-            if (fenetre.comptesConnus[k].compte === compte)
+        var liste = fenetre.expediteursConnus
+        for (var k = liste.length - 1; k >= 0; --k)
+            if (liste[k].compte === compte)
                 i = k
         choixIdentite.currentIndex = i
         charger()
         open()
     }
+    /// Passe à l'adresse `adresse` de la liste (scénarios d'essai).
+    function choisirAdresse(adresse) {
+        var liste = fenetre.expediteursConnus
+        for (var k = 0; k < liste.length; ++k)
+            if (liste[k].adresse === adresse)
+                choixIdentite.currentIndex = k
+        charger()
+    }
+    function expediteur() {
+        return fenetre.expediteursConnus[choixIdentite.currentIndex] || null
+    }
     function adresse() {
-        var c = fenetre.comptesConnus[choixIdentite.currentIndex]
-        return c ? c.adresse : ""
+        var e = expediteur()
+        return e ? e.adresse : ""
+    }
+    function valeurs() {
+        return { nom: champNomAffiche.text.trim(), signature: mefSignature.texte(),
+                 html: mefSignature.enrichi() ? mefSignature.html() : "",
+                 nouveaux: caseSignatureNouveaux.checked, reponses: caseSignatureReponses.checked }
     }
     function charger() {
-        var i = fenetre.identite(adresse())
+        var e = expediteur()
+        var i = fenetre.identiteExpediteur(e)
         champNomAffiche.text = i.nom
         if (i.html.length > 0)
             mefSignature.poserHtml(i.html)
@@ -44,14 +69,19 @@ Dialog {
         champSignature.cursorPosition = 0
         caseSignatureNouveaux.checked = i.nouveaux
         caseSignatureReponses.checked = i.reponses
-        note = ""
+        var reprise = e && e.adresse !== e.compteAdresse && !fenetre.aUneIdentite(e.adresse)
+        chargee = reprise ? JSON.stringify(valeurs()) : ""
+        noteReprise = reprise ? qsTr("Cette adresse reprend le nom et la signature de %1 ; modifiés ici, ils lui deviennent propres.").arg(e.compteAdresse) : ""
+        note = noteReprise
     }
     // Deux versions : le texte, pour les messages sans mise en forme, et
     // le HTML s'il y a de quoi — images, gras, liens.
-    onAccepted: fenetre.poserIdentite(adresse(), {
-        nom: champNomAffiche.text.trim(), signature: mefSignature.texte(),
-        html: mefSignature.enrichi() ? mefSignature.html() : "",
-        nouveaux: caseSignatureNouveaux.checked, reponses: caseSignatureReponses.checked })
+    onAccepted: {
+        var v = valeurs()
+        if (chargee.length > 0 && JSON.stringify(v) === chargee)
+            return
+        fenetre.poserIdentite(adresse(), v)
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -59,9 +89,9 @@ Dialog {
         ComboBox {
             id: choixIdentite
             Layout.fillWidth: true
-            model: fenetre.comptesConnus
-            displayText: currentIndex >= 0 && fenetre.comptesConnus[currentIndex]
-                         ? fenetre.comptesConnus[currentIndex].adresse : ""
+            model: fenetre.expediteursConnus
+            displayText: currentIndex >= 0 && fenetre.expediteursConnus[currentIndex]
+                         ? fenetre.expediteursConnus[currentIndex].adresse : ""
             delegate: ItemDelegate {
                 required property var modelData
                 width: ListView.view ? ListView.view.width : implicitWidth
@@ -152,7 +182,8 @@ Dialog {
         Label {
             visible: dlgIdentite.note.length > 0
             text: dlgIdentite.note
-            color: "#b00020"
+            color: dlgIdentite.note === dlgIdentite.noteReprise ? dlgIdentite.palette.text : "#b00020"
+            opacity: dlgIdentite.note === dlgIdentite.noteReprise ? 0.75 : 1
             wrapMode: Text.Wrap
             Layout.fillWidth: true
         }

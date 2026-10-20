@@ -16,7 +16,7 @@ import fr.mmedia.mmail.natif
 // ----------------------------------------------------------- dialogues
 // Trois usages : ajouter un compte, redemander un mot de passe, ou
 // modifier un compte présent (`modification`) — serveurs, mot de passe,
-// et, de là, nom et signature.
+// autres adresses d'envoi et, de là, nom et signature.
 Dialog {
     id: dlgCompte
     // Désignés hors de ce fichier (Main.qml, fichiers voisins) : dlgCompte.<nom>.
@@ -25,6 +25,7 @@ Dialog {
     property alias champHote: champHote
     property alias champHoteEnvoi: champHoteEnvoi
     property alias champMotDePasse: champMotDePasse
+    property alias champAdressesEnvoi: champAdressesEnvoi
     property alias caseMemoriser: caseMemoriser
     property alias boutonReconnexion: boutonReconnexion
     property int compteId: 0
@@ -122,6 +123,26 @@ Dialog {
             visible: !dlgCompte.oauth
             checked: reglages.memoriser
             text: qsTr("Mémoriser le mot de passe dans le coffre du système")
+        }
+        // Boîtes partagées, alias (0.6.7) : proposés dans le champ « De ».
+        // Seul le serveur décide d'accepter l'envoi en leur nom.
+        Label { text: qsTr("Autres adresses d'envoi :"); visible: dlgCompte.modification }
+        TextField {
+            id: champAdressesEnvoi
+            visible: dlgCompte.modification
+            placeholderText: qsTr("contact@exemple.fr ; commandes@exemple.fr")
+            inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase
+            Layout.fillWidth: true
+            onAccepted: dlgCompte.accept()
+        }
+        Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            visible: dlgCompte.modification
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            font.pixelSize: 11
+            text: qsTr("Proposées dans le champ « De » d'un message, en plus de l'adresse du compte : boîtes partagées, alias. Le serveur doit autoriser ce compte à envoyer en leur nom ; la copie va dans les éléments envoyés du compte.")
         }
         // Office 365 n'accepte plus de mot de passe : la connexion se fait
         // chez Microsoft, dans le navigateur.

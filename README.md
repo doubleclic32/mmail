@@ -38,6 +38,10 @@ de projet interne.
   « Mise en forme » décochée, le message part en texte brut ;
 - **nom affiché et signature** par compte (menu « Comptes », « Nom et
   signature… »), ajoutée aux nouveaux messages, aux réponses, ou sur demande ;
+- **autres adresses d'envoi** d'un compte — boîtes partagées, alias que le
+  serveur lui laisse employer —, proposées dans le champ « De » (cf. « Modifier
+  un compte ») ; une réponse ou un transfert part de celle à qui le message
+  était adressé, un brouillon de celle où il a été écrit ;
 - **adresses proposées** en tapant un destinataire : celles à qui l'on a
   écrit, puis les expéditeurs connus ;
 - **options d'envoi** : importance haute ou basse (`Importance`,
@@ -157,7 +161,9 @@ de projet interne.
 - **vider les corbeilles et indésirables** de tous les comptes : seuls les
   dossiers que le serveur désigne comme tels (`\Trash`, `\Junk`) sont purgés,
   jamais un dossier sur la foi de son nom ;
-- marquage lu / non lu (Ctrl+Q, Ctrl+U) ; un message affiché est marqué lu ;
+- marquage lu / non lu (Ctrl+Q, Ctrl+U) ; un message affiché est marqué lu,
+  sauf s'il a été marqué entre-temps — « non lu » pendant son chargement le
+  laisse non lu ;
 - **masquage local** des dossiers peu utilisés, réaffichage en un clic ;
 - affichage du **message brut** (bouton « Source ») ;
 - **copie automatique de la sélection**, comme dans MMdedit : un texte
@@ -280,6 +286,15 @@ là « Nom et signature… ». L'adresse ne change pas : c'est elle qui désigne
 compte, son index et ses réglages. Un nouveau serveur de lecture reprend le
 mot de passe mémorisé, qui change de clé dans le coffre avec lui ; s'il est
 injoignable, la fenêtre revient avec le motif.
+
+**Autres adresses d'envoi** (0.6.7) : séparées par « ; », elles s'ajoutent à
+l'adresse du compte dans le champ « De » des messages. L'envoi passe par le
+serveur et les identifiants du compte, sous l'adresse choisie (`From` et
+enveloppe) ; c'est donc le serveur qui accepte ou refuse — sur Mailcow, les
+droits d'envoi de la boîte (`sender_acl`). La copie va dans les
+éléments envoyés du compte. Chaque adresse peut avoir son nom et sa signature
+(« Nom et signature… ») ; à défaut, elle reprend ceux du compte. Elles suivent
+la sauvegarde de la configuration.
 
 ### Comptes Microsoft (Office 365, Outlook.com)
 

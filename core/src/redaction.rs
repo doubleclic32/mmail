@@ -367,6 +367,11 @@ pub const ENTETE_POSTE: &str = "X-MMail-Poste-Differe";
 #[serde(rename_all = "camelCase")]
 pub struct Preparation {
     pub mode: String,
+    /// Adresse d'où écrire : celle du brouillon repris ; pour une réponse ou un
+    /// transfert, celle des adresses de l'utilisateur (`propres`) à qui le
+    /// message était adressé — boîte partagée, alias — ou d'où il l'avait
+    /// écrit. Vide : celle du compte.
+    pub de: String,
     pub a: String,
     pub cc: String,
     pub cci: String,
@@ -471,6 +476,7 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
     let texte = crate::index::corps_affichable(brut);
 
     if mode == "brouillon" {
+        p.de = de.first().map(|(_, x)| x.clone()).unwrap_or_default();
         p.a = joindre(&a);
         p.cc = joindre(&cc);
         p.cci = joindre(&paires(m.bcc()));
@@ -489,6 +495,19 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
         p.envoi_differe = echeance(brut).unwrap_or(0);
         return p;
     }
+
+    let est_propre = |adresse: &str| propres.iter().any(|x| x.eq_ignore_ascii_case(adresse));
+    // D'où écrire (0.6.7) : l'adresse de l'utilisateur à qui le message était
+    // adressé, ou d'où il l'avait lui-même écrit ; à défaut, celle où le
+    // serveur l'a remis (alias, liste, copie cachée).
+    p.de = de
+        .iter()
+        .chain(&a)
+        .chain(&cc)
+        .map(|(_, x)| x.clone())
+        .chain(remis_a(&m))
+        .find(|x| est_propre(x))
+        .unwrap_or_default();
 
     let citation = {
         let mut bloc = String::from("\n\n________________________________\n");
@@ -527,7 +546,6 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
         v if !v.is_empty() => v,
         _ => de,
     };
-    let est_propre = |adresse: &str| propres.iter().any(|x| x.eq_ignore_ascii_case(adresse));
     // Répondre à son propre message : on écrit à ses destinataires d'origine.
     let cible = if !cible.is_empty() && cible.iter().all(|(_, x)| est_propre(x)) { a.clone() } else { cible };
     p.a = joindre(&cible);
@@ -549,6 +567,17 @@ pub fn preparer(brut: &[u8], mode: &str, propres: &[String]) -> Preparation {
         }
     }
     p
+}
+
+/// Adresses de remise posées par les serveurs (`Delivered-To`, `X-Original-To`) :
+/// la boîte où le message est arrivé, quand ni À ni Cc ne la nomment.
+fn remis_a(m: &mail_parser::Message<'_>) -> Vec<String> {
+    ["Delivered-To", "X-Original-To"]
+        .iter()
+        .filter_map(|&nom| m.header_raw(nom))
+        .map(|v| v.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect()
 }
 
 /// Bloc cité en HTML : deux lignes pour écrire, le trait et l'en-tête « De /
@@ -808,6 +837,36 @@ mod tests {
         let t = preparer(ORIGINAL.as_bytes(), "repondre_tous", &propres);
         assert_eq!(t.cc, "Noël <noel@exemple.fr>; compta@exemple.fr", "sans soi-même");
         assert_eq!(t.origine_mode, "repondre_tous");
+        assert_eq!(t.de, "moi@exemple.fr");
+    }
+
+    /// Autres adresses d'envoi (0.6.7) : on répond de celle à qui le message
+    /// était adressé, et elle ne revient pas en copie d'une réponse à tous.
+    #[test]
+    fn reponse_depuis_l_adresse_destinataire() {
+        let propres = vec!["moi@exemple.fr".to_string(), "Compta@Exemple.fr".to_string()];
+        let original = ORIGINAL.replace("To: moi@exemple.fr, Noël", "To: Noël");
+        let r = preparer(original.as_bytes(), "repondre", &propres);
+        assert_eq!(r.de, "compta@exemple.fr", "la boîte partagée en copie de l'original");
+        let t = preparer(original.as_bytes(), "repondre_tous", &propres);
+        assert_eq!(t.de, "compta@exemple.fr");
+        assert_eq!(t.cc, "Noël <noel@exemple.fr>", "sans l'adresse d'où l'on répond");
+        let f = preparer(original.as_bytes(), "transferer", &propres);
+        assert_eq!(f.de, "compta@exemple.fr");
+        // Adressé à soi et à la boîte partagée : la première nommée.
+        assert_eq!(preparer(ORIGINAL.as_bytes(), "repondre", &propres).de, "moi@exemple.fr");
+        // Personne de connu : l'adresse du compte, choisie par l'interface.
+        assert_eq!(preparer(original.as_bytes(), "repondre", &[]).de, "");
+        // Ni À ni Cc : l'en-tête de remise du serveur.
+        let liste = "Delivered-To: <compta@exemple.fr>\r\nFrom: liste@exemple.org\r\nTo: abonnes@exemple.org\r\n\
+            Subject: Lettre\r\nMessage-ID: <l.1@exemple.org>\r\n\r\nTexte\r\n";
+        assert_eq!(preparer(liste.as_bytes(), "repondre", &propres).de, "compta@exemple.fr");
+        // Son propre message, écrit depuis la boîte partagée : on en repart.
+        let envoye = "From: compta@exemple.fr\r\nTo: helene@exemple.fr\r\nSubject: Relance\r\n\
+            Message-ID: <e.1@exemple.fr>\r\n\r\nTexte\r\n";
+        let r = preparer(envoye.as_bytes(), "repondre", &propres);
+        assert_eq!(r.de, "compta@exemple.fr");
+        assert_eq!(r.a, "helene@exemple.fr");
     }
 
     #[test]
@@ -910,6 +969,7 @@ mod tests {
         let f = fabriquer(&r, 1_790_000_000, &[]).unwrap();
         let b = preparer(&f.copie, "brouillon", &[]);
         assert_eq!(b.html, "", "brouillon en texte brut : pas de HTML inventé");
+        assert_eq!(b.de, "moi@exemple.fr", "repris depuis l'adresse où il a été écrit");
         assert_eq!(b.a, "noel@exemple.fr");
         assert_eq!(b.cci, "archive@exemple.fr");
         assert_eq!(b.objet, "Brouillon");

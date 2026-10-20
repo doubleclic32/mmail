@@ -164,6 +164,21 @@ ApplicationWindow {
     readonly property string noyau: socle.noyau
     // Comptes du profil, pour le menu « Comptes » : { compte, adresse, hote }.
     property var comptesConnus: []
+    // Adresses proposées dans le champ « De » : celle de chaque compte, puis
+    // ses autres adresses d'envoi (0.6.7) — { compte, adresse, compteAdresse }.
+    readonly property var expediteursConnus: {
+        var table = {}
+        try { table = JSON.parse(reglagesRedaction.adressesEnvoi) } catch (e) { table = {} }
+        var liste = []
+        for (var i = 0; i < comptesConnus.length; ++i) {
+            var c = comptesConnus[i]
+            liste.push({ compte: c.compte, adresse: c.adresse, compteAdresse: c.adresse })
+            var autres = Array.isArray(table[c.adresse]) ? table[c.adresse] : []
+            for (var k = 0; k < autres.length; ++k)
+                liste.push({ compte: c.compte, adresse: autres[k], compteAdresse: c.adresse })
+        }
+        return liste
+    }
     // Rédactions gardées sur le poste par une session précédente.
     property var redactionsRetrouvees: []
     // Lien de configuration en cours de lecture, rendu au dialogue s'il échoue.
@@ -305,10 +320,14 @@ ApplicationWindow {
 
     // Rédaction : identité et signature de chaque compte, en JSON
     // (adresse → {nom, signature, nouveaux, reponses}) ; mise en forme par défaut.
+    // Autres adresses d'envoi de chaque compte (0.6.7) — boîtes partagées,
+    // alias que le serveur lui laisse employer —, en JSON (adresse du compte →
+    // [adresses]) ; chacune peut avoir son identité.
     Settings {
         id: reglagesRedaction
         category: "redaction"
         property string identites: "{}"
+        property string adressesEnvoi: "{}"
         property bool miseEnForme: true
     }
 
@@ -2320,6 +2339,7 @@ ApplicationWindow {
         dlgCompte.champAdresse.text = compte ? compte.adresse : ""
         dlgCompte.champHote.text = compte ? compte.hote : ""
         dlgCompte.champHoteEnvoi.text = compte && compte.hoteEnvoi ? compte.hoteEnvoi : ""
+        dlgCompte.champAdressesEnvoi.text = compte ? adressesEnvoi(compte.adresse).join(" ; ") : ""
         dlgCompte.champMotDePasse.text = ""
         dlgCompte.caseMemoriser.checked = reglages.memoriser
         dlgCompte.noteCompte.text = note
@@ -2434,6 +2454,8 @@ ApplicationWindow {
         var nouveau = dlgCompte.compteId === 0
         var motDePasse = dlgCompte.champMotDePasse.text
         dlgCompte.champMotDePasse.text = ""
+        if (dlgCompte.modification)
+            appliquerAdressesEnvoi(adresse, dlgCompte.champAdressesEnvoi.text)
         if (dlgCompte.oauth) {
             // Rien à appliquer ici : la reconnexion passe par son bouton.
             demandeSuivante()
@@ -2456,6 +2478,22 @@ ApplicationWindow {
         if (boite.connecter(hote, adresse, motDePasse) && nouveau)
             boite.poserServeurEnvoi(adresse, hoteEnvoi)
         demandeSuivante()
+    }
+
+    /// Autres adresses d'envoi saisies dans « Modifier le compte… » : MMail ne
+    /// fait que les proposer dans « De », c'est le serveur qui accepte ou non
+    /// d'envoyer en leur nom.
+    function appliquerAdressesEnvoi(adresse, texte) {
+        var lues = lireAdressesEnvoi(texte, adresse)
+        var avant = adressesEnvoi(adresse)
+        if (JSON.stringify(lues.adresses) !== JSON.stringify(avant)) {
+            poserAdressesEnvoi(adresse, lues.adresses)
+            messageEtat.texte = lues.adresses.length > 0
+                    ? qsTr("Adresses d'envoi de %1 : %2.").arg(adresse).arg(lues.adresses.join(", "))
+                    : qsTr("%1 n'envoie plus que de sa propre adresse.").arg(adresse)
+        }
+        if (lues.invalides.length > 0)
+            messageEtat.texte = qsTr("Adresse d'envoi écartée, invalide : %1.").arg(lues.invalides.join(", "))
     }
 
     /// « Modifier le compte… ». Le compte se reconnaît à son adresse : le
@@ -3542,6 +3580,70 @@ ApplicationWindow {
         reglagesRedaction.identites = JSON.stringify(table)
     }
 
+    /// Vrai si l'adresse a son propre nom et sa propre signature.
+    function aUneIdentite(adresse) {
+        var table = {}
+        try { table = JSON.parse(reglagesRedaction.identites) } catch (e) { table = {} }
+        return table[adresse] !== undefined
+    }
+
+    /// Identité d'une adresse du champ « De » : la sienne si elle en a une,
+    /// sinon celle de son compte — une boîte partagée signe d'abord comme la
+    /// personne qui écrit.
+    function identiteExpediteur(e) {
+        if (!e)
+            return identite("")
+        return identite(aUneIdentite(e.adresse) ? e.adresse : e.compteAdresse)
+    }
+
+    /// Autres adresses d'envoi du compte d'adresse `adresse`.
+    function adressesEnvoi(adresse) {
+        var table = {}
+        try { table = JSON.parse(reglagesRedaction.adressesEnvoi) } catch (e) { table = {} }
+        return Array.isArray(table[adresse]) ? table[adresse] : []
+    }
+
+    function poserAdressesEnvoi(adresse, liste) {
+        var table = {}
+        try { table = JSON.parse(reglagesRedaction.adressesEnvoi) } catch (e) { table = {} }
+        if (liste.length > 0)
+            table[adresse] = liste
+        else
+            delete table[adresse]
+        reglagesRedaction.adressesEnvoi = JSON.stringify(table)
+    }
+
+    /// Adresses saisies dans « Modifier le compte… », séparées par « ; », « , »
+    /// ou des blancs : sans doublon ni l'adresse du compte, et les invalides à
+    /// part.
+    function lireAdressesEnvoi(texte, adresseCompte) {
+        var adresses = [], invalides = []
+        var vues = {}
+        vues[adresseCompte.toLowerCase()] = true
+        var morceaux = texte.split(/[;,\s]+/)
+        for (var i = 0; i < morceaux.length; ++i) {
+            var a = morceaux[i].trim()
+            if (a.length === 0)
+                continue
+            if (!/^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>".]+$/.test(a)) {
+                invalides.push(a)
+                continue
+            }
+            if (vues[a.toLowerCase()])
+                continue
+            vues[a.toLowerCase()] = true
+            adresses.push(a)
+        }
+        return { adresses: adresses, invalides: invalides }
+    }
+
+    function adresseDuCompte(compte) {
+        for (var i = 0; i < comptesConnus.length; ++i)
+            if (comptesConnus[i].compte === compte)
+                return comptesConnus[i].adresse
+        return ""
+    }
+
     /// Ouvre une rédaction : une fenêtre à part sur le bureau, comme Outlook ;
     /// en vue compacte (téléphone), un volet qui couvre la fenêtre principale.
     function ouvrirRedaction(compte) {
@@ -3619,7 +3721,7 @@ ApplicationWindow {
         }
         var r = ouvrirRedaction(compte)
         r.attendre(mode === "brouillon" ? qsTr("Reprise du brouillon…") : qsTr("Préparation…"))
-        if (!boite.preparer(uid, mode, r.jeton))
+        if (!boite.preparer(uid, mode, r.jeton, JSON.stringify(adressesEnvoi(adresseDuCompte(compte)))))
             r.echouer(boite.erreur.length > 0 ? boite.erreur : qsTr("Préparation impossible."))
     }
 
@@ -4524,6 +4626,17 @@ ApplicationWindow {
                     }
                 })
                 tic064.start()
+            }
+            // Scénario « non-lu » (0.6.7) : « Marquer comme non lu » tient, même
+            // juste après l'affichage ou pendant le chargement du message.
+            if (essai.scenario === "non-lu")
+                scenarios.lancerScenarioNonLu()
+            // Scénario « adresses-envoi » (0.6.7) : le compte connecté, ses
+            // autres adresses d'envoi dans « De », sans autre échange.
+            if (essai.scenario === "adresses-envoi") {
+                var attenteAdresses = Qt.createQmlObject('import QtQuick; Timer { interval: 4000 }', fenetre)
+                attenteAdresses.triggered.connect(scenarios.etapeScenarioAdressesEnvoi)
+                attenteAdresses.start()
             }
             if (essai.scenario.indexOf("mise-a-jour") === 0) {
                 reglagesMiseAJour.version = ""

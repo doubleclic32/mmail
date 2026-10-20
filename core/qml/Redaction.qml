@@ -64,18 +64,37 @@ Page {
     property bool noteErreur: false
     readonly property string titre: champObjet.text.length > 0 ? champObjet.text : qsTr("Nouveau message")
 
+    /// Le champ « De » sur l'adresse du compte `compte`.
     function choisirCompte(compte) {
-        for (var i = 0; i < fenetre.comptesConnus.length; ++i)
-            if (fenetre.comptesConnus[i].compte === compte)
+        var liste = fenetre.expediteursConnus
+        for (var i = 0; i < liste.length; ++i) {
+            if (liste[i].compte === compte) {
                 choixCompte.currentIndex = i
+                return
+            }
+        }
     }
+    /// Le champ « De » sur `adresse`, si c'est l'une de celles du compte
+    /// choisi ; sinon il ne bouge pas.
+    function choisirExpediteur(adresse) {
+        var c = compteChoisi()
+        if (!c || !adresse)
+            return
+        var liste = fenetre.expediteursConnus
+        for (var i = 0; i < liste.length; ++i) {
+            if (liste[i].compte === c.compte && liste[i].adresse.toLowerCase() === adresse.toLowerCase()) {
+                choixCompte.currentIndex = i
+                return
+            }
+        }
+    }
+    /// L'adresse choisie dans « De » : { compte, adresse, compteAdresse }.
     function compteChoisi() {
-        return fenetre.comptesConnus[choixCompte.currentIndex] || null
+        return fenetre.expediteursConnus[choixCompte.currentIndex] || null
     }
 
     function identiteChoisie() {
-        var c = compteChoisi()
-        return fenetre.identite(c ? c.adresse : "")
+        return fenetre.identiteExpediteur(compteChoisi())
     }
 
     function pret() {
@@ -141,6 +160,8 @@ Page {
     /// Pré-remplit la rédaction (réponse, transfert, brouillon repris).
     function remplir(p) {
         chargement = true
+        // L'adresse d'abord : la signature se prend d'elle.
+        choisirExpediteur(p.de || "")
         champA.text = p.a || ""
         champCc.text = p.cc || ""
         champCci.text = p.cci || ""
@@ -543,9 +564,9 @@ Page {
             Label { text: qsTr("De :") }
             ComboBox {
                 id: choixCompte
-                model: fenetre.comptesConnus
-                displayText: currentIndex >= 0 && fenetre.comptesConnus[currentIndex]
-                             ? fenetre.comptesConnus[currentIndex].adresse : ""
+                model: fenetre.expediteursConnus
+                displayText: currentIndex >= 0 && fenetre.expediteursConnus[currentIndex]
+                             ? fenetre.expediteursConnus[currentIndex].adresse : ""
                 delegate: ItemDelegate {
                     required property var modelData
                     width: ListView.view ? ListView.view.width : implicitWidth

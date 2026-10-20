@@ -1062,4 +1062,148 @@ QtObject {
             Qt.quit()
         }
     }
+
+
+    /// Scénario « non-lu » (0.6.7, demande de Gwenaëlle du 19/10) : un
+    /// « Marquer comme non lu » doit tenir, sur la ligne, dans l'index et sur le
+    /// serveur. A : message affiché puis marqué lu à l'affichage, puis non lu
+    /// avant toute veille — la 0.6.6 laissait la ligne en « lu ». B : non lu
+    /// demandé pendant le chargement du message — la 0.6.6 le remarquait lu
+    /// sur le serveur. La boîte de réception doit compter deux messages.
+    function lancerScenarioNonLu() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, a: 0, b: 0, echecs: 0 }
+        var luDansLaListe = function(uid) {
+            var i = indexDe(uid)
+            return i >= 0 ? modeleMessages.get(i).lu : null
+        }
+        var luDansLIndex = function(uid) {
+            var l = JSON.parse(boite.messagesParUid(String(uid)))
+            return l.length > 0 ? l[0].lu : null
+        }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                if (modeleMessages.count < 2) {
+                    bilan("non-lu : " + modeleMessages.count + " message(s) en boîte de réception, il en faut deux", false)
+                    suivi.n = 39
+                    return
+                }
+                suivi.a = modeleMessages.get(0).uid
+                suivi.b = modeleMessages.get(1).uid
+                // Les deux non lus au départ.
+                boite.marquerLu(suivi.a + "," + suivi.b, false)
+                rafraichirListe()
+            } else if (suivi.n === 10) {
+                // A : affiché, donc marqué lu à l'affichage.
+                choisir(indexDe(suivi.a), 0)
+            } else if (suivi.n === 13) {
+                bilan("A : marqué lu à l'affichage | liste " + luDansLaListe(suivi.a), luDansLaListe(suivi.a) === true)
+                marquerSelection(false)
+                bilan("A : « Marquer comme non lu » aussitôt | liste " + luDansLaListe(suivi.a)
+                      + " | index " + luDansLIndex(suivi.a),
+                      luDansLaListe(suivi.a) === false && luDansLIndex(suivi.a) === false)
+            } else if (suivi.n === 15) {
+                // B : choisi, le chargement demandé, et « non lu » dans le même
+                // tour de la boucle d'événements — avant que le corps n'arrive.
+                choisir(indexDe(suivi.b), 0)
+                minuterieCorps.stop()
+                boite.demanderCorps(suivi.b)
+                marquerSelection(false)
+            } else if (suivi.n === 19) {
+                bilan("B : non lu pendant le chargement | liste " + luDansLaListe(suivi.b)
+                      + " | index " + luDansLIndex(suivi.b),
+                      luDansLaListe(suivi.b) === false && luDansLIndex(suivi.b) === false)
+                // Le serveur : un autre dossier, puis la boîte de réception
+                // relue — ses drapeaux reviennent du serveur.
+                fenetre.selection = ({})
+                uidCourant = 0
+                ouvrirDossier(c.compte, "Essais")
+            } else if (suivi.n === 22) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 24) {
+                boite.actualiser()
+            } else if (suivi.n === 30) {
+                bilan("serveur : A " + luDansLIndex(suivi.a) + " | B " + luDansLIndex(suivi.b),
+                      luDansLIndex(suivi.a) === false && luDansLIndex(suivi.b) === false)
+                console.log("scenario: non-lu, " + (suivi.echecs === 0 ? "tout OK" : suivi.echecs + " échec(s)"))
+                suivi.n = 39
+            } else if (suivi.n >= 40) {
+                tic.stop()
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénario « adresses-envoi » (0.6.7) : les autres adresses d'envoi d'un
+    /// compte dans le champ « De », celle d'une réponse ou d'un brouillon
+    /// reprise, l'identité du compte reprise faute de la sienne. Sans réseau
+    /// après la connexion.
+    function etapeScenarioAdressesEnvoi() {
+        var echecs = 0
+        var bilan = function(texte, bon) {
+            if (!bon)
+                echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var c = comptesConnus[0]
+        var lues = lireAdressesEnvoi("Partagee@Exemple.fr ; alias@exemple.fr, pas-une-adresse ; partagee@exemple.fr "
+                                     + c.adresse, c.adresse)
+        bilan("saisie lue : " + JSON.stringify(lues),
+              JSON.stringify(lues.adresses) === JSON.stringify(["Partagee@Exemple.fr", "alias@exemple.fr"])
+              && JSON.stringify(lues.invalides) === JSON.stringify(["pas-une-adresse"]))
+        poserAdressesEnvoi(c.adresse, lues.adresses)
+        poserIdentite(c.adresse, { nom: "Personne Essai", signature: "Signature du compte", html: "",
+                                   nouveaux: true, reponses: true })
+        var de = expediteursConnus.filter(function(e) { return e.compte === c.compte })
+                                  .map(function(e) { return e.adresse })
+        bilan("champ « De » : " + de.join(" | "),
+              JSON.stringify(de) === JSON.stringify([c.adresse, "Partagee@Exemple.fr", "alias@exemple.fr"]))
+        var r = ouvrirRedaction(c.compte)
+        r.pret()
+        var v = r.contenu()
+        bilan("nouveau message : " + v.de + " | " + v.nom, v.de === c.adresse && v.nom === "Personne Essai")
+        // Réponse à un message adressé à la boîte partagée (casse différente).
+        r.remplir({ mode: "repondre", de: "partagee@exemple.fr", a: "client@exemple.org", objet: "RE : essai" })
+        v = r.contenu()
+        bilan("réponse depuis la partagée : " + v.de + " | " + v.nom + " | signature du compte "
+              + (r.htmlActuel().indexOf("Signature du compte") >= 0 || v.texte.indexOf("Signature du compte") >= 0),
+              v.de === "Partagee@Exemple.fr" && v.nom === "Personne Essai")
+        // Une adresse qui n'est pas du compte : le champ ne bouge pas.
+        r.remplir({ mode: "brouillon", de: "inconnue@exemple.fr", a: "client@exemple.org" })
+        bilan("adresse étrangère ignorée : " + r.contenu().de, r.contenu().de === "Partagee@Exemple.fr")
+        r.conteneur.fermerRedaction()
+        // Son identité propre l'emporte sur celle du compte.
+        poserIdentite("alias@exemple.fr", { nom: "Accueil", signature: "", html: "", nouveaux: true, reponses: true })
+        var r2 = ouvrirRedaction(c.compte)
+        r2.remplir({ mode: "brouillon", de: "alias@exemple.fr", a: "client@exemple.org" })
+        bilan("identité propre : " + r2.contenu().nom, r2.contenu().nom === "Accueil")
+        r2.conteneur.fermerRedaction()
+        // « Nom et signature » sur une adresse sans identité : proposée celle du
+        // compte, rien d'écrit si l'on n'y touche pas.
+        dlgIdentite.ouvrir(c.compte)
+        dlgIdentite.choisirAdresse("Partagee@Exemple.fr")
+        var nom = dlgIdentite.valeurs().nom
+        dlgIdentite.accept()
+        bilan("nom et signature repris du compte : " + nom + " | rien d'écrit " + !aUneIdentite("Partagee@Exemple.fr"),
+              nom === "Personne Essai" && !aUneIdentite("Partagee@Exemple.fr"))
+        // « Modifier le compte… » : le champ montre la liste, une saisie vide la retire.
+        modifierCompte(c.compte)
+        var affiche = dlgCompte.champAdressesEnvoi.text
+        dlgCompte.champAdressesEnvoi.text = ""
+        dlgCompte.accept()
+        bilan("modifier le compte : « " + affiche + " » puis retirées -> " + JSON.stringify(adressesEnvoi(c.adresse)),
+              affiche === "Partagee@Exemple.fr ; alias@exemple.fr" && adressesEnvoi(c.adresse).length === 0)
+        console.log("scenario: adresses-envoi, " + (echecs === 0 ? "tout OK" : echecs + " échec(s)"))
+        Qt.quit()
+    }
 }

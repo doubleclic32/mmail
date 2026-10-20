@@ -447,10 +447,12 @@ pub mod qobject {
 
         /// Prépare une rédaction à partir d'un message du dossier ouvert.
         /// `mode` : « repondre », « repondre_tous », « transferer » ou
-        /// « brouillon ». Issue : `preparation`, ou `echecRedaction`.
+        /// « brouillon » ; `adresses` : les autres adresses d'envoi du compte
+        /// (JSON, liste), reconnues comme siennes. Issue : `preparation`, ou
+        /// `echecRedaction`.
         #[qinvokable]
         #[cxx_name = "preparer"]
-        fn preparer(self: Pin<&mut Boite>, uid: i32, mode: &QString, jeton: &QString) -> bool;
+        fn preparer(self: Pin<&mut Boite>, uid: i32, mode: &QString, jeton: &QString, adresses: &QString) -> bool;
 
         /// Envoie un message rédigé (JSON, cf. `redaction::Redaction`) depuis
         /// le compte `compte`. Issue : `envoye`, ou `echecRedaction`.
@@ -1035,7 +1037,8 @@ enum Commande {
     /// Reprendre les déplacements interrompus dont ce compte est la source.
     Reprendre(HashMap<i64, Identifiants>),
     /// Préparer une réponse, un transfert ou la reprise d'un brouillon.
-    Preparer { chemin: String, uid: u32, mode: String, jeton: String },
+    /// `autres` : les autres adresses d'envoi du compte (0.6.7).
+    Preparer { chemin: String, uid: u32, mode: String, jeton: String, autres: Vec<String> },
     /// Envoyer : il faut le mot de passe, que le fil a oublié une fois la
     /// session IMAP ouverte — il revient avec la commande.
     Envoyer { redaction: Redaction, identifiants: Identifiants },
@@ -1131,7 +1134,9 @@ enum Issue {
     Connecte,
     Arborescence,
     Dossier { chemin: String, veille: bool },
-    Corps { uid: u32, lu: Lu, marque: bool },
+    /// `non_lu` : le message l'était à sa lecture, l'interface le marque
+    /// « lu » (cf. `marquer_lu_a_l_affichage`).
+    Corps { chemin: String, uid: u32, lu: Lu, non_lu: bool, numero: u64 },
     /// Un lot du préchargement est fait ; `reste` s'il en faut un autre. Reste
     /// dans le fil : l'interface n'en sait rien.
     Precharge { chemin: String, reste: bool },
@@ -1221,6 +1226,10 @@ pub struct BoiteRust {
     courant: Option<(i64, String, i64)>,
     /// Liste envoyée en dernier à l'interface (cf. `ListeEnvoyee`).
     liste: Option<ListeEnvoyee>,
+    /// Marquages lu / non lu demandés par l'utilisateur : par message (dossier,
+    /// UID), le numéro d'affichage (`AFFICHAGE`) du moment. Un affichage
+    /// demandé avant ne marque plus le message « lu » (0.6.7).
+    marquages: HashMap<(i64, u32), u64>,
     agenda_occupe: bool,
     /// Comptes dont le serveur a accepté le mot de passe pendant cette
     /// session : seule leur clé sert à la sauvegarde.
@@ -1242,6 +1251,25 @@ struct ListeEnvoyee {
     empreintes: Vec<(u32, i64, u64)>,
     fin: Option<(i64, u32)>,
     version: i64,
+}
+
+impl ListeEnvoyee {
+    /// L'interface ne montre plus, pour ces messages, ce que dit la liste
+    /// envoyée : leur empreinte ne correspond plus à rien, la prochaine
+    /// différence les renvoie, et la version oubliée la fait calculer.
+    fn oublier(&mut self, uids: &[u32]) {
+        for e in self.empreintes.iter_mut().filter(|e| uids.contains(&e.0)) {
+            e.2 = 0;
+        }
+        self.version = -1;
+    }
+}
+
+/// Vrai si l'utilisateur a marqué ce message (lu ou non lu) après la demande
+/// d'affichage `numero` : le marquage automatique de cet affichage n'a plus
+/// cours.
+fn marque_depuis(marquages: &HashMap<(i64, u32), u64>, dossier: i64, uid: u32, numero: u64) -> bool {
+    marquages.get(&(dossier, uid)).is_some_and(|&n| n >= numero)
 }
 
 /// Messages de la première page d'une liste : de quoi remplir l'écran le plus
@@ -1268,6 +1296,7 @@ impl Default for BoiteRust {
             generation: 0,
             courant: None,
             liste: None,
+            marquages: HashMap::new(),
             agenda_occupe: false,
             authentifies: HashSet::new(),
             sauvegarde_en_cours: false,
@@ -2623,8 +2652,54 @@ impl qobject::Boite {
         if let Some(magasin) = self.magasin.as_ref() {
             let _ = magasin.marquer_lu(id, &uids, lu);
         }
+        self.as_mut().noter_marquages(id, &uids);
         self.as_mut().reviser();
         self.as_mut().envoyer(compte, Commande::MarquerLu { chemin, uids, lu, discret: false })
+    }
+
+    /// Retient que l'utilisateur vient de marquer ces messages : l'affichage en
+    /// cours de l'un d'eux, demandé avant, ne le marquera plus « lu ». Sans
+    /// cela, « Marquer comme non lu » fait pendant le chargement du message
+    /// était défait par le marquage automatique, parti après lui (demande de
+    /// Gwenaëlle, 19/10).
+    fn noter_marquages(mut self: Pin<&mut Self>, dossier: i64, uids: &[u32]) {
+        let numero = AFFICHAGE.load(Ordering::SeqCst);
+        let mut r = self.as_mut().rust_mut();
+        // Seuls comptent les affichages en cours : la table ne grossit pas.
+        if r.marquages.len() > 1000 {
+            r.marquages.clear();
+        }
+        for &uid in uids {
+            r.marquages.insert((dossier, uid), numero);
+        }
+    }
+
+    /// Marque « lu » le message affiché par la demande `numero` — sauf si
+    /// l'utilisateur l'a marqué lui-même depuis. L'index et la ligne de la
+    /// liste changent tout de suite, sans relire le dossier ; le serveur suit.
+    fn marquer_lu_a_l_affichage(mut self: Pin<&mut Self>, compte: i64, chemin: String, dossier: i64, uid: u32, numero: u64) {
+        if marque_depuis(&self.marquages, dossier, uid, numero) {
+            return;
+        }
+        if let Some(magasin) = self.magasin.as_ref() {
+            let _ = magasin.marquer_lu(dossier, &[uid], true);
+        }
+        self.as_mut().oublier_lignes(dossier, &[uid]);
+        self.as_mut().reviser();
+        self.as_mut().lus_modifies(&QString::from(&uid.to_string()), true);
+        self.as_mut().envoyer(compte, Commande::MarquerLu { chemin, uids: vec![uid], lu: true, discret: true });
+    }
+
+    /// Lignes changées dans l'interface sans `changements_liste` (`lus_modifies`) :
+    /// la liste envoyée ne sait plus ce qu'elles montrent, le rafraîchissement
+    /// suivant les renvoie. Sinon, un message marqué « lu » à l'affichage puis
+    /// « non lu » avant la veille suivante gardait sa ligne en « lu » : l'index
+    /// disait non lu, comme la liste envoyée, et rien ne semblait à renvoyer.
+    fn oublier_lignes(mut self: Pin<&mut Self>, dossier: i64, uids: &[u32]) {
+        let mut r = self.as_mut().rust_mut();
+        if let Some(liste) = r.liste.as_mut().filter(|l| l.dossier == dossier) {
+            liste.oublier(uids);
+        }
     }
 
     pub fn marquer_suivi(mut self: Pin<&mut Self>, uids: &QString, suivi: bool) -> bool {
@@ -3018,12 +3093,18 @@ impl qobject::Boite {
         }
     }
 
-    pub fn preparer(mut self: Pin<&mut Self>, uid: i32, mode: &QString, jeton: &QString) -> bool {
+    pub fn preparer(mut self: Pin<&mut Self>, uid: i32, mode: &QString, jeton: &QString, adresses: &QString) -> bool {
         let Some((compte, chemin, _)) = self.courant.clone() else {
             return false;
         };
-        let commande =
-            Commande::Preparer { chemin, uid: uid as u32, mode: mode.to_string(), jeton: jeton.to_string() };
+        let autres: Vec<String> = serde_json::from_str(&adresses.to_string()).unwrap_or_default();
+        let commande = Commande::Preparer {
+            chemin,
+            uid: uid as u32,
+            mode: mode.to_string(),
+            jeton: jeton.to_string(),
+            autres,
+        };
         self.as_mut().envoyer(compte, commande)
     }
 
@@ -3322,21 +3403,10 @@ impl qobject::Boite {
         if let Some(magasin) = self.magasin.as_ref() {
             let _ = magasin.poser_pieces(l.dossier, l.uid, preparation.pieces != "[]");
         }
-        self.as_mut().recevoir(l.compte, Issue::Corps { uid: l.uid, lu: preparation, marque: false });
         // Le marquage « lu » part au serveur s'il est joignable ; hors
-        // connexion, le message reste non lu. L'index et la ligne de la liste
-        // changent tout de suite, sans relire le dossier.
-        if !l.brut && !l.lu && l.en_ligne {
-            if let Some(magasin) = self.magasin.as_ref() {
-                let _ = magasin.marquer_lu(l.dossier, &[l.uid], true);
-            }
-            self.as_mut().reviser();
-            self.as_mut().lus_modifies(&QString::from(&l.uid.to_string()), true);
-            self.as_mut().envoyer(
-                l.compte,
-                Commande::MarquerLu { chemin: l.chemin, uids: vec![l.uid], lu: true, discret: true },
-            );
-        }
+        // connexion, le message reste non lu.
+        let non_lu = !l.brut && !l.lu && l.en_ligne;
+        self.as_mut().recevoir(l.compte, Issue::Corps { chemin: l.chemin, uid: l.uid, lu: preparation, non_lu, numero });
     }
 
     /// Lance le fil de travail d'un compte, avec des commandes à traiter dès la
@@ -3489,13 +3559,15 @@ impl qobject::Boite {
                     self.as_mut().filtrer(compte, "INBOX", false);
                 }
             }
-            Issue::Corps { uid, lu, marque } => {
-                if marque {
+            Issue::Corps { chemin, uid, lu, non_lu, numero } => {
+                if non_lu {
                     // Les compteurs de l'arborescence, et la seule ligne du
                     // message : relire la liste entière ralentissait le passage
                     // d'un message à l'autre.
-                    self.as_mut().reviser();
-                    self.as_mut().lus_modifies(&QString::from(&uid.to_string()), true);
+                    let dossier = self.magasin.as_ref().and_then(|m| m.dossier_id(compte, &chemin).ok());
+                    if let Some(dossier) = dossier {
+                        self.as_mut().marquer_lu_a_l_affichage(compte, chemin, dossier, uid, numero);
+                    }
                 }
                 self.as_mut().corps_recu(
                     uid as i32,
@@ -4227,7 +4299,7 @@ impl Travail {
                 let atelier = dossier_affichage(&self.profil);
                 let cache = Cache::du_profil(&self.profil);
                 match lire_corps(e, compte, &chemin, uid, brut, distantes, &atelier, &cache, numero) {
-                    Ok(Some((lu, marque))) => Some(Issue::Corps { uid, lu, marque }),
+                    Ok(Some((lu, non_lu))) => Some(Issue::Corps { chemin, uid, lu, non_lu, numero }),
                     // Un autre message a été demandé entre-temps.
                     Ok(None) => None,
                     Err(err) => Some(echec("message", format!("lecture du message {uid} : {err}"), &err)),
@@ -4327,7 +4399,7 @@ impl Travail {
                 e.identites.extend(identites);
                 self.reprendre(e)
             }
-            Commande::Preparer { chemin, uid, mode, jeton } => Some(match self.preparer(e, &chemin, uid, &mode) {
+            Commande::Preparer { chemin, uid, mode, jeton, autres } => Some(match self.preparer(e, &chemin, uid, &mode, &autres) {
                 Ok(p) => Issue::Prepare { jeton, contenu: serde_json::to_string(&p).unwrap_or_default() },
                 Err(message) => Issue::EchecRedaction { jeton, message },
             }),
@@ -4905,11 +4977,13 @@ impl Travail {
         (Redaction { html, ..r.clone() }, images)
     }
 
-    fn preparer(&self, e: &mut Etabli, chemin: &str, uid: u32, mode: &str) -> Result<Preparation, String> {
+    fn preparer(&self, e: &mut Etabli, chemin: &str, uid: u32, mode: &str, autres: &[String]) -> Result<Preparation, String> {
         let octets = message_entier(e, &self.profil, self.compte, chemin, uid)
             .map_err(|x| format!("lecture du message : {x}"))?;
-        let propres: Vec<String> =
+        // L'adresse du compte, puis ses autres adresses d'envoi.
+        let mut propres: Vec<String> =
             e.magasin.compte_par_id(self.compte).ok().flatten().map(|c| vec![c.adresse]).unwrap_or_default();
+        propres.extend(autres.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()));
         let mut p = redaction::preparer(&octets, mode, &propres);
         if mode == "brouillon" {
             p.brouillon_uid = uid;
@@ -5122,10 +5196,10 @@ struct Lu {
     invitation: Option<crate::invitation::Extrait>,
 }
 
-/// Lit le corps d'un message du dossier ouvert ; un message affiché (et non sa
-/// source) est marqué comme lu, comme le fait Outlook. Un message de moins d'un
-/// mois est gardé sur le poste au passage. Rend de quoi l'afficher, et vrai si
-/// le marquage a eu lieu.
+/// Lit le corps d'un message du dossier ouvert. Un message de moins d'un mois
+/// est gardé sur le poste au passage. Rend de quoi l'afficher, et vrai si le
+/// message, affiché (et non sa source), était non lu : l'interface le marque
+/// alors comme lu, comme le fait Outlook.
 #[allow(clippy::too_many_arguments)]
 fn lire_corps(
     e: &mut Etabli,
@@ -5174,14 +5248,11 @@ fn lire_corps(
     // Le message entier dit s'il porte des pièces jointes : cela prime sur ce
     // que ses en-têtes laissaient supposer dans la liste.
     e.magasin.poser_pieces(id, uid, lu.pieces != "[]")?;
-    let mut marque = false;
-    if !brut {
-        if matches!(e.magasin.message(id, uid)?, Some(m) if !m.lu) {
-            synchro::marquer_lu(&mut e.client, &e.magasin, compte, chemin, &[uid], true)?;
-            marque = true;
-        }
-    }
-    Ok(Some((lu, marque)))
+    // Le marquage « lu » se décide dans l'interface, qui sait si l'utilisateur
+    // a marqué le message entre-temps. Les images distantes d'un message déjà
+    // affiché ne le marquent pas : marqué « non lu », il le reste.
+    let non_lu = !brut && !distantes && matches!(e.magasin.message(id, uid)?, Some(m) if !m.lu);
+    Ok(Some((lu, non_lu)))
 }
 
 /// De quoi afficher un message entier : sa source, son HTML assaini et ses
@@ -5965,6 +6036,43 @@ mod tests {
         // La date voyage avec chaque ligne : l'interface s'en sert pour placer.
         assert_eq!(v["retires"][1]["h"], 10);
         assert_eq!(v["ajoutes"][1]["h"], 15);
+    }
+
+    /// Le défaut de la 0.6.6 : 3 est marqué « lu » à l'affichage, par sa seule
+    /// ligne ; marqué « non lu » ensuite, l'index redit ce que disait la liste
+    /// envoyée, et la ligne restait « lu ». Oubliée, elle est renvoyée.
+    #[test]
+    fn ligne_marquee_a_l_affichage_renvoyee() {
+        let avant = vec![ligne(4, 40, false), ligne(3, 30, false)];
+        let mut liste = ListeEnvoyee { dossier: 1, empreintes: empreintes(&avant), fin: None, version: 7 };
+        assert_eq!(
+            changements(&liste.empreintes, &avant, &empreintes(&avant)).unwrap(),
+            r#"{"retires":[],"ajoutes":[],"modifies":[]}"#
+        );
+        liste.oublier(&[3]);
+        assert_eq!(liste.version, -1);
+        let json = changements(&liste.empreintes, &avant, &empreintes(&avant)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let modifies: Vec<u64> = v["modifies"].as_array().unwrap().iter().map(|m| m["uid"].as_u64().unwrap()).collect();
+        assert_eq!(modifies, vec![3]);
+        assert_eq!(v["modifies"][0]["lu"], false);
+        assert!(v["ajoutes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn marquage_de_l_utilisateur_apres_l_affichage() {
+        let mut marquages = HashMap::new();
+        // Jamais marqué : l'affichage marque « lu ».
+        assert!(!marque_depuis(&marquages, 1, 3, 5));
+        // Marqué pendant l'affichage n° 5 (demande 5, puis Ctrl+U) : celui-ci
+        // ne marque plus.
+        marquages.insert((1, 3), 5);
+        assert!(marque_depuis(&marquages, 1, 3, 5));
+        // Rouvert ensuite (affichage 6) : il se marque de nouveau « lu ».
+        assert!(!marque_depuis(&marquages, 1, 3, 6));
+        // Un autre message, ou le même UID dans un autre dossier : sans effet.
+        assert!(!marque_depuis(&marquages, 1, 4, 5));
+        assert!(!marque_depuis(&marquages, 2, 3, 5));
     }
 
     #[test]
