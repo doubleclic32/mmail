@@ -72,7 +72,9 @@ jobs:
           # Les épreuves de core/src/essais_serveur.rs, jusqu'ici lancées à la
           # main contre le Mailcow de MMEDIA, ici contre un Dovecot du poste de
           # construction : deux comptes jetables, séparateur « / », dossiers à
-          # rôle (SPECIAL-USE), « Essais/Clients » créé d'office. Son certificat
+          # rôle (SPECIAL-USE), « Essais/Clients » créé d'office, boîtes
+          # partagées comme chez Mailcow (`Shared/<adresse>/`, droits par
+          # SETACL, posés et retirés par l'épreuve). Son certificat
           # est signé par une autorité d'essai ajoutée au magasin du système,
           # celui que lit le client (rustls-platform-verifier) : il vérifie le
           # serveur comme chez un utilisateur. Hors champ : l'envoi SMTP et
@@ -114,6 +116,22 @@ jobs:
             args = uid=$(id -u) gid=$(id -g) home=$D/boites/%u
           }
           mail_location = maildir:~/Maildir
+          mail_plugins = acl
+          protocol imap {
+            mail_plugins = acl imap_acl
+          }
+          plugin {
+            acl = vfile
+            acl_shared_dict = file:$D/boites/partages.db
+          }
+          namespace {
+            type = shared
+            separator = /
+            prefix = Shared/%%u/
+            location = maildir:%%h/Maildir:INDEXPVT=~/Maildir/Shared/%%u
+            subscriptions = no
+            list = children
+          }
           namespace inbox {
             inbox = yes
             separator = /

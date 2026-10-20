@@ -134,6 +134,8 @@ pub struct Client {
     idle: Option<String>,
     /// Échéance de la commande en cours (`ECHEANCE_COMMANDE`).
     echeance: Option<Instant>,
+    /// Espaces des boîtes d'autres utilisateurs, une fois demandés.
+    espaces_autres: Option<Vec<(String, String)>>,
 }
 
 impl Client {
@@ -161,6 +163,7 @@ impl Client {
             selection: None,
             idle: None,
             echeance: None,
+            espaces_autres: None,
         };
         // Salutation : une seule ligne non étiquetée.
         let salutation = client.lire_ligne()?;
@@ -272,6 +275,27 @@ impl Client {
     pub fn dossiers(&mut self) -> Resultat<Vec<Dossier>> {
         let (texte, _) = self.commande("LIST \"\" \"*\"")?;
         Ok(texte.lines().filter_map(protocole::analyser_list).collect())
+    }
+
+    /// Espaces des boîtes d'autres utilisateurs (`NAMESPACE`, RFC 2342) :
+    /// demandés une fois par connexion. Vides sans la capacité ou si le
+    /// serveur refuse : les boîtes partagées ne sont alors pas reconnues,
+    /// rien d'autre n'en dépend.
+    pub fn espaces_autres(&mut self) -> Resultat<Vec<(String, String)>> {
+        if let Some(espaces) = &self.espaces_autres {
+            return Ok(espaces.clone());
+        }
+        let espaces = if self.sait("NAMESPACE") {
+            match self.commande("NAMESPACE") {
+                Ok((texte, _)) => protocole::analyser_namespace(&texte),
+                Err(Erreur::Reseau(m)) => return Err(Erreur::Reseau(m)),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        self.espaces_autres = Some(espaces.clone());
+        Ok(espaces)
     }
 
     /// Arborescence et compteurs de chaque dossier, en une commande quand le

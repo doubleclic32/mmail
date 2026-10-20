@@ -38,8 +38,8 @@ de projet interne.
   « Mise en forme » décochée, le message part en texte brut ;
 - **nom affiché et signature** par compte (menu « Comptes », « Nom et
   signature… »), ajoutée aux nouveaux messages, aux réponses, ou sur demande ;
-- **autres adresses d'envoi** d'un compte — boîtes partagées, alias que le
-  serveur lui laisse employer —, proposées dans le champ « De » (cf. « Modifier
+- **autres adresses d'envoi** d'un compte, proposées dans le champ « De » :
+  ses boîtes partagées, reconnues d'office, et les alias saisis (cf. « Modifier
   un compte ») ; une réponse ou un transfert part de celle à qui le message
   était adressé, un brouillon de celle où il a été écrit ;
 - **adresses proposées** en tapant un destinataire : celles à qui l'on a
@@ -295,6 +295,17 @@ droits d'envoi de la boîte (`sender_acl`). La copie va dans les
 éléments envoyés du compte. Chaque adresse peut avoir son nom et sa signature
 (« Nom et signature… ») ; à défaut, elle reprend ceux du compte. Elles suivent
 la sauvegarde de la configuration.
+
+**Boîtes partagées** (0.6.8) : leurs adresses sont proposées d'office, sans
+rien saisir. MMail les reconnaît dans l'arborescence du compte : l'espace des
+boîtes d'autres utilisateurs annoncé par le serveur (`NAMESPACE`, RFC 2342 —
+`Shared/` sur Mailcow), puis chaque boîte dont la boîte de réception est
+visible (`Shared/contact@exemple.fr/INBOX` sur Mailcow ; selon la configuration
+de Dovecot, `Shared/contact@exemple.fr` lui-même). Un dossier partagé seul n'en
+donne pas, ni une boîte qui est aussi un compte du profil. « Modifier le
+compte… » les rappelle. Voir une boîte et envoyer en son nom sont deux droits
+distincts : si le serveur refuse l'envoi, le message reste en rédaction avec le
+motif.
 
 ### Comptes Microsoft (Office 365, Outlook.com)
 

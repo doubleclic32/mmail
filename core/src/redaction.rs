@@ -124,7 +124,7 @@ pub fn adresses(liste: &str) -> Result<Vec<(String, String)>, String> {
     Ok(sortie)
 }
 
-fn adresse_valide(adresse: &str) -> bool {
+pub(crate) fn adresse_valide(adresse: &str) -> bool {
     let Some((local, domaine)) = adresse.rsplit_once('@') else {
         return false;
     };

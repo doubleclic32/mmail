@@ -162,18 +162,19 @@ ApplicationWindow {
         onTapped: colonneLecture.vueCorps.deselect()
     }
     readonly property string noyau: socle.noyau
-    // Comptes du profil, pour le menu « Comptes » : { compte, adresse, hote }.
+    // Comptes du profil, pour le menu « Comptes » : { compte, adresse, hote,
+    // partagees } — ces dernières, les adresses des boîtes partagées que le
+    // serveur montre au compte (0.6.8).
     property var comptesConnus: []
     // Adresses proposées dans le champ « De » : celle de chaque compte, puis
-    // ses autres adresses d'envoi (0.6.7) — { compte, adresse, compteAdresse }.
+    // ses autres adresses d'envoi — { compte, adresse, compteAdresse }.
     readonly property var expediteursConnus: {
-        var table = {}
-        try { table = JSON.parse(reglagesRedaction.adressesEnvoi) } catch (e) { table = {} }
+        var saisies = reglagesRedaction.adressesEnvoi // relu quand elles changent
         var liste = []
         for (var i = 0; i < comptesConnus.length; ++i) {
             var c = comptesConnus[i]
             liste.push({ compte: c.compte, adresse: c.adresse, compteAdresse: c.adresse })
-            var autres = Array.isArray(table[c.adresse]) ? table[c.adresse] : []
+            var autres = autresAdressesDe(c)
             for (var k = 0; k < autres.length; ++k)
                 liste.push({ compte: c.compte, adresse: autres[k], compteAdresse: c.adresse })
         }
@@ -320,9 +321,10 @@ ApplicationWindow {
 
     // Rédaction : identité et signature de chaque compte, en JSON
     // (adresse → {nom, signature, nouveaux, reponses}) ; mise en forme par défaut.
-    // Autres adresses d'envoi de chaque compte (0.6.7) — boîtes partagées,
-    // alias que le serveur lui laisse employer —, en JSON (adresse du compte →
-    // [adresses]) ; chacune peut avoir son identité.
+    // Autres adresses d'envoi saisies pour chaque compte (0.6.7) — alias,
+    // boîtes partagées que le serveur ne montre pas —, en JSON (adresse du
+    // compte → [adresses]) ; chacune peut avoir son identité, comme les
+    // boîtes partagées reconnues d'office (0.6.8).
     Settings {
         id: reglagesRedaction
         category: "redaction"
@@ -2340,6 +2342,8 @@ ApplicationWindow {
         dlgCompte.champHote.text = compte ? compte.hote : ""
         dlgCompte.champHoteEnvoi.text = compte && compte.hoteEnvoi ? compte.hoteEnvoi : ""
         dlgCompte.champAdressesEnvoi.text = compte ? adressesEnvoi(compte.adresse).join(" ; ") : ""
+        var ligne = compteConnu(dlgCompte.compteId)
+        dlgCompte.partagees = ligne ? partageesProposees(ligne) : []
         dlgCompte.champMotDePasse.text = ""
         dlgCompte.caseMemoriser.checked = reglages.memoriser
         dlgCompte.noteCompte.text = note
@@ -2866,11 +2870,17 @@ ApplicationWindow {
     /// Relit l'arborescence. Même structure : les lignes sont mises à jour en
     /// place, sans que la vue ne revienne en haut.
     function rafraichirArborescence() {
-        var lignes = JSON.parse(boite.arborescence(reglages.afficherMasques)).map(normaliser)
+        var brutes = JSON.parse(boite.arborescence(reglages.afficherMasques))
+        var lignes = brutes.map(normaliser)
         poserLignes(modeleFavoris, lignes.filter(function(l) { return l.groupe === "favoris" }))
         poserLignes(modeleArborescence, lignes.filter(function(l) { return l.groupe !== "favoris" }))
-        var comptes = lignes.filter(function(l) { return l.genre === "compte" })
-                            .map(function(l) { return { compte: l.compte, adresse: l.adresse, hote: l.hote } })
+        // Lues sur les lignes brutes : les boîtes partagées, une liste, ne
+        // passent pas dans le modèle de l'arborescence.
+        var comptes = brutes.filter(function(l) { return l.genre === "compte" })
+                            .map(function(l) {
+                                return { compte: l.compte, adresse: l.adresse, hote: l.hote,
+                                         partagees: l.partagees || [] }
+                            })
         // Réaffecté seulement s'il change : le menu reconstruit ses entrées à
         // chaque affectation, et l'arborescence est relue à chaque veille.
         if (JSON.stringify(comptes) !== JSON.stringify(comptesConnus))
@@ -3644,6 +3654,54 @@ ApplicationWindow {
         return ""
     }
 
+    function compteConnu(compte) {
+        for (var i = 0; i < comptesConnus.length; ++i)
+            if (comptesConnus[i].compte === compte)
+                return comptesConnus[i]
+        return null
+    }
+
+    /// Boîtes partagées du compte `c` (élément de `comptesConnus`) proposées
+    /// d'office dans « De » (0.6.8). Une boîte qui est aussi un compte du
+    /// profil a déjà sa ligne : elle n'est pas reprise.
+    function partageesProposees(c) {
+        var exclues = {}
+        for (var i = 0; i < comptesConnus.length; ++i)
+            exclues[comptesConnus[i].adresse.toLowerCase()] = true
+        var liste = []
+        var partagees = c.partagees || []
+        for (var k = 0; k < partagees.length; ++k) {
+            if (exclues[partagees[k].toLowerCase()])
+                continue
+            exclues[partagees[k].toLowerCase()] = true
+            liste.push(partagees[k])
+        }
+        return liste
+    }
+
+    /// Autres adresses d'envoi du compte `c` : ses boîtes partagées, puis les
+    /// adresses saisies dans « Modifier le compte… ».
+    function autresAdressesDe(c) {
+        var liste = partageesProposees(c)
+        var vues = {}
+        vues[c.adresse.toLowerCase()] = true
+        for (var i = 0; i < liste.length; ++i)
+            vues[liste[i].toLowerCase()] = true
+        var saisies = adressesEnvoi(c.adresse)
+        for (var k = 0; k < saisies.length; ++k) {
+            if (vues[saisies[k].toLowerCase()])
+                continue
+            vues[saisies[k].toLowerCase()] = true
+            liste.push(saisies[k])
+        }
+        return liste
+    }
+
+    function autresAdresses(compte) {
+        var c = compteConnu(compte)
+        return c ? autresAdressesDe(c) : []
+    }
+
     /// Ouvre une rédaction : une fenêtre à part sur le bureau, comme Outlook ;
     /// en vue compacte (téléphone), un volet qui couvre la fenêtre principale.
     function ouvrirRedaction(compte) {
@@ -3721,7 +3779,7 @@ ApplicationWindow {
         }
         var r = ouvrirRedaction(compte)
         r.attendre(mode === "brouillon" ? qsTr("Reprise du brouillon…") : qsTr("Préparation…"))
-        if (!boite.preparer(uid, mode, r.jeton, JSON.stringify(adressesEnvoi(adresseDuCompte(compte)))))
+        if (!boite.preparer(uid, mode, r.jeton, JSON.stringify(autresAdresses(compte))))
             r.echouer(boite.erreur.length > 0 ? boite.erreur : qsTr("Préparation impossible."))
     }
 
@@ -4631,6 +4689,10 @@ ApplicationWindow {
             // juste après l'affichage ou pendant le chargement du message.
             if (essai.scenario === "non-lu")
                 scenarios.lancerScenarioNonLu()
+            // Scénario « partagees » (0.6.8) : une boîte partagée par le
+            // serveur, proposée dans « De ».
+            if (essai.scenario === "partagees")
+                scenarios.lancerScenarioPartagees()
             // Scénario « adresses-envoi » (0.6.7) : le compte connecté, ses
             // autres adresses d'envoi dans « De », sans autre échange.
             if (essai.scenario === "adresses-envoi") {

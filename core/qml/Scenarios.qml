@@ -1206,4 +1206,65 @@ QtObject {
         console.log("scenario: adresses-envoi, " + (echecs === 0 ? "tout OK" : echecs + " échec(s)"))
         Qt.quit()
     }
+
+    /// Scénario « partagees » (0.6.8) : la boîte de réception de deux@ est
+    /// partagée avec un@ par le Dovecot d'essai. Seul compte du profil, un@ la
+    /// voit proposée dans « De » ; deux@ aussi dans le profil, elle n'y est
+    /// pas reprise sous un@ — elle a déjà sa ligne.
+    function lancerScenarioPartagees() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0 }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var partagee = "deux@essai.test"
+        var deuxComptes = identifiantsEssai.utilisateur2.length > 0
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus.filter(function(x) { return x.adresse === identifiantsEssai.utilisateur })[0]
+            var pret = c !== undefined && c.partagees.length > 0 && (!deuxComptes || comptesConnus.length === 2)
+            if (!pret && suivi.n < 30)
+                return
+            tic.stop()
+            var de = function() {
+                return expediteursConnus.filter(function(e) { return e.compte === c.compte })
+                                        .map(function(e) { return e.adresse })
+            }
+            if (!pret) {
+                bilan("rien de reconnu en 30 s : " + JSON.stringify(comptesConnus), false)
+            } else if (deuxComptes) {
+                bilan("reconnue : " + JSON.stringify(c.partagees), JSON.stringify(c.partagees) === JSON.stringify([partagee]))
+                var lignes = expediteursConnus.filter(function(e) { return e.adresse === partagee })
+                bilan("deux comptes, « De » de " + c.adresse + " : " + de().join(" | ") + " ; lignes de "
+                      + partagee + " : " + lignes.length,
+                      JSON.stringify(de()) === JSON.stringify([c.adresse]) && lignes.length === 1)
+            } else {
+                bilan("reconnue : " + JSON.stringify(c.partagees), JSON.stringify(c.partagees) === JSON.stringify([partagee]))
+                bilan("champ « De » : " + de().join(" | "), JSON.stringify(de()) === JSON.stringify([c.adresse, partagee]))
+                // Les saisies s'ajoutent ; la partagée saisie aussi n'est pas répétée.
+                poserAdressesEnvoi(c.adresse, ["alias@exemple.fr", "Deux@Essai.test"])
+                bilan("avec les saisies : " + de().join(" | "),
+                      JSON.stringify(de()) === JSON.stringify([c.adresse, partagee, "alias@exemple.fr"]))
+                var propres = autresAdresses(c.compte)
+                bilan("adresses données à la préparation d'une réponse : " + JSON.stringify(propres),
+                      JSON.stringify(propres) === JSON.stringify([partagee, "alias@exemple.fr"]))
+                var r = ouvrirRedaction(c.compte)
+                r.pret()
+                r.remplir({ mode: "repondre", de: partagee, a: "client@exemple.org", objet: "RE : essai" })
+                bilan("réponse depuis la partagée : " + r.contenu().de, r.contenu().de === partagee)
+                r.conteneur.fermerRedaction()
+                modifierCompte(c.compte)
+                bilan("modifier le compte : " + JSON.stringify(dlgCompte.partagees) + " | « "
+                      + dlgCompte.champAdressesEnvoi.text + " »",
+                      JSON.stringify(dlgCompte.partagees) === JSON.stringify([partagee])
+                      && dlgCompte.champAdressesEnvoi.text === "alias@exemple.fr ; Deux@Essai.test")
+                dlgCompte.reject()
+            }
+            console.log("scenario: partagees, " + (suivi.echecs === 0 ? "tout OK" : suivi.echecs + " échec(s)"))
+            Qt.quit()
+        })
+        tic.start()
+    }
 }

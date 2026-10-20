@@ -2356,14 +2356,16 @@ impl qobject::Boite {
             } else {
                 String::new()
             };
+            let partagees: Vec<String> = c.partagees.iter().map(|a| texte_json(a)).collect();
             lignes.push(format!(
-                r#"{{"genre":"compte","compte":{},"adresse":{},"hote":{},"etat":{},"replie":{},"motif":{}}}"#,
+                r#"{{"genre":"compte","compte":{},"adresse":{},"hote":{},"etat":{},"replie":{},"motif":{},"partagees":[{}]}}"#,
                 c.id,
                 texte_json(&c.adresse),
                 texte_json(&c.hote),
                 texte_json(self.etat(c.id).code()),
                 c.replie,
-                texte_json(&motif)
+                texte_json(&motif),
+                partagees.join(",")
             ));
             if c.replie {
                 continue;

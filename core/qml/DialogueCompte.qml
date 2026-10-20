@@ -29,6 +29,9 @@ Dialog {
     property alias caseMemoriser: caseMemoriser
     property alias boutonReconnexion: boutonReconnexion
     property int compteId: 0
+    // Boîtes partagées que le serveur montre au compte, proposées d'office
+    // dans « De » (0.6.8).
+    property var partagees: []
     property bool modification: false
     // Compte à jetons en modification — « microsoft » ou « google » : ni
     // serveur ni mot de passe à saisir, la connexion se refait chez le
@@ -124,8 +127,9 @@ Dialog {
             checked: reglages.memoriser
             text: qsTr("Mémoriser le mot de passe dans le coffre du système")
         }
-        // Boîtes partagées, alias (0.6.7) : proposés dans le champ « De ».
-        // Seul le serveur décide d'accepter l'envoi en leur nom.
+        // Alias, boîtes que le serveur ne montre pas (0.6.7) : proposés dans
+        // le champ « De », comme les boîtes partagées reconnues (0.6.8). Seul
+        // le serveur décide d'accepter l'envoi en leur nom.
         Label { text: qsTr("Autres adresses d'envoi :"); visible: dlgCompte.modification }
         TextField {
             id: champAdressesEnvoi
@@ -142,7 +146,10 @@ Dialog {
             wrapMode: Text.Wrap
             opacity: 0.75
             font.pixelSize: 11
-            text: qsTr("Proposées dans le champ « De » d'un message, en plus de l'adresse du compte : boîtes partagées, alias. Le serveur doit autoriser ce compte à envoyer en leur nom ; la copie va dans les éléments envoyés du compte.")
+            text: (dlgCompte.partagees.length > 0
+                   ? qsTr("Boîtes partagées, proposées d'office : %1.").arg(dlgCompte.partagees.join(", ")) + " "
+                   : "")
+                  + qsTr("Proposées dans le champ « De » d'un message, en plus de l'adresse du compte et des boîtes partagées que le serveur lui montre : alias, autres boîtes. Le serveur doit autoriser ce compte à envoyer en leur nom ; la copie va dans les éléments envoyés du compte.")
         }
         // Office 365 n'accepte plus de mot de passe : la connexion se fait
         // chez Microsoft, dans le navigateur.

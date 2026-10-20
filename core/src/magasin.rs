@@ -43,7 +43,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 16;
+const VERSION_SCHEMA: i32 = 17;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -115,6 +115,10 @@ pub struct CompteLocal {
     /// un compte Microsoft, `google` pour un compte Google (OAuth2, cf.
     /// `crate::oauth`).
     pub auth: String,
+    /// Adresses des boîtes partagées que le serveur montre à ce compte
+    /// (0.6.8, cf. `protocole::adresses_partagees`), relevées avec son
+    /// arborescence.
+    pub partagees: Vec<String>,
 }
 
 impl CompteLocal {
@@ -596,6 +600,12 @@ impl Magasin {
                 [],
             )?;
         }
+        // Version 17 : les adresses des boîtes partagées de chaque compte
+        // (0.6.8), une par ligne ; vides jusqu'à la relecture suivante de
+        // l'arborescence.
+        if version < 17 {
+            self.ajouter_colonne("accounts", "partagees", "TEXT NOT NULL DEFAULT ''")?;
+        }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
     }
@@ -769,6 +779,16 @@ impl Magasin {
         Ok(n > 0)
     }
 
+    /// Pose les adresses des boîtes partagées d'un compte. Vrai si elles ont
+    /// changé.
+    pub fn poser_partagees(&self, compte: i64, adresses: &[String]) -> Resultat<bool> {
+        let n = self.base.execute(
+            "UPDATE accounts SET partagees = ?2 WHERE id = ?1 AND partagees <> ?2",
+            params![compte, adresses.join("\n")],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Pose le mode d'authentification d'un compte (`AUTH_MICROSOFT`,
     /// `AUTH_GOOGLE`, ou
     /// vide pour un mot de passe). Le compte doit exister : rien n'est créé.
@@ -781,7 +801,7 @@ impl Magasin {
     /// celui où ils ont été ajoutés.
     pub fn comptes(&self) -> Resultat<Vec<CompteLocal>> {
         let mut requete = self.base.prepare(
-            "SELECT id, adresse, hote, port, utilisateur, replie, hote_envoi, auth FROM accounts
+            "SELECT id, adresse, hote, port, utilisateur, replie, hote_envoi, auth, partagees FROM accounts
              ORDER BY rang IS NULL, rang, id",
         )?;
         let comptes = requete
@@ -795,6 +815,12 @@ impl Magasin {
                     replie: l.get::<_, i32>(5)? != 0,
                     hote_envoi: l.get(6)?,
                     auth: l.get(7)?,
+                    partagees: l
+                        .get::<_, String>(8)?
+                        .lines()
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_string)
+                        .collect(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2552,6 +2578,31 @@ mod tests {
         let c = &m.comptes().unwrap()[0];
         assert_eq!(c.auth, "", "mot de passe pour les comptes déjà là");
         assert!(!c.microsoft());
+    }
+
+    #[test]
+    fn adresses_partagees_d_un_compte() {
+        let m = Magasin::en_memoire().unwrap();
+        let a = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        let b = m.compte("b@b.fr", "h", 993, "b@b.fr").unwrap();
+        assert!(m.comptes().unwrap()[0].partagees.is_empty());
+        let adresses = vec!["commandes@b.fr".to_string(), "contact@b.fr".to_string()];
+        assert!(m.poser_partagees(a, &adresses).unwrap());
+        assert!(!m.poser_partagees(a, &adresses).unwrap(), "inchangées");
+        let comptes = m.comptes().unwrap();
+        assert_eq!(comptes.iter().find(|c| c.id == a).unwrap().partagees, adresses);
+        assert!(comptes.iter().find(|c| c.id == b).unwrap().partagees.is_empty());
+        assert!(m.poser_partagees(a, &[]).unwrap(), "partage retiré");
+        assert!(m.compte_par_id(a).unwrap().unwrap().partagees.is_empty());
+    }
+
+    #[test]
+    fn migration_version_17_partagees_vides() {
+        let m = Magasin::en_memoire().unwrap();
+        m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        m.base.execute_batch("ALTER TABLE accounts DROP COLUMN partagees; PRAGMA user_version = 16;").unwrap();
+        m.migrer().unwrap();
+        assert!(m.comptes().unwrap()[0].partagees.is_empty());
     }
 
     #[test]

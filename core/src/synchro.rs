@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use crate::imap::{self, Client};
 use crate::index::ligne_index;
 use crate::magasin::{self, Magasin, MessageLocal};
-use crate::protocole::{ensemble_uid, EtatDossier};
+use crate::protocole::{adresses_partagees, ensemble_uid, EtatDossier};
 
 /// Échec d'une opération qui touche à la fois le serveur et l'index.
 #[derive(Debug)]
@@ -87,11 +87,15 @@ impl Bilan {
     }
 }
 
-/// Relit l'arborescence d'un compte et les compteurs de tous ses dossiers.
+/// Relit l'arborescence d'un compte et les compteurs de tous ses dossiers,
+/// et note les adresses de ses boîtes partagées, proposées dans le champ
+/// « De » (0.6.8).
 pub fn arborescence(client: &mut Client, magasin: &Magasin, compte: i64) -> Result<(), Echec> {
     let (dossiers, statuts) = client.dossiers_et_compteurs()?;
     magasin.poser_dossiers(compte, &dossiers)?;
     magasin.poser_compteurs(compte, &statuts)?;
+    let espaces = client.espaces_autres()?;
+    magasin.poser_partagees(compte, &adresses_partagees(&dossiers, &espaces))?;
     Ok(())
 }
 

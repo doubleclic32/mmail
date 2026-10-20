@@ -124,6 +124,33 @@ fn arborescence_et_roles() {
     assert!(dossiers.iter().any(|d| d.profondeur() == 1));
 }
 
+/// Boîte partagée (0.6.8) : B partage sa boîte de réception avec A
+/// (`SETACL`, RFC 4314) ; A la reconnaît à la relecture de son arborescence,
+/// puis plus du tout une fois le partage retiré.
+#[test]
+#[ignore = "exige un serveur IMAP à boîtes partagées et deux comptes"]
+fn boite_partagee_reconnue() {
+    let ua = variable("MMAIL_UTILISATEUR");
+    let ub = variable("MMAIL_UTILISATEUR2");
+    let mut b = session2();
+    b.brute(&format!("SETACL INBOX \"{ua}\" lr")).expect("SETACL");
+    let magasin = Magasin::en_memoire().unwrap();
+    let ca = magasin.compte(&ua, &variable("MMAIL_HOTE"), 993, &ua).unwrap();
+    let partagees = |a: &mut Client| {
+        synchro::arborescence(a, &magasin, ca).map(|_| magasin.compte_par_id(ca).unwrap().unwrap().partagees)
+    };
+    let pendant = partagees(&mut session());
+    // Retiré avant tout constat : un échec ne laisse pas le partage en place.
+    b.brute(&format!("DELETEACL INBOX \"{ua}\"")).expect("DELETEACL");
+    let apres = partagees(&mut session());
+
+    println!("partagées : {pendant:?}, puis {apres:?}");
+    let pendant = pendant.expect("arborescence pendant le partage");
+    assert_eq!(pendant.len(), 1, "{pendant:?}");
+    assert!(pendant[0].eq_ignore_ascii_case(&ub), "{pendant:?}");
+    assert!(apres.expect("arborescence après le partage").is_empty());
+}
+
 #[test]
 #[ignore = "exige un serveur IMAP et un compte"]
 fn sous_dossier_cree_et_abonne() {

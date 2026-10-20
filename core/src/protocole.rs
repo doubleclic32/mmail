@@ -163,6 +163,82 @@ pub fn analyser_list(ligne: &str) -> Option<Dossier> {
     })
 }
 
+/// Espaces des boîtes d'autres utilisateurs, second groupe d'une réponse
+/// `NAMESPACE` (RFC 2342) : `* NAMESPACE (("" "/")) (("Shared/" "/")) NIL`
+/// → [(« Shared/ », « / »)]. Dovecot y range ses espaces `type = shared`
+/// dont le préfixe porte l'utilisateur (Mailcow : `Shared/%u/`).
+pub fn analyser_namespace(reponse: &str) -> Vec<(String, String)> {
+    let Some(reste) = reponse.lines().find_map(|l| l.trim().strip_prefix("* NAMESPACE ")) else {
+        return Vec::new();
+    };
+    // Les boîtes de l'utilisateur, puis celles des autres.
+    let Some((_, reste)) = groupe_namespace(reste) else {
+        return Vec::new();
+    };
+    let Some((Some(autres), _)) = groupe_namespace(reste) else {
+        return Vec::new();
+    };
+    let mut espaces = Vec::new();
+    let mut texte = autres.as_str();
+    while let Some((description, suite)) = entre_parentheses(texte) {
+        if let Some((prefixe, r)) = jeton(&description) {
+            if let Some((separateur, _)) = jeton(r) {
+                let separateur = if separateur.eq_ignore_ascii_case("NIL") { String::new() } else { separateur };
+                espaces.push((prefixe, separateur));
+            }
+        }
+        texte = suite;
+    }
+    espaces
+}
+
+/// Un groupe d'une réponse `NAMESPACE` — `None` pour `NIL` — et ce qui le suit.
+fn groupe_namespace(texte: &str) -> Option<(Option<String>, &str)> {
+    let texte = texte.trim_start();
+    if texte.get(..3).is_some_and(|t| t.eq_ignore_ascii_case("NIL")) {
+        return Some((None, &texte[3..]));
+    }
+    if !texte.starts_with('(') {
+        return None;
+    }
+    entre_parentheses(texte).map(|(groupe, suite)| (Some(groupe), suite))
+}
+
+/// Adresses des boîtes d'autres utilisateurs dont la boîte de réception est
+/// visible — les boîtes partagées : « Shared/contact@exemple.fr/INBOX » sous
+/// l'espace « Shared/ » donne contact@exemple.fr (Mailcow). Certains Dovecot
+/// montrent cette boîte de réception sous le nom de l'utilisateur lui-même,
+/// « Shared/contact@exemple.fr », sélectionnable. Un dossier partagé seul,
+/// sans la boîte de réception, n'en donne pas : le serveur ne montre alors
+/// qu'un nœud sans messages (`\Noselect`). Un utilisateur désigné sans
+/// domaine non plus. Sans doublon, par ordre alphabétique.
+pub fn adresses_partagees(dossiers: &[Dossier], espaces: &[(String, String)]) -> Vec<String> {
+    let mut adresses: Vec<String> = Vec::new();
+    for d in dossiers.iter().filter(|d| d.selectionnable()) {
+        for (prefixe, separateur) in espaces {
+            if prefixe.is_empty() || separateur.is_empty() {
+                continue;
+            }
+            let Some(reste) = d.chemin.strip_prefix(prefixe.as_str()) else {
+                continue;
+            };
+            let utilisateur = match reste.split_once(separateur.as_str()) {
+                Some((utilisateur, dossier)) if dossier.eq_ignore_ascii_case("INBOX") => utilisateur,
+                Some(_) => continue,
+                None => reste,
+            };
+            let adresse = decoder_utf7(utilisateur);
+            if crate::redaction::adresse_valide(&adresse)
+                && !adresses.iter().any(|a| a.eq_ignore_ascii_case(&adresse))
+            {
+                adresses.push(adresse);
+            }
+        }
+    }
+    adresses.sort_by_key(|a| a.to_lowercase());
+    adresses
+}
+
 /// Lit l'état d'un dossier dans les réponses non étiquetées d'un `SELECT`.
 pub fn analyser_select(reponse: &str) -> EtatDossier {
     let mut etat = EtatDossier::default();
@@ -759,5 +835,62 @@ mod tests {
         assert_eq!(secondes_date_interne(" 6-Sep-2026 18:00:00 +0200"), Some(1789574400 - 10 * 86400));
         assert_eq!(secondes_date_interne("01-Jan-1970 00:00:00 +0000"), Some(0));
         assert_eq!(secondes_date_interne("n'importe quoi"), None);
+    }
+
+    #[test]
+    fn namespace_des_autres_utilisateurs() {
+        // Mailcow (Dovecot 2.3, `prefix = Shared/%%u/`).
+        let mailcow = "* NAMESPACE ((\"\" \"/\")) ((\"Shared/\" \"/\")) NIL\r\nm0003 OK Namespace completed.\r\n";
+        assert_eq!(analyser_namespace(mailcow), vec![("Shared/".to_string(), "/".to_string())]);
+        // Rien pour les autres utilisateurs : Office 365, Gmail.
+        assert!(analyser_namespace("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n").is_empty());
+        assert!(analyser_namespace("m0003 BAD Unknown command\r\n").is_empty());
+        // Plusieurs espaces, extensions (RFC 4466), séparateur « . », NIL en minuscules.
+        let divers = "* NAMESPACE ((\"INBOX.\" \".\")) ((\"Autres.\" \".\" \"X-PARAM\" (\"a\" \"b\"))(\"Moi.\" nil)) nil\r\n";
+        assert_eq!(
+            analyser_namespace(divers),
+            vec![("Autres.".to_string(), ".".to_string()), ("Moi.".to_string(), String::new())]
+        );
+    }
+
+    #[test]
+    fn adresses_des_boites_partagees() {
+        let d = |chemin: &str, attributs: &[&str]| Dossier {
+            chemin: chemin.into(),
+            separateur: "/".into(),
+            attributs: attributs.iter().map(|a| a.to_string()).collect(),
+        };
+        let espaces = vec![("Shared/".to_string(), "/".to_string())];
+        let dossiers = [
+            d("INBOX", &[]),
+            d("Shared", &["\\Noselect", "\\HasChildren"]),
+            d("Shared/contact@exemple.fr", &["\\Noselect", "\\HasChildren"]),
+            d("Shared/contact@exemple.fr/INBOX", &["\\HasChildren"]),
+            d("Shared/contact@exemple.fr/INBOX/clients", &[]),
+            d("Shared/Commandes@Exemple.fr/INBOX", &[]),
+            d("Shared/commandes@exemple.fr/Sent", &[]),
+            // Un dossier partagé sans la boîte de réception : pas d'adresse.
+            d("Shared/compta@exemple.fr", &["\\Noselect", "\\HasChildren"]),
+            d("Shared/compta@exemple.fr/INBOX", &["\\Noselect", "\\HasChildren"]),
+            d("Shared/compta@exemple.fr/INBOX/Factures", &[]),
+            d("Shared/archives@exemple.fr/Projets", &[]),
+            // Un utilisateur sans domaine (`prefix = shared/%%n/`).
+            d("Shared/jean/INBOX", &[]),
+            // Un dossier personnel nommé comme une adresse.
+            d("Clients/client@ailleurs.fr/INBOX", &[]),
+            // Boîte de réception montrée sous le nom de l'utilisateur (Dovecot
+            // sans dossier INBOX distinct) ; et, chez le même, un dossier
+            // partagé seul.
+            d("Shared/accueil@exemple.fr", &["\\HasNoChildren"]),
+            d("Shared/seul@exemple.fr", &["\\Noselect", "\\HasChildren"]),
+            d("Shared/seul@exemple.fr/Essais", &["\\HasNoChildren"]),
+            // Nom accentué, transporté en UTF-7 modifié.
+            d("Shared/s&AOk-cr&AOk-tariat@exemple.fr/INBOX", &[]),
+        ];
+        assert_eq!(
+            adresses_partagees(&dossiers, &espaces),
+            vec!["accueil@exemple.fr", "Commandes@Exemple.fr", "contact@exemple.fr", "sécrétariat@exemple.fr"]
+        );
+        assert!(adresses_partagees(&dossiers, &[]).is_empty(), "sans NAMESPACE, rien");
     }
 }
