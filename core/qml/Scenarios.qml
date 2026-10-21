@@ -1203,6 +1203,116 @@ QtObject {
         tic.start()
     }
 
+    /// Scénario « recherche-effacee » (0.6.12, demande de Fabienne) : le mot
+    /// effacé au clavier (champ vidé, textEdited) met fin à la recherche et
+    /// rend la liste de départ — dans le dossier, puis dans toutes les boîtes.
+    function lancerScenarioRechercheEffacee() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0, total: 0, mot: "" }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | liste " + modeleMessages.count
+                        + " | recherche " + JSON.stringify(recherche) + " | globale " + rechercheGlobale
+                        + " | noyau sur " + boite.dossierCourant)
+        }
+        var effacer = function() {
+            colonneListe.champRecherche.text = ""
+            colonneListe.champRecherche.textEdited()
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 6) {
+                suivi.total = modeleMessages.count
+                if (suivi.total < 1) {
+                    bilan("boîte de réception vide", false)
+                    suivi.n = 12
+                    return
+                }
+                var mots = modeleMessages.get(0).sujet.split(/\s+/).filter(function(m) { return m.length > 3 })
+                suivi.mot = mots.length > 0 ? mots[0] : modeleMessages.get(0).sujet
+                colonneListe.porteeRecherche.currentIndex = 0
+                colonneListe.champRecherche.text = suivi.mot
+                lancerRecherche()
+                bilan("recherche « " + suivi.mot + " » dans le dossier (" + suivi.total + " messages avant)",
+                      recherche === suivi.mot)
+            } else if (suivi.n === 7) {
+                effacer()
+            } else if (suivi.n === 8) {
+                bilan("mot effacé : recherche finie, liste de départ",
+                      recherche === "" && modeleMessages.count === suivi.total)
+                colonneListe.porteeRecherche.currentIndex = 1
+                colonneListe.champRecherche.text = suivi.mot
+                lancerRecherche()
+                bilan("recherche « " + suivi.mot + " » dans toutes les boîtes", rechercheGlobale)
+            } else if (suivi.n === 10) {
+                effacer()
+            } else if (suivi.n === 12) {
+                bilan("mot effacé : retour au dossier de départ, liste entière",
+                      recherche === "" && !rechercheGlobale && boite.dossierCourant === "INBOX"
+                      && modeleMessages.count === suivi.total)
+            } else if (suivi.n === 13) {
+                tic.stop()
+                console.log("scenario: recherche-effacee " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénario « majuscule » (0.6.12, demande de Fabienne) : frappe simulée
+    /// dans le corps d'une rédaction, par Redaction.majuscule comme le fait
+    /// Keys.onPressed — capitale en début de paragraphe et après « . », « ! »,
+    /// « ? » ; rien au fil de la phrase, après « etc. », une initiale, des
+    /// points de suspension ou un numéro en tête de ligne ; Ctrl+Z aussitôt
+    /// après rend la minuscule ; réglage coupé, rien.
+    function lancerScenarioMajuscule() {
+        var t = Qt.createQmlObject('import QtQuick; Timer { interval: 4000 }', fenetre)
+        var n = null
+        t.triggered.connect(function() {
+            if (!n) {
+                n = ouvrirRedaction(comptesConnus[0].compte)
+                n.pret()
+                t.start()
+                return
+            }
+            var corps = n.corps
+            corps.text = ""
+            corps.cursorPosition = 0
+            var touche = function(texte, annuler) {
+                var ev = { text: texte, modifiers: 0,
+                           matches: function(k) { return annuler === true && k === StandardKey.Undo } }
+                if (n.majuscule(ev) || annuler)
+                    return
+                var p = corps.cursorPosition
+                n.mefCorps.inserer(p, texte)
+                corps.cursorPosition = p + texte.length
+            }
+            var taper = function(texte) {
+                for (var i = 0; i < texte.length; ++i)
+                    touche(texte[i])
+            }
+            taper("bonjour, tout va bien. merci pour le devis, etc. et le reste. à demain! oui? non... peut-être. "
+                  + "J. dupont viendra en 2026. puis (fin.) suite. ç")
+            touche("", true)
+            taper("a\nnouvelle ligne\n1. premier point")
+            reglages.majusculeAuto = false
+            taper(". non")
+            reglages.majusculeAuto = true
+            var attendu = "Bonjour, tout va bien. Merci pour le devis, etc. et le reste. À demain! Oui? Non... peut-être. "
+                    + "J. dupont viendra en 2026. Puis (fin.) Suite. ça\nNouvelle ligne\n1. premier point. non"
+            // getText rend les fins de paragraphe en U+2029.
+            var obtenu = corps.getText(0, corps.length).replace(/[\u2028\u2029]/g, "\n")
+            console.log("scenario: texte obtenu " + JSON.stringify(obtenu))
+            console.log("scenario: majuscule " + (obtenu === attendu ? "OK" : "ECHEC, attendu " + JSON.stringify(attendu)))
+            Qt.quit()
+        })
+        t.start()
+    }
+
     /// Scénario « lu-differe » (0.6.9, demande de Gwenaëlle du 20/10) : le
     /// marquage « lu » attend le délai réglé, ne vise pas un message quitté
     /// avant, et n'a jamais lieu sur « Jamais ». La boîte de réception doit

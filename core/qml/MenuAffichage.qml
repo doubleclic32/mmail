@@ -60,6 +60,16 @@ Menu {
             }
         }
     }
+    // Comme dans Outlook : la première lettre d'une phrase en capitale
+    // pendant la frappe. Sous Android, c'est le clavier qui s'en charge.
+    MenuItem {
+        text: qsTr("Majuscule en début de phrase")
+        visible: Qt.platform.os !== "android"
+        height: visible ? implicitHeight : 0
+        checkable: true
+        checked: reglages.majusculeAuto
+        onTriggered: reglages.majusculeAuto = checked
+    }
     MenuItem {
         text: qsTr("Logiciels d'ouverture des pièces jointes…")
         visible: Qt.platform.os !== "android"

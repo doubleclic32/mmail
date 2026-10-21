@@ -37,6 +37,9 @@ Page {
     property bool fermerApresEnregistrement: false
     property bool afficherCopies: false
     property bool miseEnForme: reglagesRedaction.miseEnForme
+    // Lus par les scénarios d'essai (cf. Scenarios.qml, « majuscule »).
+    readonly property alias corps: corpsRedaction
+    readonly property alias mefCorps: mef
     property string brouillonChemin: ""
     // Rédaction gardée sur le poste (noyau, garde.rs) : son
     // identifiant et le dernier état écrit ; empreinte du contenu au
@@ -289,6 +292,39 @@ Page {
         insererImages(images)
         if (autres.length > 0)
             ajouterFichiers(autres)
+        return true
+    }
+
+    /// Majuscule en début de phrase (0.6.12, demande de Fabienne) : la
+    /// minuscule frappée au début d'une phrase passe en capitale (cf.
+    /// MiseEnForme.debutDePhrase) ; Ctrl+Z aussitôt après la rend minuscule,
+    /// comme dans Outlook. Pas sous Android, où le clavier s'en charge. Rend
+    /// vrai si la touche est traitée.
+    property int positionMajuscule: -1
+    function majuscule(ev) {
+        if (Qt.platform.os === "android" || !reglages.majusculeAuto)
+            return false
+        var c = corpsRedaction
+        if (ev.matches(StandardKey.Undo)) {
+            var p = positionMajuscule
+            positionMajuscule = -1
+            if (p < 0 || c.cursorPosition !== p + 1 || c.selectionStart !== c.selectionEnd)
+                return false
+            mef.remplacerCaractere(p, c.getText(p, p + 1).toLowerCase())
+            c.cursorPosition = p + 1
+            return true
+        }
+        positionMajuscule = -1
+        if (ev.text.length !== 1 || (ev.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
+            return false
+        var capitale = ev.text.toUpperCase()
+        if (capitale === ev.text || capitale.length !== 1 || c.selectionStart !== c.selectionEnd
+                || !mef.debutDePhrase(c.cursorPosition))
+            return false
+        var position = c.cursorPosition
+        mef.inserer(position, capitale)
+        c.cursorPosition = position + 1
+        positionMajuscule = position
         return true
     }
 
@@ -800,6 +836,8 @@ Page {
                 onTextChanged: if (!redac.chargement) redac.modifie = true
                 Keys.onPressed: function(ev) {
                     if (ev.matches(StandardKey.Paste) && redac.collerImage())
+                        ev.accepted = true
+                    else if (redac.majuscule(ev))
                         ev.accepted = true
                 }
                 // Au doigt, l'appui long choisit le mot touché ; Android pose

@@ -77,7 +77,14 @@ ColumnLayout {
                 else if (text.length === 0)
                     colonneListe.rechercheOuverte = false
             }
-            onTextEdited: fenetre.proposerHistorique()
+            // Le mot effacé au clavier, la liste de départ revient, comme par
+            // ✕ (0.6.12, demande de Fabienne : elle restait filtrée).
+            onTextEdited: {
+                if (text.length === 0 && fenetre.recherche.length > 0)
+                    fenetre.quitterRecherche()
+                else
+                    fenetre.proposerHistorique()
+            }
             onAccepted: {
                 if (panneauHistorique.opened && vueHistorique.currentIndex >= 0)
                     fenetre.lancerRecherche(panneauHistorique.entrees[vueHistorique.currentIndex])

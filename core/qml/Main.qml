@@ -376,6 +376,8 @@ ApplicationWindow {
         // Marquage « lu » d'un message affiché : 0 à l'affichage, N secondes
         // après, -1 jamais (0.6.9, cf. Boite.delaiLu).
         property int delaiLu: 0
+        // Majuscule en début de phrase dans la rédaction (0.6.12).
+        property bool majusculeAuto: true
     }
 
     // ---------------------------------------------------------- apparences
@@ -1934,15 +1936,18 @@ ApplicationWindow {
     DialogueFiltres { id: dlgFiltres }
 
     // Sous Android : la page de connexion Microsoft intégrée (cf.
-    // ConnexionIntegree.qml, absente du module ailleurs).
-    Loader {
-        id: chargeurConnexion
-        active: Qt.platform.os === "android"
-        source: active ? "ConnexionIntegree.qml" : ""
-    }
+    // ConnexionIntegree.qml, absente du module ailleurs), chargée le temps de
+    // la connexion seulement. Sa vue web ouvre une fenêtre native que Qt compte
+    // parmi celles de l'application : chargée dès le lancement, elle restait
+    // seule ouverte quand Retour fermait la fenêtre principale, et MMail ne
+    // s'arrêtait plus — page blanche (retour de Manu du 21/10).
+    Loader { id: chargeurConnexion }
     Connections {
         target: chargeurConnexion.item
         ignoreUnknownSignals: true
+        function onClosed() {
+            Qt.callLater(function() { chargeurConnexion.source = "" })
+        }
         function onRetour(url) {
             if (!boite.terminerMicrosoft(url))
                 messageEtat.texte = qsTr("Retour de connexion inattendu : relancez « Ajouter un compte Microsoft… ».")
@@ -2832,7 +2837,8 @@ ApplicationWindow {
         }
         // Sous Android, dans la page intégrée : le navigateur du système
         // laisserait MMail gelé en arrière-plan (retour de Manu du 18/10).
-        if (chargeurConnexion.item) {
+        if (Qt.platform.os === "android") {
+            chargeurConnexion.source = "ConnexionIntegree.qml"
             chargeurConnexion.item.ouvrir(url)
             messageEtat.texte = qsTr("Connexion à Microsoft…")
             return
@@ -4285,6 +4291,12 @@ ApplicationWindow {
     }
 
     onClosing: function(fermeture) {
+        // Retour pendant la connexion Microsoft intégrée : connexion abandonnée.
+        if (chargeurConnexion.item && chargeurConnexion.item.opened) {
+            fermeture.accepted = false
+            chargeurConnexion.item.annuler()
+            return
+        }
         // Vue tactile : le retour arrière d'Android ferme le tiroir, ramène
         // du message à la liste, puis quitte — la liste est l'écran d'accueil.
         if (tactile) {
@@ -4711,6 +4723,10 @@ ApplicationWindow {
             // garde la position de lecture.
             if (essai.scenario === "defilement-lecture")
                 scenarios.lancerScenarioDefilementLecture()
+            if (essai.scenario === "recherche-effacee")
+                scenarios.lancerScenarioRechercheEffacee()
+            if (essai.scenario === "majuscule")
+                scenarios.lancerScenarioMajuscule()
             // Scénario « partagees » (0.6.8) : une boîte partagée par le
             // serveur, proposée dans « De ».
             if (essai.scenario === "partagees")

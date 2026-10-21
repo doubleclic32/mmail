@@ -36,6 +36,13 @@ Popup {
         vue.url = url
         open()
     }
+    /// « Annuler », ou la touche Retour d'Android : connexion abandonnée.
+    function annuler() {
+        termine = true
+        vue.stop()
+        close()
+        abandon()
+    }
     function verifier(url) {
         if (termine || url.indexOf("http://localhost") !== 0)
             return
@@ -55,12 +62,7 @@ Popup {
             spacing: 4
             ToolButton {
                 text: qsTr("Annuler")
-                onClicked: {
-                    connexionIntegree.termine = true
-                    vue.stop()
-                    connexionIntegree.close()
-                    connexionIntegree.abandon()
-                }
+                onClicked: connexionIntegree.annuler()
             }
             Label {
                 text: qsTr("Connexion à Microsoft")

@@ -279,6 +279,71 @@ public:
     c.insertText(texte);
   }
 
+  /// Remplace le caractère à la position donnée, mise en forme gardée.
+  Q_INVOKABLE void remplacerCaractere(int position, const QString& texte)
+  {
+    QTextDocument* doc = texte_();
+    if (!doc || position < 0 || position >= doc->characterCount() - 1)
+      return;
+    QTextCursor c(doc);
+    c.setPosition(position);
+    c.setPosition(position + 1, QTextCursor::KeepAnchor);
+    c.insertText(texte, c.charFormat());
+  }
+
+  /// La position ouvre-t-elle une phrase ? Début de paragraphe ou de ligne,
+  /// ou une espace après « . », « ! » ou « ? » — guillemet ou parenthèse
+  /// fermants admis entre les deux —, sauf après des points de suspension,
+  /// une initiale, une abréviation courante (« etc. », « cf. »…) ou un
+  /// numéro en tête de ligne (« 1. »). Majuscule automatique de la frappe
+  /// (0.6.12, demande de Fabienne).
+  Q_INVOKABLE bool debutDePhrase(int position) const
+  {
+    QTextDocument* doc = texte_();
+    if (!doc)
+      return false;
+    const QTextBlock bloc = doc->findBlock(position);
+    if (!bloc.isValid())
+      return false;
+    QString avant = bloc.text().left(position - bloc.position());
+    // Maj+Entrée : nouvelle ligne dans le paragraphe.
+    avant = avant.mid(avant.lastIndexOf(QChar::LineSeparator) + 1);
+    int i = avant.size();
+    while (i > 0 && avant.at(i - 1).isSpace())
+      --i;
+    if (i == 0)
+      return true;
+    if (i == avant.size())
+      return false;
+    while (i > 0 && QStringLiteral(")]»\"'’").contains(avant.at(i - 1)))
+      --i;
+    if (i == 0)
+      return false;
+    const QChar ponctuation = avant.at(i - 1);
+    if (ponctuation == u'!' || ponctuation == u'?')
+      return true;
+    if (ponctuation != u'.' || (i >= 2 && avant.at(i - 2) == u'.'))
+      return false;
+    int debutMot = i - 1;
+    while (debutMot > 0 && avant.at(debutMot - 1).isLetterOrNumber())
+      --debutMot;
+    const QString mot = avant.mid(debutMot, i - 1 - debutMot).toLower();
+    if (mot.isEmpty())
+      return false;
+    bool nombre = false;
+    mot.toLongLong(&nombre);
+    if (nombre)
+      return !avant.left(debutMot).trimmed().isEmpty();
+    static const QStringList abreviations = {
+      QStringLiteral("etc"), QStringLiteral("cf"), QStringLiteral("ex"), QStringLiteral("env"),
+      QStringLiteral("réf"), QStringLiteral("ref"), QStringLiteral("tél"), QStringLiteral("tel"),
+      QStringLiteral("art"), QStringLiteral("av"), QStringLiteral("bd"), QStringLiteral("pp"),
+      QStringLiteral("vol"), QStringLiteral("chap"), QStringLiteral("fig"), QStringLiteral("min"),
+      QStringLiteral("max"), QStringLiteral("hab"), QStringLiteral("dépt"), QStringLiteral("éd")
+    };
+    return mot.size() > 1 && !abreviations.contains(mot);
+  }
+
   /// HTML à envoyer. La police d'affichage — celle de l'utilisateur, zoom
   /// compris — ne part pas : le corps est rendu dans une police courante, à
   /// taille normale, chez le destinataire.

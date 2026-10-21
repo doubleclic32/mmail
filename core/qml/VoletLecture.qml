@@ -259,6 +259,8 @@ ColumnLayout {
     // une ligne par pièce — type, nom, taille, « Ouvrir », « Enregistrer
     // sous… » (forme choisie par Manu le 09/10 sur maquettes). Clic droit,
     // ou appui long : ouvrir avec un autre logiciel, joindre à un message.
+    // Double-clic sur la ligne : comme « Ouvrir » (0.6.12, demande de
+    // Fabienne).
     Pane {
         Layout.fillWidth: true
         visible: fenetre.uidCourant > 0 && !fenetre.sourceVisible && fenetre.pieces.length > 0
@@ -293,6 +295,17 @@ ColumnLayout {
                         acceptedDevices: PointerDevice.TouchScreen
                         onLongPressed: menuPiece.ouvrir(lignePiece.modelData, lignePiece)
                     }
+                    // Hors des boutons, qui ont déjà leur clic.
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
+                        onDoubleTapped: function(point) {
+                            var cible = lignePiece.childAt(point.position.x, point.position.y)
+                            if (cible !== boutonOuvrirPiece && cible !== boutonEnregistrerPiece
+                                    && !lignePiece.modelData.risquee)
+                                fenetre.ouvrirPiece(lignePiece.modelData)
+                        }
+                    }
                     // Étiquette du type, en couleur : PDF, XLSX, JPG…
                     Rectangle {
                         implicitWidth: 38
@@ -317,6 +330,7 @@ ColumnLayout {
                         opacity: 0.65
                     }
                     Button {
+                        id: boutonOuvrirPiece
                         text: qsTr("Ouvrir")
                         flat: true
                         enabled: !lignePiece.modelData.risquee
@@ -324,11 +338,12 @@ ColumnLayout {
                         ToolTip.visible: hovered
                         ToolTip.delay: 500
                         ToolTip.text: lignePiece.logiciel.length > 0
-                                      ? qsTr("Avec %1, choisi pour les fichiers .%2 (clic droit : ouvrir avec…)")
+                                      ? qsTr("Avec %1, choisi pour les fichiers .%2 (ou double-clic sur la ligne ; clic droit : ouvrir avec…)")
                                         .arg(lanceur.nom(lignePiece.logiciel)).arg(fenetre.extensionDe(lignePiece.modelData.nom))
-                                      : qsTr("Avec le logiciel du système (clic droit : ouvrir avec…)")
+                                      : qsTr("Avec le logiciel du système (ou double-clic sur la ligne ; clic droit : ouvrir avec…)")
                     }
                     Button {
+                        id: boutonEnregistrerPiece
                         text: qsTr("Enregistrer sous…")
                         flat: true
                         // Sous Android, le dialogue rend une adresse

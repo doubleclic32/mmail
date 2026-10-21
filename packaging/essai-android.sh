@@ -153,7 +153,7 @@ controler() {
     echec=1
   fi
   if [ "$2" -ge 98 ]; then
-    echo "$1 : fenêtre d'une seule couleur 60 s après le réveil (${2} %)" >&2
+    echo "$1 : fenêtre d'une seule couleur (${2} %)" >&2
     echec=1
   fi
 }
@@ -197,3 +197,142 @@ controler veille-profonde "$profonde"
 
 [ "$echec" = 0 ] || exit 1
 echo "Réveil après veille : MMail toujours affiché"
+
+# Connexion Microsoft intégrée (0.6.11) : sa page n'est plus chargée qu'au
+# moment d'une connexion. Pas de vue web avant ; elle s'ouvre depuis la fenêtre
+# d'ajout de compte ; Retour l'abandonne et la décharge sans fermer MMail ; et
+# l'essai de la touche Retour qui suit vérifie que MMail se ferme ensuite. Les
+# boutons se trouvent par l'arbre d'accessibilité d'Android (s'il ne les montre
+# pas, l'étape est signalée et sautée) ; cet arbre n'étant pas rafraîchi après
+# l'ouverture de la page, c'est la hiérarchie des vues de l'activité qui dit si
+# la vue web est là.
+# trouver <début du texte> (ou =<texte exact>) : centre du premier élément
+# affiché qui porte ce texte, vide s'il n'y en a pas.
+trouver() {
+  adb shell uiautomator dump /sdcard/ui.xml > /dev/null 2>&1 || return 0
+  adb exec-out cat /sdcard/ui.xml > ui.xml 2>/dev/null || return 0
+  python3 -I -X utf8 -c '
+import html, re, sys
+for n in re.findall(r"<node [^>]*>", open(sys.argv[1], encoding="utf-8").read()):
+    a = dict((k, html.unescape(v)) for k, v in re.findall(r" ([\w-]+)=\"([^\"]*)\"", n))
+    b = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", a.get("bounds", ""))
+    t = a.get("text") or a.get("content-desc") or ""
+    if b and (t == sys.argv[2][1:] if sys.argv[2][:1] == "=" else t.startswith(sys.argv[2])):
+        x1, y1, x2, y2 = map(int, b.groups())
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+        break
+' ui.xml "$1"
+}
+# toucher <texte> : touche l'élément une fois sa place stable — le clavier qui
+# se retire fait encore glisser la fenêtre d'ajout de compte.
+toucher() {
+  local xy avant="" i
+  for i in 1 2 3 4 5; do
+    xy=$(trouver "$1")
+    [ -n "$xy" ] && [ "$xy" = "$avant" ] && break
+    avant=$xy
+    sleep 2
+  done
+  cp ui.xml "ui-$2.xml" 2>/dev/null || true
+  echo "$1 : ${xy:-introuvable}"
+  [ -n "$xy" ] || return 1
+  # shellcheck disable=SC2086
+  adb shell input tap $xy
+}
+# vue_web <étape> : nombre de vues web de l'activité (hiérarchie gardée).
+vue_web() {
+  adb shell dumpsys activity top > "vues-$1.txt" 2>/dev/null || true
+  grep -cE 'webkit\.WebView|WebView\{' "vues-$1.txt" || true
+}
+adb shell input keyevent KEYCODE_BACK
+sleep 5
+if [ "$(vue_web 0-avant)" != 0 ]; then
+  echo "Connexion Microsoft : vue web chargée avant toute connexion" >&2
+  exit 1
+fi
+# Le tiroir des dossiers, ouvert au lancement, recouvre le bouton : refermé
+# d'un glissement vers la gauche.
+if [ -n "$(trouver "Toutes les BàL")" ]; then
+  adb shell input swipe 250 330 10 330 300
+  sleep 3
+fi
+if ! toucher "Compte Microsoft" 1-compte; then
+  echo "::warning::Connexion Microsoft non essayée : bouton introuvable dans l'arbre d'accessibilité"
+else
+  # Adresse demandée, puis Entrée : la page de Microsoft s'ouvre.
+  sleep 3
+  adb shell input text "essai.mmail@outlook.com"
+  sleep 1
+  adb shell input keyevent KEYCODE_ENTER
+  sleep 10
+  adb exec-out screencap -p > connexion-1-ouverte.png
+  if [ "$(vue_web 1-ouverte)" = 0 ]; then
+    echo "Connexion Microsoft : la page intégrée ne s'est pas ouverte" >&2
+    exit 1
+  fi
+  adb shell input keyevent KEYCODE_BACK
+  sleep 5
+  adb exec-out screencap -p > connexion-2-retour.png
+  if [ "$(vue_web 2-retour)" != 0 ]; then
+    echo "Connexion Microsoft : vue web toujours là après Retour" >&2
+    exit 1
+  elif [ -z "$(adb shell pidof "$PAQUET" || true)" ]; then
+    echo "Connexion Microsoft : Retour a fermé MMail au lieu d'abandonner la connexion" >&2
+    exit 1
+  fi
+  echo "Connexion Microsoft : page ouverte, puis abandonnée par Retour"
+fi
+
+# Touche Retour (0.6.11). Le 21/10, Manu retrouve MMail sur un écran blanc après
+# un appui sur Retour, sans autre issue que de le fermer. Chaque appui ferme ce
+# qui est ouvert (clavier, fenêtre d'ajout de compte, tiroir) ; sur la liste, la
+# fenêtre se ferme et MMail doit quitter : main() rendu, processus fini, retour
+# au lanceur. MMail resté au premier plan sur une fenêtre d'une seule couleur, ou
+# qui ne quitte pas, échoue ; relancé ensuite, il doit de nouveau s'afficher.
+adb logcat -c
+premier_plan() {
+  adb shell dumpsys window | grep -m 1 'mCurrentFocus' | tr -d '\r' || true
+}
+u=0
+for n in 1 2 3 4 5 6; do
+  adb shell input keyevent KEYCODE_BACK
+  sleep 5
+  adb exec-out screencap > "retour-$n.raw"
+  adb exec-out screencap -p > "retour-$n.png"
+  u=$(uni "retour-$n.raw")
+  focus=$(premier_plan)
+  echo "Retour $n : couleur dominante ${u} %, pid $(adb shell pidof "$PAQUET" || echo aucun), ${focus}"
+  case "$focus" in *"$PAQUET"*) ;; *) break ;; esac
+done
+for i in $(seq 1 10); do
+  [ -z "$(adb shell pidof "$PAQUET" || true)" ] && break
+  sleep 2
+done
+pid2=$(adb shell pidof "$PAQUET" || true)
+adb logcat -d > logcat-retour.txt
+cat logcat-retour.txt >> logcat.txt
+grep -E "main\(\) returned|ActivityTaskManager.*$PAQUET" logcat-retour.txt | tail -20 || true
+case "$(premier_plan)" in
+  *"$PAQUET"*)
+    if [ "$u" -ge 98 ]; then
+      echo "Retour : MMail au premier plan sur une fenêtre d'une seule couleur (${u} %)" >&2
+    else
+      echo "Retour : MMail toujours au premier plan après $n appuis" >&2
+    fi
+    echec=1 ;;
+esac
+if [ -n "$pid2" ]; then
+  echo "Retour : le processus de MMail tourne encore 20 s après la fermeture (pid $pid2)" >&2
+  grep -q "main() returned" logcat-retour.txt || echo "Retour : main() n'a pas rendu la main" >&2
+  echec=1
+fi
+
+adb logcat -c
+adb shell am start -W -n "$composant" || true
+relance=$(attendre retour-relance 120)
+echo "Relance après Retour : couleur dominante ${relance} %"
+pid=$(adb shell pidof "$PAQUET" || true)
+controler retour-relance "$relance"
+
+[ "$echec" = 0 ] || exit 1
+echo "Retour : MMail quitte, puis se relance affiché"
