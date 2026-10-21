@@ -26,6 +26,21 @@ ColumnLayout {
     SplitView.fillWidth: true
     spacing: 0
 
+    /// Retire la sélection du message sans bouger la lecture. Placé dans un
+    /// ScrollView, le TextArea ramène la vue à son curseur dès que celui-ci
+    /// change — deselect() suffit — : sous Android, chaque nouveau glissement
+    /// remontait ainsi le message en haut (0.6.10, constaté par Manu).
+    function deselectionner() {
+        if (vueCorps.selectionStart === vueCorps.selectionEnd)
+            return
+        var flick = cadreCorps.contentItem
+        var x = flick.contentX
+        var y = flick.contentY
+        vueCorps.deselect()
+        flick.contentX = x
+        flick.contentY = y
+    }
+
     HoverHandler { onHoveredChanged: if (hovered) fenetre.colonneActive = "message" }
 
     ToolBar {
@@ -378,7 +393,7 @@ ColumnLayout {
             target: cadreCorps.contentItem
             ignoreUnknownSignals: true
             enabled: Qt.platform.os === "android"
-            function onMovementStarted() { vueCorps.deselect() }
+            function onMovementStarted() { colonneLecture.deselectionner() }
         }
 
         TextArea {
@@ -430,7 +445,7 @@ ColumnLayout {
                     // « Copier » de la barre d'Android passe par ici :
                     // la copie faite, la sélection et la barre s'en vont.
                     if (Qt.platform.os === "android")
-                        deselect()
+                        colonneLecture.deselectionner()
                 }
             }
             // Clic droit de la souris seulement : un TapHandler ne trie

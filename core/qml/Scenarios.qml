@@ -1144,6 +1144,65 @@ QtObject {
         tic.start()
     }
 
+    /// Scénario « defilement-lecture » (0.6.10) : retirer la sélection du message ne
+    /// ramène plus la lecture en haut. Sous Android, chaque début de
+    /// glissement la retire ; le TextArea, dans son ScrollView, revenait alors
+    /// à son curseur. Le témoin rejoue l'ancien appel, deselect() seul.
+    function lancerScenarioDefilementLecture() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0 }
+        var vue = colonneLecture.vueCorps
+        var flick = colonneLecture.cadreCorps.contentItem
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | contentY " + Math.round(flick.contentY)
+                        + " | sélection « " + vue.selectedText + " »")
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                if (modeleMessages.count < 1) {
+                    console.log("scenario: ECHEC defilement-lecture : boîte de réception vide")
+                    suivi.echecs += 1
+                    suivi.n = 9
+                    return
+                }
+                choisir(0, 0)
+            } else if (suivi.n === 9) {
+                // Un message long, en texte simple, à la place du corps reçu.
+                var lignes = []
+                for (var i = 1; i <= 300; ++i)
+                    lignes.push("Ligne " + i + " du message d'essai, assez longue pour se replier dans la colonne de lecture.")
+                vue.text = lignes.join("\n")
+                vue.cursorPosition = 0
+            } else if (suivi.n === 10) {
+                console.log("scenario: hauteur du contenu " + Math.round(flick.contentHeight) + " | vue " + Math.round(flick.height))
+                flick.contentY = 800
+                vue.deselect()
+                bilan("témoin : deselect() seul, sans sélection, ramène la vue au curseur (attendu : contentY < 800)",
+                      flick.contentY < 800)
+                flick.contentY = 800
+                colonneLecture.deselectionner()
+                bilan("sans sélection : la lecture reste à 800", Math.round(flick.contentY) === 800)
+            } else if (suivi.n === 11) {
+                vue.select(0, 5)
+                flick.contentY = 800
+                colonneLecture.deselectionner()
+                bilan("sélection en haut, lecture plus bas : sélection retirée, la lecture reste à 800",
+                      Math.round(flick.contentY) === 800 && vue.selectedText === "")
+            } else if (suivi.n === 12) {
+                tic.stop()
+                console.log("scenario: defilement-lecture " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
     /// Scénario « lu-differe » (0.6.9, demande de Gwenaëlle du 20/10) : le
     /// marquage « lu » attend le délai réglé, ne vise pas un message quitté
     /// avant, et n'a jamais lieu sur « Jamais ». La boîte de réception doit

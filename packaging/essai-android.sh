@@ -87,3 +87,113 @@ if [ -z "$pid" ]; then
 fi
 
 echo "MMail tourne (pid $pid)"
+
+# Veille puis réveil (0.6.10). Le 21/10, Manu retrouve MMail sur un écran blanc
+# après une mise en veille du téléphone, sans autre issue que de le fermer.
+# MMail doit d'abord être affiché : tant que son interface se charge, la fenêtre
+# est d'une seule couleur, et Android peut le dire « ne répond plus » sans que
+# la veille y soit pour rien. Viennent alors une veille courte, puis une veille
+# profonde (Doze forcé, mémoire réclamée à l'application, comme après une nuit).
+# Au réveil, MMail disparu, une application qui ne répond plus (ANR), ou une
+# fenêtre restée d'une seule couleur échouent. Captures et journal d'Android
+# partent avec les artefacts du travail.
+uni() {
+  # Part, en %, de la couleur dominante au centre d'une capture brute (sans la
+  # barre d'état ni celle de navigation). screencap sans -p : largeur, hauteur,
+  # format, parfois l'espace colorimétrique, puis RGBA. Une fenêtre vide, ou
+  # l'écran éteint, donne près de 100, quelle que soit la couleur.
+  python3 -I -c '
+import collections, struct, sys
+d = open(sys.argv[1], "rb").read()
+l, h = struct.unpack("<II", d[:8])
+px = d[len(d) - l * h * 4:]
+teintes = collections.Counter()
+for y in range(h // 10, h * 9 // 10, 7):
+    for x in range(0, l, 7):
+        i = 4 * (y * l + x)
+        teintes[(px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3)] += 1
+print(round(100 * teintes.most_common(1)[0][1] / max(sum(teintes.values()), 1)))
+' "$1"
+}
+# attendre <nom> <secondes> : capture jusqu'à ce que la fenêtre ne soit plus
+# d'une seule couleur, ou que le délai soit passé ; la dernière est gardée.
+attendre() {
+  local fin=$((SECONDS + $2)) u=100
+  while :; do
+    adb exec-out screencap > "$1.raw"
+    u=$(uni "$1.raw")
+    [ "$u" -lt 98 ] || [ "$SECONDS" -ge "$fin" ] && break
+    sleep 3
+  done
+  adb exec-out screencap -p > "$1.png"
+  echo "$u"
+}
+reveiller() {
+  adb shell input keyevent KEYCODE_WAKEUP
+  sleep 2
+  adb shell wm dismiss-keyguard || true
+}
+echec=0
+controler() {
+  # controler <étape> <part de la couleur dominante> : MMail toujours là, sans
+  # ANR, et sa fenêtre dessinée.
+  local pid2
+  pid2=$(adb shell pidof "$PAQUET" || true)
+  adb logcat -d > "logcat-$1.txt"
+  cat "logcat-$1.txt" >> logcat.txt
+  adb shell dumpsys window | grep -E 'mCurrentFocus' || true
+  if [ -z "$pid2" ]; then
+    echo "$1 : MMail ne tourne plus" >&2
+    echec=1
+  elif [ "$pid2" != "$pid" ]; then
+    echo "$1 : MMail a été relancé (pid $pid, puis $pid2)" >&2
+  fi
+  if grep -q "ANR in $PAQUET" "logcat-$1.txt"; then
+    echo "$1 : MMail ne répond plus (ANR)" >&2
+    echec=1
+  fi
+  if [ "$2" -ge 98 ]; then
+    echo "$1 : fenêtre d'une seule couleur 60 s après le réveil (${2} %)" >&2
+    echec=1
+  fi
+}
+
+# L'écran ne s'éteint pas de lui-même pendant l'attente : une capture d'écran
+# éteint passait pour MMail affiché.
+adb shell settings put system screen_off_timeout 1800000 || true
+reveiller
+avant=$(attendre veille-0-avant 300)
+echo "Avant la veille : couleur dominante ${avant} %"
+if [ "$avant" -ge 98 ]; then
+  # L'émulateur, et non MMail : sans accélération, le chargement a déjà
+  # dépassé deux minutes et demie. Signalé, sans faire échouer le travail.
+  echo "::warning::Essai de veille non fait : MMail pas affiché 5 min après son lancement"
+  adb logcat -d >> logcat.txt
+  exit 0
+fi
+
+adb logcat -c
+adb shell input keyevent KEYCODE_SLEEP
+sleep 30
+reveiller
+courte=$(attendre veille-1-courte 60)
+echo "Veille courte (30 s) : couleur dominante ${courte} % au réveil"
+controler veille-courte "$courte"
+
+adb logcat -c
+adb shell input keyevent KEYCODE_SLEEP
+sleep 5
+# Doze n'entre pas sur secteur : l'émulateur se dit débranché le temps de l'essai.
+adb shell dumpsys battery unplug || true
+adb shell dumpsys deviceidle force-idle || true
+adb shell am send-trim-memory "$PAQUET" COMPLETE || true
+sleep 60
+adb shell dumpsys deviceidle unforce || true
+adb shell dumpsys battery reset || true
+reveiller
+profonde=$(attendre veille-2-profonde 60)
+echo "Veille profonde (Doze, mémoire réclamée) : couleur dominante ${profonde} % au réveil"
+controler veille-profonde "$profonde"
+
+[ "$echec" = 0 ] || exit 1
+echo "Réveil après veille : MMail toujours affiché"

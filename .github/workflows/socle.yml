@@ -491,6 +491,18 @@ jobs:
                       /usr/local/lib/android/sdk/ndk/2[0-5].* 2>/dev/null || true
           df -h / | tail -1
 
+      # Sans accès à /dev/kvm, l'émulateur tourne sans accélération : l'interface
+      # de MMail y mettait deux minutes et demie à se charger (21/10), assez pour
+      # fausser l'essai de veille. La règle udev ouvre /dev/kvm au runner.
+      - name: Accélération de l'émulateur
+        if: matrix.emulateur
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || echo "pas de /dev/kvm : émulateur sans accélération"
       - name: Lancement sur émulateur
         if: matrix.emulateur
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
@@ -504,12 +516,16 @@ jobs:
           disable-animations: true
           # Une seule ligne : l'action exécute chaque ligne dans un shell distinct.
           script: bash packaging/essai-android.sh
+      # Toujours déposé : les captures de l'essai de veille (0.6.10) se
+      # regardent aussi quand il passe.
       - name: Journal de l'émulateur
-        if: matrix.emulateur && failure()
+        if: matrix.emulateur && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mmail-android-logcat
-          path: logcat.txt
+          path: |
+            logcat.txt
+            veille-*.png
           if-no-files-found: ignore
       - name: Dépôt de l'APK
         if: matrix.abi == 'arm64_v8a'

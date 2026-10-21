@@ -162,7 +162,7 @@ ApplicationWindow {
         enabled: Qt.platform.os === "android" && colonneLecture.vueCorps.selectedText.length > 0
         acceptedDevices: PointerDevice.TouchScreen
         gesturePolicy: TapHandler.DragThreshold
-        onTapped: colonneLecture.vueCorps.deselect()
+        onTapped: colonneLecture.deselectionner()
     }
     readonly property string noyau: socle.noyau
     // Comptes du profil, pour le menu « Comptes » : { compte, adresse, hote,
@@ -4707,6 +4707,10 @@ ApplicationWindow {
             // ou jamais.
             if (essai.scenario === "lu-differe")
                 scenarios.lancerScenarioLuDiffere()
+            // Scénario « defilement-lecture » (0.6.10) : retirer la sélection
+            // garde la position de lecture.
+            if (essai.scenario === "defilement-lecture")
+                scenarios.lancerScenarioDefilementLecture()
             // Scénario « partagees » (0.6.8) : une boîte partagée par le
             // serveur, proposée dans « De ».
             if (essai.scenario === "partagees")
