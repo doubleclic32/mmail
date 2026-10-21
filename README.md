@@ -25,7 +25,8 @@ de projet interne.
   « RE : », « TR : » et le message d'origine sous un bloc « De / Envoyé / À /
   Objet » — cité en HTML quand il l'est, tableaux et images intégrées compris
   (ses images distantes et ses feuilles de style sont écartées) ; Cc et Cci ; pièces jointes par « Joindre… » ou glisser-déposer,
-  celles d'un message transféré reprises d'office ; une capture d'écran se
+  celles d'un message transféré reprises d'office, et qu'un clic ouvre pour
+  les vérifier avant l'envoi (0.6.9 ; jamais un programme ni un script) ; une capture d'écran se
   colle dans le corps (Ctrl+V) et une image glissée sur le corps s'y insère,
   intégrée au message à l'envoi ; envoi par la soumission
   SMTP (port 465) — celle du serveur de lecture, ou un **serveur d'envoi**
@@ -163,7 +164,9 @@ de projet interne.
   jamais un dossier sur la foi de son nom ;
 - marquage lu / non lu (Ctrl+Q, Ctrl+U) ; un message affiché est marqué lu,
   sauf s'il a été marqué entre-temps — « non lu » pendant son chargement le
-  laisse non lu ;
+  laisse non lu ; « Affichage › Marquer comme lu » choisit quand, comme le volet
+  de lecture d'Outlook (0.6.9) : à l'affichage, après 3 à 30 secondes — un
+  message quitté avant reste non lu —, ou jamais, à la main seulement ;
 - **masquage local** des dossiers peu utilisés, réaffichage en un clic ;
 - affichage du **message brut** (bouton « Source ») ;
 - **copie automatique de la sélection**, comme dans MMdedit : un texte
@@ -219,7 +222,9 @@ connexion ; il se synchronise au démarrage, tous les quarts d'heure, et sur
 « Actualiser ».
 
 **Créer, modifier, supprimer** : « Nouvel événement », ou un double clic sur un
-créneau de la semaine, du jour ou sur une case du mois ; titre, lieu, horaires
+créneau de la semaine, du jour ou sur une case du mois, ou encore, à la
+souris, un cliquer-glisser sur les demi-heures voulues de la semaine ou du jour
+(0.6.9) : la fiche s'ouvre avec ces horaires ; titre, lieu, horaires
 ou journée entière, agenda, répétition (chaque jour, jour ouvré, semaine, mois,
 année, jusqu'à une date), rappel, description. Dans une série, la fiche
 demande s'il s'agit de cette occurrence ou de toute la série. Un événement
@@ -496,6 +501,7 @@ variable d'environnement :
 | `JoursCache` | `MMAIL_JOURS_CACHE` | jours de messages gardés sur le poste (31 par défaut ; 0 : aucun) |
 | `TailleCache` | `MMAIL_TAILLE_CACHE` | taille, en Mio, au-delà de laquelle un message n'est pas gardé sur le poste (10 par défaut ; 0 : sans plafond) |
 | `AvisVersion` | `MMAIL_AVIS_VERSION` | 0 : ne pas signaler les nouvelles versions (parc dont l'administrateur déploie les mises à jour) |
+| `Rendu` | `MMAIL_RENDU` | `logiciel` ou `materiel` : impose le moteur de rendu de l'interface. Sans ce réglage (0.6.9), MMail choisit seul : sur une machine sans carte graphique — serveur RDS, machine virtuelle —, Direct3D retomberait sur WARP, le rendu logiciel de Windows, trois à quatre fois plus coûteux en processeur que le moteur logiciel de Qt Quick, que MMail prend alors. `QT_QUICK_BACKEND`, s'il est posé, l'emporte. « À propos » indique « rendu logiciel » |
 
 Un seul MMail s'ouvre par profil : un second lancement ramène au premier plan
 la fenêtre déjà ouverte, puis s'arrête.

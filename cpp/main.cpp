@@ -57,6 +57,7 @@ extern const std::size_t nombreTraductionsQt;
 #  include <windows.h>  // GetCommandLineW / CommandLineToArgvW
 #  include <shellapi.h>
 #  include <aclapi.h>   // droits du profil imposé (reserverProfil)
+#  include <dxgi.h>     // cartes graphiques de la machine (choisirRendu)
 #endif
 
 #include <cstdio>
@@ -95,6 +96,50 @@ static QString reglageMachine(const char* variable, const QString& cle)
   QSettings machine(QSettings::NativeFormat, QSettings::SystemScope, QCoreApplication::organizationName(),
                     QCoreApplication::applicationName());
   return machine.value(cle).toString().trimmed();
+}
+
+/// Vrai si la machine n'a aucune carte graphique : Direct3D n'y trouve que
+/// des adaptateurs logiciels ou de Microsoft (« Microsoft Basic Render
+/// Driver », « Remote Display Adapter » d'une session RDS).
+static bool sansCarteGraphique()
+{
+#ifdef Q_OS_WIN
+  IDXGIFactory1* fabrique = nullptr;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&fabrique))))
+    return false;
+  bool materiel = false;
+  IDXGIAdapter1* adaptateur = nullptr;
+  for (UINT i = 0; !materiel && fabrique->EnumAdapters1(i, &adaptateur) != DXGI_ERROR_NOT_FOUND; ++i) {
+    DXGI_ADAPTER_DESC1 description;
+    if (SUCCEEDED(adaptateur->GetDesc1(&description)))
+      materiel = !(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && description.VendorId != 0x1414;
+    adaptateur->Release();
+  }
+  fabrique->Release();
+  return !materiel;
+#else
+  return false;
+#endif
+}
+
+/// Rendu de l'interface. Sans carte graphique (serveur RDS, machine
+/// virtuelle), Qt Quick passe par Direct3D 11, qui retombe sur WARP, le rendu
+/// logiciel de Windows : trois à quatre fois plus de processeur que le moteur
+/// logiciel de Qt Quick, mesuré sur un serveur RDS les 19 et 20/10/2026. MMail
+/// prend alors ce dernier. « Rendu » (« logiciel » ou « materiel ») impose le
+/// choix pour la machine ; QT_QUICK_BACKEND, s'il est posé, l'emporte sur tout.
+/// Vrai si le rendu est logiciel.
+static bool choisirRendu()
+{
+  const QByteArray impose = qgetenv("QT_QUICK_BACKEND");
+  if (!impose.isEmpty())
+    return impose == "software";
+  const QString reglage = reglageMachine("MMAIL_RENDU", QStringLiteral("Rendu")).toLower();
+  const bool materiel = reglage == QStringLiteral("materiel") || reglage == QStringLiteral("matériel");
+  const bool logiciel = reglage == QStringLiteral("logiciel") || (!materiel && sansCarteGraphique());
+  if (logiciel)
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+  return logiciel;
 }
 
 /// Développe les variables d'un chemin réglé pour toute la machine :
@@ -272,6 +317,8 @@ int main(int argc, char* argv[])
   const QString tailleCache = reglageMachine("MMAIL_TAILLE_CACHE", QStringLiteral("TailleCache"));
   if (!tailleCache.isEmpty())
     qputenv("MMAIL_TAILLE_CACHE", tailleCache.toUtf8());
+  // Avant la première fenêtre : le moteur de rendu ne change plus ensuite.
+  const bool renduLogiciel = choisirRendu();
 
   // Système du poste et sa version, que le noyau donne au serveur IMAP en se
   // présentant (commande ID) : Qt les nomme sur toutes les cibles, Rust non.
@@ -361,6 +408,8 @@ int main(int argc, char* argv[])
   // d'affichage.
   engine.rootContext()->setContextProperty(QStringLiteral("versionQt"),
                                            QString::fromLatin1(qVersion()));
+  // De même pour le moteur de rendu choisi (cf. choisirRendu).
+  engine.rootContext()->setContextProperty(QStringLiteral("renduLogiciel"), renduLogiciel);
   // Commodité de développement : des variables d'environnement ouvrent une ou
   // deux sessions au démarrage, ce qui permet de saisir l'interface en image
   // sans personne devant l'écran. Rien n'est lu si elles sont absentes.

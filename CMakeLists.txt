@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.6.8 LANGUAGES CXX)
+project(mmail VERSION 0.6.9 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -194,7 +194,8 @@ target_compile_definitions(mmail PRIVATE MMAIL_VERSION="${PROJECT_VERSION}")
 # cpp/lanceur.h).
 if(WIN32)
   # advapi32 : droits du profil imposé par la machine (cf. reserverProfil).
-  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid advapi32)
+  # dxgi : cartes graphiques de la machine (cf. choisirRendu).
+  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid advapi32 dxgi)
 endif()
 
 # Compteur du lanceur sous Linux (cf. cpp/pastille.h) : un signal D-Bus.

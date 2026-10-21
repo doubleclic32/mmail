@@ -64,6 +64,10 @@ pub mod qobject {
         #[qproperty(i32, en_attente, cxx_name = "enAttente")]
         /// Vrai pendant une synchronisation des agendas.
         #[qproperty(bool, agenda_occupe, cxx_name = "agendaOccupe")]
+        /// Marquage « lu » d'un message affiché : 0 à l'affichage, N secondes
+        /// après (`marquageLuDiffere`), -1 jamais — à la main seulement
+        /// (0.6.9, demande de Gwenaëlle).
+        #[qproperty(i32, delai_lu, cxx_name = "delaiLu")]
         type Boite = super::BoiteRust;
 
         /// Ouvre l'index local du profil. Local et immédiat ; à appeler avant
@@ -326,6 +330,13 @@ pub mod qobject {
         #[cxx_name = "marquerLu"]
         fn marquer_lu(self: Pin<&mut Boite>, uids: &QString, lu: bool) -> bool;
 
+        /// Fin du délai annoncé par `marquageLuDiffere` : marque « lu » le
+        /// message `uid` s'il est encore celui de l'affichage en attente, et si
+        /// l'utilisateur ne l'a pas marqué lui-même entre-temps.
+        #[qinvokable]
+        #[cxx_name = "marquerLuDiffere"]
+        fn marquer_lu_differe(self: Pin<&mut Boite>, uid: i32) -> bool;
+
         /// Pose ou retire le drapeau de suivi sur des messages du dossier
         /// ouvert — UID séparés par des virgules.
         #[qinvokable]
@@ -497,7 +508,8 @@ pub mod qobject {
         fn redactions_gardees(&self) -> QString;
 
         /// Fichier à joindre, désigné par son URL (`file:…`) ou son chemin :
-        /// `{chemin, nom, taille}` en JSON, ou une chaîne vide s'il n'existe pas.
+        /// `{chemin, nom, taille, risquee}` en JSON, ou une chaîne vide s'il
+        /// n'existe pas.
         #[qinvokable]
         #[cxx_name = "decrireFichier"]
         fn decrire_fichier(&self, url: &QString) -> QString;
@@ -669,6 +681,13 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "lusModifies"]
         fn lus_modifies(self: Pin<&mut Boite>, uids: &QString, lu: bool);
+
+        /// Le message `uid` vient de s'afficher non lu, et `delaiLu` en
+        /// diffère le marquage : l'interface rappelle `marquerLuDiffere` après
+        /// `secondes`.
+        #[qsignal]
+        #[cxx_name = "marquageLuDiffere"]
+        fn marquage_lu_differe(self: Pin<&mut Boite>, uid: i32, secondes: i32);
 
         /// Des drapeaux ont changé dans le dossier ouvert.
         #[qsignal]
@@ -1231,6 +1250,10 @@ pub struct BoiteRust {
     /// demandé avant ne marque plus le message « lu » (0.6.7).
     marquages: HashMap<(i64, u32), u64>,
     agenda_occupe: bool,
+    delai_lu: i32,
+    /// Message affiché non lu dont `delai_lu` diffère le marquage ; oublié dès
+    /// qu'un autre message est demandé.
+    lu_differe: Option<LuDiffere>,
     /// Comptes dont le serveur a accepté le mot de passe pendant cette
     /// session : seule leur clé sert à la sauvegarde.
     authentifies: HashSet<i64>,
@@ -1263,6 +1286,15 @@ impl ListeEnvoyee {
         }
         self.version = -1;
     }
+}
+
+/// Message affiché non lu, en attente de son marquage « lu » (cf. `delai_lu`).
+struct LuDiffere {
+    compte: i64,
+    chemin: String,
+    dossier: i64,
+    uid: u32,
+    numero: u64,
 }
 
 /// Vrai si l'utilisateur a marqué ce message (lu ou non lu) après la demande
@@ -1298,6 +1330,8 @@ impl Default for BoiteRust {
             liste: None,
             marquages: HashMap::new(),
             agenda_occupe: false,
+            delai_lu: 0,
+            lu_differe: None,
             authentifies: HashSet::new(),
             sauvegarde_en_cours: false,
             sauvegardes_lues: HashMap::new(),
@@ -2659,6 +2693,16 @@ impl qobject::Boite {
         self.as_mut().envoyer(compte, Commande::MarquerLu { chemin, uids, lu, discret: false })
     }
 
+    pub fn marquer_lu_differe(mut self: Pin<&mut Self>, uid: i32) -> bool {
+        let ouvert = self.courant.as_ref().map(|c| c.2);
+        let attente = self.as_mut().rust_mut().lu_differe.take_if(|d| d.uid as i32 == uid && Some(d.dossier) == ouvert);
+        let Some(LuDiffere { compte, chemin, dossier, uid, numero }) = attente else {
+            return false;
+        };
+        self.as_mut().marquer_lu_a_l_affichage(compte, chemin, dossier, uid, numero);
+        true
+    }
+
     /// Retient que l'utilisateur vient de marquer ces messages : l'affichage en
     /// cours de l'un d'eux, demandé avant, ne le marquera plus « lu ». Sans
     /// cela, « Marquer comme non lu » fait pendant le chargement du message
@@ -3213,11 +3257,13 @@ impl qobject::Boite {
             return QString::from("");
         }
         let nom = Path::new(&chemin).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // `risquee` : la rédaction ne l'ouvre pas, comme à la lecture.
         QString::from(&format!(
-            r#"{{"chemin":{},"nom":{},"taille":{}}}"#,
+            r#"{{"chemin":{},"nom":{},"taille":{},"risquee":{}}}"#,
             texte_json(&chemin),
             texte_json(&nom),
-            meta.len()
+            meta.len(),
+            crate::index::ouverture_risquee(&nom)
         ))
     }
 
@@ -3362,6 +3408,11 @@ impl qobject::Boite {
             return false;
         };
         let uid = uid as u32;
+        // Un autre message : le marquage différé du précédent n'a plus cours.
+        // Le même (ses images distantes) le garde.
+        if self.lu_differe.as_ref().is_some_and(|d| d.uid != uid || d.dossier != dossier) {
+            self.as_mut().rust_mut().lu_differe = None;
+        }
         let numero = AFFICHAGE.fetch_add(1, Ordering::SeqCst) + 1;
         // Un message gardé sur le poste s'affiche sans réseau — sauf pour en
         // télécharger les images distantes, que le fil du compte va chercher.
@@ -3567,8 +3618,15 @@ impl qobject::Boite {
                     // message : relire la liste entière ralentissait le passage
                     // d'un message à l'autre.
                     let dossier = self.magasin.as_ref().and_then(|m| m.dossier_id(compte, &chemin).ok());
-                    if let Some(dossier) = dossier {
-                        self.as_mut().marquer_lu_a_l_affichage(compte, chemin, dossier, uid, numero);
+                    match (dossier, self.delai_lu) {
+                        (Some(dossier), 0) => self.as_mut().marquer_lu_a_l_affichage(compte, chemin, dossier, uid, numero),
+                        // Après un délai : l'interface en rappelle la fin.
+                        (Some(dossier), secondes) if secondes > 0 => {
+                            self.as_mut().rust_mut().lu_differe = Some(LuDiffere { compte, chemin, dossier, uid, numero });
+                            self.as_mut().marquage_lu_differe(uid as i32, secondes);
+                        }
+                        // Jamais : à la main seulement.
+                        _ => {}
                     }
                 }
                 self.as_mut().corps_recu(

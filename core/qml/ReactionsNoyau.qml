@@ -445,6 +445,12 @@ Connections {
         fenetre.majInfoDossier()
     }
 
+    function onMarquageLuDiffere(uid, secondes) {
+        minuterieLu.uid = uid
+        minuterieLu.interval = secondes * 1000
+        minuterieLu.restart()
+    }
+
     function onPieceAJoindre(url) {
         var r = fenetre.redactions[fenetre.pieceCible]
         if (!r) {
@@ -454,8 +460,12 @@ Connections {
         }
         fenetre.pieceCible = ""
         r.ajouterFichiers([url])
-        if (fenetre.essai && fenetre.essai.scenario === "joindre")
+        if (fenetre.essai && fenetre.essai.scenario === "joindre") {
             console.log("scenario: pièces de la rédaction :", JSON.stringify(r.pieces.map(function(p) { return p.nom })))
+            // Puis ouverte depuis la rédaction, pour la vérifier (0.6.9).
+            r.ouvrirPiece(r.pieces[0])
+            console.log("scenario: ouverture depuis la rédaction | risquée", r.pieces[0].risquee, "|", r.note)
+        }
         if (r.conteneur && r.conteneur.raise) {
             r.conteneur.raise()
             r.conteneur.requestActivate()

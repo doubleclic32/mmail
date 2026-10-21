@@ -1144,6 +1144,89 @@ QtObject {
         tic.start()
     }
 
+    /// Scénario « lu-differe » (0.6.9, demande de Gwenaëlle du 20/10) : le
+    /// marquage « lu » attend le délai réglé, ne vise pas un message quitté
+    /// avant, et n'a jamais lieu sur « Jamais ». La boîte de réception doit
+    /// compter deux messages.
+    function lancerScenarioLuDiffere() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, a: 0, b: 0, echecs: 0 }
+        var lu = function(uid) {
+            var i = indexDe(uid)
+            var l = JSON.parse(boite.messagesParUid(String(uid)))
+            return "liste " + (i >= 0 ? modeleMessages.get(i).lu : null) + " | index " + (l.length > 0 ? l[0].lu : null)
+        }
+        var bilan = function(texte, uid, attendu) {
+            var etat = lu(uid)
+            var bon = etat === "liste " + attendu + " | index " + attendu
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | " + etat)
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                if (modeleMessages.count < 2) {
+                    console.log("scenario: ECHEC lu-differe : " + modeleMessages.count + " message(s) en boîte de réception, il en faut deux")
+                    suivi.echecs += 1
+                    suivi.n = 39
+                    return
+                }
+                suivi.a = modeleMessages.get(0).uid
+                suivi.b = modeleMessages.get(1).uid
+                boite.marquerLu(suivi.a + "," + suivi.b, false)
+                rafraichirListe()
+                reglages.delaiLu = 3
+            } else if (suivi.n === 9) {
+                choisir(indexDe(suivi.a), 0)
+            } else if (suivi.n === 11) {
+                bilan("A : 3 s, encore non lu après 2 s", suivi.a, false)
+            } else if (suivi.n === 14) {
+                bilan("A : 3 s, lu après 5 s", suivi.a, true)
+            } else if (suivi.n === 15) {
+                choisir(indexDe(suivi.b), 0)
+            } else if (suivi.n === 16) {
+                // B quitté avant la fin du délai.
+                choisir(indexDe(suivi.a), 0)
+            } else if (suivi.n === 21) {
+                bilan("B : quitté au bout d'une seconde, toujours non lu", suivi.b, false)
+                reglages.delaiLu = -1
+            } else if (suivi.n === 22) {
+                choisir(indexDe(suivi.b), 0)
+            } else if (suivi.n === 28) {
+                bilan("B : « Jamais », non lu après 6 s", suivi.b, false)
+                reglages.delaiLu = 0
+                boite.marquerLu(String(suivi.a), false)
+                rafraichirListe()
+            } else if (suivi.n === 29) {
+                choisir(indexDe(suivi.a), 0)
+            } else if (suivi.n === 31) {
+                bilan("A : « À l'affichage », lu aussitôt", suivi.a, true)
+                // Le serveur : un autre dossier, puis la boîte de réception
+                // relue — ses drapeaux reviennent du serveur.
+                fenetre.selection = ({})
+                uidCourant = 0
+                ouvrirDossier(c.compte, "Essais")
+            } else if (suivi.n === 33) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 35) {
+                boite.actualiser()
+            } else if (suivi.n === 40) {
+                bilan("serveur : A lu", suivi.a, true)
+                bilan("serveur : B non lu", suivi.b, false)
+                console.log("scenario: lu-differe, " + (suivi.echecs === 0 ? "tout OK" : suivi.echecs + " échec(s)"))
+                suivi.n = 44
+            } else if (suivi.n >= 45) {
+                tic.stop()
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
     /// Scénario « adresses-envoi » (0.6.7) : les autres adresses d'envoi d'un
     /// compte dans le champ « De », celle d'une réponse ou d'un brouillon
     /// reprise, l'identité du compte reprise faute de la sienne. Sans réseau

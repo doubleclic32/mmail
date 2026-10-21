@@ -18,6 +18,8 @@ Pane {
 
     required property var boite
     property bool compact: false
+    // Au doigt (Android) : glisser fait défiler, sans créer d'événement.
+    property bool tactile: false
     // Pour la sauvegarde de la configuration (cf. Main.qml).
     property alias reglagesAgenda: reglagesAgenda
     // « jour », « semaine » ou « mois » ; la date autour de laquelle la vue
@@ -128,9 +130,17 @@ Pane {
         return agendas.filter(function(a) { return a.ecriture })
     }
 
+    // Heure d'une demi-heure de la journée (0 à 48), comme la colonne des
+    // heures : 19 → « 09:30 ».
+    function heureDemi(n) {
+        var h = Math.floor(n / 2)
+        return (h < 10 ? "0" : "") + h + ":" + (n % 2 ? "30" : "00")
+    }
+
     // Nouvel événement le jour `texte` (aaaa-mm-jj), à `minutes` depuis
-    // minuit — -1 : l'heure pleine qui vient aujourd'hui, 9 h un autre jour.
-    function nouvelEvenement(texte, minutes, journee) {
+    // minuit — -1 : l'heure pleine qui vient aujourd'hui, 9 h un autre jour —,
+    // pour `duree` minutes (une heure sans elle).
+    function nouvelEvenement(texte, minutes, journee, duree) {
         var modifiables = agendasModifiables()
         if (modifiables.length === 0) {
             annoncer(qsTr("Aucun agenda n'accepte l'écriture."), true)
@@ -142,7 +152,7 @@ Pane {
             minutes = isoJour(debut) === isoJour(maintenant) ? Math.min(23 * 60, (maintenant.getHours() + 1) * 60) : 9 * 60
         }
         debut.setHours(Math.floor(minutes / 60), minutes % 60)
-        var fin = new Date(debut.getTime() + 60 * 60 * 1000)
+        var fin = new Date(debut.getTime() + (duree > 0 ? duree : 60) * 60 * 1000)
         var defaut = modifiables.find(function(a) { return a.id === reglagesAgenda.agendaParDefaut }) || modifiables[0]
         popupSaisie.ouvrir({
             agenda: defaut.id, objet: 0, occurrence: "", titre: "", lieu: "", description: "",
@@ -853,15 +863,69 @@ Pane {
                     }
                 }
                 // Double clic sur un créneau libre : un nouvel événement à la
-                // demi-heure.
+                // demi-heure. Cliquer-glisser, à la souris : un événement sur
+                // les demi-heures balayées, comme dans Outlook (0.6.9, demande
+                // de Gwenaëlle). Au doigt, glisser fait défiler la grille.
                 MouseArea {
+                    id: zoneCreneaux
                     width: defilement.contentWidth
                     height: defilement.contentHeight
+                    preventStealing: !agenda.tactile
+                    // Colonne du jour balayé (-1 : aucun) ; demi-heures de
+                    // l'appui et sous le pointeur.
+                    property int jour: -1
+                    property int depart: 0
+                    property int arrivee: 0
+                    property real yAppui: 0
+                    property bool balaye: false
+                    function demiHeure(y) { return Math.max(0, Math.min(47, Math.floor(y / grille.hh * 2))) }
+                    onPressed: function(souris) {
+                        var j = Math.floor((souris.x - grille.marge) / grille.largeurJour)
+                        jour = !agenda.tactile && j >= 0 && j < grille.nbJours ? j : -1
+                        depart = arrivee = demiHeure(souris.y)
+                        yAppui = souris.y
+                        balaye = false
+                    }
+                    onPositionChanged: function(souris) {
+                        if (jour < 0)
+                            return
+                        balaye = balaye || Math.abs(souris.y - yAppui) >= Qt.styleHints.startDragDistance
+                        arrivee = demiHeure(souris.y)
+                    }
+                    onReleased: {
+                        if (jour >= 0 && balaye) {
+                            var debut = Math.min(depart, arrivee)
+                            agenda.nouvelEvenement(agenda.donnees.jours[jour].date, debut * 30, false,
+                                                   (Math.abs(arrivee - depart) + 1) * 30)
+                        }
+                        jour = -1
+                    }
+                    onCanceled: jour = -1
                     onDoubleClicked: function(souris) {
                         var j = Math.floor((souris.x - grille.marge) / grille.largeurJour)
                         if (j < 0 || j >= grille.nbJours)
                             return
                         agenda.nouvelEvenement(agenda.donnees.jours[j].date, Math.floor(souris.y / grille.hh * 2) * 30, false)
+                    }
+                }
+                // Créneau balayé, par-dessus les événements.
+                Rectangle {
+                    z: 2
+                    visible: zoneCreneaux.jour >= 0 && zoneCreneaux.balaye
+                    x: grille.marge + zoneCreneaux.jour * grille.largeurJour + 2
+                    y: Math.min(zoneCreneaux.depart, zoneCreneaux.arrivee) * grille.hh / 2 + 1
+                    width: grille.largeurJour - 4
+                    height: (Math.abs(zoneCreneaux.arrivee - zoneCreneaux.depart) + 1) * grille.hh / 2 - 2
+                    radius: 4
+                    color: Qt.rgba(agenda.accent.r, agenda.accent.g, agenda.accent.b, 0.25)
+                    border.width: 1
+                    border.color: agenda.accent
+                    Label {
+                        x: 6
+                        y: 2
+                        font.pixelSize: 12
+                        text: agenda.heureDemi(Math.min(zoneCreneaux.depart, zoneCreneaux.arrivee)) + " – "
+                              + agenda.heureDemi(Math.max(zoneCreneaux.depart, zoneCreneaux.arrivee) + 1)
                     }
                 }
                 // Événements.

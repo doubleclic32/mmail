@@ -40,7 +40,10 @@ ApplicationWindow {
         repeat: true
         onTriggered: boite.envoyerDifferes()
     }
-    Boite { id: boite }
+    Boite {
+        id: boite
+        delaiLu: reglages.delaiLu
+    }
     // Configuration automatique du serveur, et lien de configuration.
     Configuration {
         id: configuration
@@ -370,6 +373,9 @@ ApplicationWindow {
         property string historiqueRecherches: "[]"
         // Notification du nouveau courrier, fenêtre au second plan (0.6.2).
         property bool notifications: true
+        // Marquage « lu » d'un message affiché : 0 à l'affichage, N secondes
+        // après, -1 jamais (0.6.9, cf. Boite.delaiLu).
+        property int delaiLu: 0
     }
 
     // ---------------------------------------------------------- apparences
@@ -1070,6 +1076,7 @@ ApplicationWindow {
         visible: fenetre.module === "agenda"
         boite: boite
         compact: fenetre.compact
+        tactile: fenetre.tactile
         accent: fenetre.accent
         texteAccent: fenetre.texteAccent
         onAnnoncer: function(texte, erreur) { fenetre.annoncer(texte, erreur) }
@@ -3818,6 +3825,13 @@ ApplicationWindow {
         interval: 60
         onTriggered: if (fenetre.uidCourant > 0) boite.demanderCorps(fenetre.uidCourant)
     }
+    // Marquage « lu » différé (cf. Boite.delaiLu) : le noyau ne marque que si
+    // le message est encore celui qu'il attend.
+    Timer {
+        id: minuterieLu
+        property int uid: 0
+        onTriggered: boite.marquerLuDiffere(uid)
+    }
 
     /// Rang dans la liste d'un message du dossier ouvert, le message affiché
     /// d'abord.
@@ -4689,6 +4703,10 @@ ApplicationWindow {
             // juste après l'affichage ou pendant le chargement du message.
             if (essai.scenario === "non-lu")
                 scenarios.lancerScenarioNonLu()
+            // Scénario « lu-differe » (0.6.9) : marquage « lu » après un délai,
+            // ou jamais.
+            if (essai.scenario === "lu-differe")
+                scenarios.lancerScenarioLuDiffere()
             // Scénario « partagees » (0.6.8) : une boîte partagée par le
             // serveur, proposée dans « De ».
             if (essai.scenario === "partagees")

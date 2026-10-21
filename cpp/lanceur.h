@@ -53,6 +53,10 @@ public:
   /// Chemin local d'une adresse `file:` (un chemin est rendu tel quel).
   Q_INVOKABLE QString chemin(const QString& adresse) const { return chemin_(adresse); }
 
+  /// Adresse `file:` d'un chemin local, pour Qt.openUrlExternally : « # » ou
+  /// « % » dans un nom de fichier y sont encodés.
+  Q_INVOKABLE QUrl adresse(const QString& chemin) const { return QUrl::fromLocalFile(chemin_(chemin)); }
+
   /// Vrai si le système sait ouvrir seul les fichiers de cette extension.
   /// Sous Windows, faux quand il demanderait « Comment voulez-vous ouvrir ce
   /// fichier ? » : le logiciel choisi dans cette fenêtre échappe à MMail, qui

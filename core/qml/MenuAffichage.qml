@@ -36,6 +36,30 @@ Menu {
         checked: reglages.notifications
         onTriggered: reglages.notifications = checked
     }
+    // Comme « Volet de lecture » dans Outlook : un message affiché passe
+    // « lu » aussitôt, après quelques secondes, ou seulement à la main.
+    Menu {
+        id: menuMarquageLu
+        title: qsTr("Marquer comme lu")
+        onAboutToShow: width = fenetre.largeurMenu(menuMarquageLu)
+        Repeater {
+            model: [
+                { libelle: qsTr("À l'affichage"), delai: 0 },
+                { libelle: qsTr("Après 3 secondes"), delai: 3 },
+                { libelle: qsTr("Après 5 secondes"), delai: 5 },
+                { libelle: qsTr("Après 10 secondes"), delai: 10 },
+                { libelle: qsTr("Après 30 secondes"), delai: 30 },
+                { libelle: qsTr("Jamais, seulement à la main"), delai: -1 }
+            ]
+            MenuItem {
+                required property var modelData
+                text: modelData.libelle
+                checkable: true
+                checked: reglages.delaiLu === modelData.delai
+                onTriggered: reglages.delaiLu = modelData.delai
+            }
+        }
+    }
     MenuItem {
         text: qsTr("Logiciels d'ouverture des pièces jointes…")
         visible: Qt.platform.os !== "android"

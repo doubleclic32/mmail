@@ -62,7 +62,7 @@ Dialog {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             opacity: 0.7
-            text: fenetre.noyau + " · Qt " + versionQt
+            text: fenetre.noyau + " · Qt " + versionQt + (renduLogiciel ? " · " + qsTr("rendu logiciel") : "")
         }
     }
 }

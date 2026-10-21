@@ -292,6 +292,24 @@ Page {
         return true
     }
 
+    /// Ouvre une pièce jointe avant l'envoi, pour la vérifier (0.6.9, demande
+    /// de Gwenaëlle) : comme à la lecture, avec le logiciel retenu pour son
+    /// type, à défaut celui du système. Un programme ou un script ne s'ouvre
+    /// pas.
+    function ouvrirPiece(p) {
+        if (p.risquee) {
+            signaler(qsTr("Programme ou script : %1 ne s'ouvre pas depuis MMail.").arg(p.nom), true)
+            return
+        }
+        var programme = Qt.platform.os === "android" ? "" : fenetre.logicielPour(p.nom)
+        if (programme.length > 0 && lanceur.lancer(programme, p.chemin))
+            signaler(qsTr("Ouverture de %1 avec %2…").arg(p.nom).arg(lanceur.nom(programme)), false)
+        else if (Qt.openUrlExternally(lanceur.adresse(p.chemin)))
+            signaler(qsTr("Ouverture de %1…").arg(p.nom), false)
+        else
+            signaler(qsTr("Aucun logiciel n'a pu ouvrir %1.").arg(p.nom), true)
+    }
+
     function retirerPiece(i) {
         var liste = pieces.slice()
         liste.splice(i, 1)
@@ -730,9 +748,16 @@ Page {
                         id: lignePiece
                         anchors.centerIn: parent
                         spacing: 2
-                        Label {
+                        // Un clic l'ouvre, pour vérifier la pièce avant l'envoi.
+                        ToolButton {
                             text: modelData.nom + "  (" + fenetre.tailleLisible(modelData.taille) + ")"
-                            Layout.leftMargin: 6
+                            Layout.leftMargin: 2
+                            onClicked: redac.ouvrirPiece(modelData)
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 500
+                            ToolTip.text: modelData.risquee
+                                          ? qsTr("Programme ou script : il ne s'ouvre pas depuis MMail.")
+                                          : qsTr("Ouvrir, pour vérifier la pièce avant l'envoi")
                         }
                         ToolButton {
                             text: "×"
