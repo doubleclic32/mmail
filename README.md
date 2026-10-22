@@ -375,18 +375,18 @@ de rafraîchissement va au coffre du système, à la place du mot de passe.
   Google refuse le jeton (expiré ou révoqué).
 
 Limites : tant que Google n'a pas vérifié l'application, il l'annonce comme non
-vérifiée à la connexion, et seuls ses « utilisateurs de test » peuvent s'y
-connecter ; une application laissée « En test » voit ses jetons expirer au bout
-de sept jours — il faut alors se reconnecter. Pas d'agenda ; la sauvegarde de
-la configuration garde le compte, pas son jeton.
+vérifiée à la connexion, et n'accepte que cent utilisateurs. Sur la page
+d'autorisation, l'accès à Gmail est une case décochée d'origine : sans elle,
+MMail ne peut rien lire et dit quelle case cocher. Pas d'agenda ; la sauvegarde
+de la configuration garde le compte, pas son jeton.
 
-**Ajout masqué tant que l'application Google est « En test ».** Google n'y
-laisse se connecter que ses utilisateurs de test : pour tout autre, le menu
-mènerait à un refus. « Ajouter un compte Google (Gmail)… » ne s'affiche donc
-que si la variable `MMAIL_GOOGLE_ESSAI` est posée (n'importe quelle valeur
-non vide) ; un compte Gmail déjà ajouté reste utilisable et se reconnecte
-normalement. L'ajout s'ouvrira à tous quand Google aura publié l'application
-(constante `APPLICATION_PUBLIEE` de `core/src/google.rs`).
+**Ajout ouvert sur le bureau, masqué sous Android.** L'application Google est
+en production depuis le 19/10/2026 : « Ajouter un compte Google (Gmail)… »
+s'affiche sous Windows, Linux et macOS. Sous Android, où la connexion par le
+navigateur n'a pas été éprouvée, il ne s'affiche que si la variable
+`MMAIL_GOOGLE_ESSAI` est posée (n'importe quelle valeur non vide) ; un compte
+Gmail déjà ajouté reste utilisable et se reconnecte normalement (constante
+`APPLICATION_PUBLIEE` de `core/src/google.rs`).
 
 ### Lien de configuration
 
