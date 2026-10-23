@@ -55,6 +55,7 @@ Dialog {
         anchors.fill: parent
         TextField {
             id: champFiltre
+            MenuSaisie {}
             Layout.fillWidth: true
             placeholderText: qsTr("Filtrer : nom du dossier ou de la boîte")
             onTextChanged: dlgDeplacer.filtrer()

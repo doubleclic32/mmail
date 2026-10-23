@@ -212,6 +212,7 @@ Dialog {
                     Layout.fillWidth: true
                     TextField {
                         id: champNom
+                        MenuSaisie {}
                         Layout.fillWidth: true
                         placeholderText: qsTr("Nom du filtre")
                         text: dlgFiltres.filtre ? dlgFiltres.filtre.nom : ""
@@ -261,6 +262,7 @@ Dialog {
                             Layout.fillWidth: fenetre.compact
                         }
                         TextField {
+                            MenuSaisie {}
                             Layout.fillWidth: true
                             placeholderText: qsTr("texte")
                             text: modelData.valeur

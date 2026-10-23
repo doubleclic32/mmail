@@ -17,14 +17,39 @@ Menu {
     id: menuAffichage
     title: qsTr("Affichage")
     onAboutToShow: width = fenetre.largeurMenu(menuAffichage)
-    Repeater {
-        model: fenetre.nomsApparence
-        MenuItem {
-            required property string modelData
-            text: fenetre.jeuxApparence[modelData].libelle
-            checkable: true
-            checked: fenetre.apparence === modelData
-            onTriggered: fenetre.choisirApparence(modelData)
+    // Apparence et disposition en sous-menus (0.6.14, demande de Manu du
+    // 22/10 : « Affichage › Apparence » et « Affichage › Disposition »).
+    Menu {
+        id: menuApparence
+        title: qsTr("Apparence")
+        onAboutToShow: width = fenetre.largeurMenu(menuApparence)
+        Repeater {
+            model: fenetre.nomsApparence
+            MenuItem {
+                required property string modelData
+                text: fenetre.jeuxApparence[modelData].libelle
+                checkable: true
+                checked: fenetre.apparence === modelData
+                onTriggered: fenetre.choisirApparence(modelData)
+            }
+        }
+    }
+    // La vue tactile garde la barre d'application d'Android : pas de
+    // disposition à choisir (retirée à la création).
+    Component.onCompleted: if (fenetre.tactile) menuAffichage.removeMenu(menuDisposition)
+    Menu {
+        id: menuDisposition
+        title: qsTr("Disposition")
+        onAboutToShow: width = fenetre.largeurMenu(menuDisposition)
+        Repeater {
+            model: fenetre.nomsDisposition
+            MenuItem {
+                required property string modelData
+                text: fenetre.libellesDisposition[modelData]
+                checkable: true
+                checked: fenetre.disposition === modelData
+                onTriggered: fenetre.choisirDisposition(modelData)
+            }
         }
     }
     MenuSeparator {}

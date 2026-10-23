@@ -1313,6 +1313,255 @@ QtObject {
         t.start()
     }
 
+    /// Scénario « disposition » (0.6.14) : « une barre » puis « deux étages »
+    /// et retour — la bande des outils ne se montre qu'en deux étages, les
+    /// boutons sont sur la barre ou sur la bande, jamais les deux ; la barre
+    /// garde sa hauteur ; le choix est retenu dans les réglages.
+    function lancerScenarioDisposition() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0, hauteur: 0 }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | barre " + entete.height
+                        + " | bande " + bandeOutils.height + " | réglage " + reglagesApparence.disposition)
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            if (suivi.n === 3) {
+                suivi.hauteur = entete.height
+                bilan("une barre par défaut", disposition === "barre" && !bandeOutils.visible && !deuxEtages)
+                choisirDisposition("etages")
+            } else if (suivi.n === 4) {
+                bilan("deux étages : bande montrée, barre de même hauteur",
+                      bandeOutils.visible && bandeOutils.height > 0 && entete.height === suivi.hauteur
+                      && reglagesApparence.disposition === "etages")
+                choisirDisposition("barre")
+            } else if (suivi.n === 5) {
+                bilan("retour à une barre", !bandeOutils.visible && entete.height === suivi.hauteur
+                      && reglagesApparence.disposition === "barre")
+                tic.stop()
+                console.log("scenario: disposition " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénario « inverser-selection » (0.6.14, demande de Manu du 22/10) :
+    /// dans la boîte de réception (trois messages au moins), un message
+    /// choisi, la sélection inversée, puis rétablie ; tout, puis rien ; le
+    /// menu d'un message en dix lignes, « Marquer comme lu » s'il y a un non
+    /// lu parmi les choisis.
+    function lancerScenarioInverserSelection() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0, total: 0, premier: 0 }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | choisis " + uidsChoisis().length
+                        + " sur " + modeleMessages.count)
+        }
+        var lignesDuMenu = function() {
+            var n = 0
+            for (var i = 0; i < menuMessage.count; ++i) {
+                var e = menuMessage.itemAt(i)
+                if (e && e.visible && e.text !== undefined && e.text.length > 0)
+                    n += 1
+            }
+            return n
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                suivi.total = modeleMessages.count
+                if (suivi.total < 3) {
+                    bilan("il faut trois messages en boîte de réception", false)
+                    suivi.n = 19
+                    return
+                }
+                suivi.premier = modeleMessages.get(0).uid
+                choisir(0, 0)
+                inverserSelection()
+                bilan("un choisi, inversé : les autres", uidsChoisis().length === suivi.total - 1
+                      && fenetre.selection[suivi.premier] !== true)
+                inverserSelection()
+                bilan("inversé de nouveau : le premier seul", uidsChoisis().length === 1
+                      && fenetre.selection[suivi.premier] === true)
+                toutChoisir()
+                inverserSelection()
+                bilan("tout, inversé : aucun", uidsChoisis().length === 0)
+                toutChoisir()
+                boite.marquerLu(uidsChoisis().join(","), true)
+                rafraichirListe()
+            } else if (suivi.n === 9) {
+                choisir(0, 0)
+                choisir(1, Qt.ControlModifier)
+                boite.marquerLu(String(modeleMessages.get(1).uid), false)
+                rafraichirListe()
+            } else if (suivi.n === 11) {
+                menuMessage.popup()
+                bilan("menu du message : " + lignesDuMenu() + " lignes, « " + menuMessage.itemAt(5).text
+                      + " », « " + menuMessage.itemAt(6).text + " »",
+                      lignesDuMenu() === 10 && menuMessage.unNonLu && menuMessage.itemAt(5).text === qsTr("Marquer comme lu"))
+                menuMessage.close()
+                choisir(0, 0)
+            } else if (suivi.n === 13) {
+                menuMessage.popup()
+                bilan("un message lu : « " + menuMessage.itemAt(5).text + " »",
+                      !menuMessage.unNonLu && menuMessage.itemAt(5).text === qsTr("Marquer comme non lu"))
+                menuMessage.close()
+                ouvrirBoitesUnifiees()
+            } else if (suivi.n === 15) {
+                var avant = uidsChoisis().length
+                inverserSelection()
+                bilan("Toutes les BàL : pas d'inversion (un seul message à la fois)",
+                      vueUnifiee && uidsChoisis().length === avant)
+                quitterBoitesUnifiees()
+            } else if (suivi.n === 17) {
+                bilan("interrupteur éteint : retour au dossier", !vueUnifiee && boite.dossierCourant === "INBOX")
+            } else if (suivi.n === 18) {
+                tic.stop()
+                console.log("scenario: inverser-selection " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Menu du clic droit d'un champ de saisie (cf. MenuSaisie) : le
+    /// gestionnaire posé dans le champ.
+    function menuDuChamp(champ) {
+        for (var i = 0; i < champ.data.length; ++i) {
+            var o = champ.data[i]
+            if (o && o.menu !== undefined && o.agir !== undefined)
+                return o
+        }
+        return null
+    }
+
+    /// Entrée d'un menu par son libellé.
+    function entreeDuMenu(menu, libelle) {
+        for (var i = 0; i < menu.count; ++i) {
+            var e = menu.itemAt(i)
+            if (e && e.text === libelle)
+                return e
+        }
+        return null
+    }
+
+    /// Scénario « menu-champ » (0.6.14, demande de Manu du 22/10) : le menu
+    /// du clic droit du champ de recherche — Coller ce qu'un autre champ a
+    /// copié, puis Tout sélectionner, Couper, Annuler ; Couper et Copier
+    /// grisés sans sélection.
+    function lancerScenarioMenuChamp() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0 }
+        var mot = "IIC OCEAN - ILOT RF1.1"
+        var champ = colonneListe.champRecherche
+        var h = menuDuChamp(champ)
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte + " | champ " + JSON.stringify(champ.text)
+                        + " | focus " + champ.activeFocus)
+        }
+        // Le clic droit, comme onTapped.
+        var clicDroit = function() {
+            h.debut = champ.selectionStart
+            h.fin = champ.selectionEnd
+            h.agi = false
+            h.menu.popup()
+        }
+        var choisirEntree = function(libelle) {
+            entreeDuMenu(h.menu, libelle).triggered()
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            if (suivi.n === 3) {
+                if (!h) {
+                    bilan("pas de menu sur le champ de recherche", false)
+                    suivi.n = 9
+                    return
+                }
+                // Le presse-papier rempli par un autre champ.
+                var source = Qt.createQmlObject('import QtQuick; TextInput {}', fenetre.contentItem)
+                source.text = mot
+                source.selectAll()
+                source.copy()
+                source.destroy()
+                champ.text = ""
+                clicDroit()
+                bilan("menu ouvert, champ vide : Coller seul permis (Couper " + entreeDuMenu(h.menu, qsTr("Couper")).enabled
+                      + ", Copier " + entreeDuMenu(h.menu, qsTr("Copier")).enabled + ", Coller "
+                      + entreeDuMenu(h.menu, qsTr("Coller")).enabled + ")",
+                      h.menu.opened && !entreeDuMenu(h.menu, qsTr("Couper")).enabled
+                      && !entreeDuMenu(h.menu, qsTr("Copier")).enabled && entreeDuMenu(h.menu, qsTr("Coller")).enabled)
+                choisirEntree(qsTr("Coller"))
+            } else if (suivi.n === 4) {
+                bilan("Coller : le texte copié dans la recherche, menu fermé, focus au champ",
+                      champ.text === mot && !h.menu.visible && champ.activeFocus)
+                clicDroit()
+                choisirEntree(qsTr("Tout sélectionner"))
+            } else if (suivi.n === 5) {
+                bilan("Tout sélectionner", champ.selectedText === mot)
+                clicDroit()
+                bilan("sélection : Couper et Copier permis", entreeDuMenu(h.menu, qsTr("Couper")).enabled
+                      && entreeDuMenu(h.menu, qsTr("Copier")).enabled)
+                choisirEntree(qsTr("Couper"))
+            } else if (suivi.n === 6) {
+                bilan("Couper : champ vide", champ.text === "")
+                clicDroit()
+                choisirEntree(qsTr("Annuler"))
+            } else if (suivi.n === 7) {
+                bilan("Annuler : le texte revient", champ.text === mot)
+                champ.text = ""
+                champ.textEdited()
+            } else if (suivi.n === 8) {
+                tic.stop()
+                console.log("scenario: menu-champ " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénarios « menu-affichage », « menu-message » et « menu-saisie »
+    /// (0.6.14) : le menu ouvert pour une capture d'écran (--capture), sans
+    /// quitter.
+    function lancerScenarioMenuOuvert() {
+        var t = Qt.createQmlObject('import QtQuick; Timer { interval: 5000 }', fenetre)
+        t.triggered.connect(function() {
+            if (essai.scenario === "menu-affichage") {
+                menuAffichage.popup(Math.max(0, fenetre.width - 330), entete.height)
+                menuAffichage.itemAt(1).triggered()
+                return
+            }
+            if (essai.scenario === "menu-saisie") {
+                var champ = colonneListe.champRecherche
+                var h = menuDuChamp(champ)
+                champ.text = "IIC OCEAN"
+                champ.forceActiveFocus()
+                champ.select(0, 3)
+                h.debut = 0
+                h.fin = 3
+                h.menu.popup(champ, 40, champ.height - 4)
+                return
+            }
+            ouvrirDossier(comptesConnus[0].compte, "INBOX")
+            var t2 = Qt.createQmlObject('import QtQuick; Timer { interval: 2000 }', fenetre)
+            t2.triggered.connect(function() {
+                choisir(0, 0)
+                menuMessage.popup(colonneListe.x + 120, entete.height + bandeOutils.height + 90)
+            })
+            t2.start()
+        })
+        t.start()
+    }
+
     /// Scénario « lu-differe » (0.6.9, demande de Gwenaëlle du 20/10) : le
     /// marquage « lu » attend le délai réglé, ne vise pas un message quitté
     /// avant, et n'a jamais lieu sur « Jamais ». La boîte de réception doit

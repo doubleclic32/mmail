@@ -74,6 +74,7 @@ Dialog {
         Label { text: qsTr("Adresse :") }
         TextField {
             id: champAdresse
+            MenuSaisie {}
             placeholderText: "nom@exemple.fr"
             enabled: dlgCompte.compteId === 0
             inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase
@@ -83,6 +84,7 @@ Dialog {
         Label { text: qsTr("Serveur IMAP :"); visible: !dlgCompte.oauth }
         TextField {
             id: champHote
+            MenuSaisie {}
             visible: !dlgCompte.oauth
             placeholderText: "mail.exemple.fr"
             enabled: dlgCompte.compteId === 0 || dlgCompte.modification
@@ -104,6 +106,7 @@ Dialog {
         Label { text: qsTr("Serveur d'envoi :"); visible: !dlgCompte.oauth }
         TextField {
             id: champHoteEnvoi
+            MenuSaisie {}
             visible: !dlgCompte.oauth
             placeholderText: qsTr("identique au serveur IMAP")
             enabled: dlgCompte.compteId === 0 || dlgCompte.modification
@@ -113,6 +116,7 @@ Dialog {
         Label { text: qsTr("Mot de passe :"); visible: !dlgCompte.oauth }
         TextField {
             id: champMotDePasse
+            MenuSaisie {}
             visible: !dlgCompte.oauth
             echoMode: TextInput.Password
             // Vide : le mot de passe ne change pas.
@@ -133,6 +137,7 @@ Dialog {
         Label { text: qsTr("Autres adresses d'envoi :"); visible: dlgCompte.modification }
         TextField {
             id: champAdressesEnvoi
+            MenuSaisie {}
             visible: dlgCompte.modification
             placeholderText: qsTr("contact@exemple.fr ; commandes@exemple.fr")
             inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase

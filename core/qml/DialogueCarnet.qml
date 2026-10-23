@@ -42,6 +42,7 @@ Dialog {
         spacing: 6
         TextField {
             id: champRecherche
+            MenuSaisie {}
             Layout.fillWidth: true
             placeholderText: qsTr("Chercher : nom, organisation ou adresse")
             onTextChanged: dlgCarnet.chercher()

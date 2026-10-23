@@ -45,6 +45,7 @@ Dialog {
         }
         TextField {
             id: champLien
+            MenuSaisie {}
             placeholderText: "https://…"
             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
             Layout.fillWidth: true

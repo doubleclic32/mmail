@@ -387,12 +387,24 @@ ApplicationWindow {
     // restant Fusion, seul à honorer une palette partout (cf. cpp/main.cpp).
     // « systeme » ne pose aucune surcharge : la palette reste celle du bureau.
     property string apparence: "moderne"
+    // Disposition de l'en-tête du bureau (0.6.14) : « barre », une seule
+    // ligne, par défaut ; « etages », les onglets et les menus sur le
+    // bandeau, les boutons et les interrupteurs sur une bande dessous, comme
+    // Outlook. Choix de Manu du 22/10 : les deux, au choix de chacun.
+    property string disposition: "barre"
 
     Settings {
         id: reglagesApparence
         category: "apparence"
         property alias theme: fenetre.apparence
+        property alias disposition: fenetre.disposition
     }
+    readonly property bool deuxEtages: !tactile && disposition === "etages"
+    // Une seule ligne sur une fenêtre moyenne : libellés courts, Actualiser
+    // réduit à son icône ; plus étroite encore, des marges resserrées et le
+    // signe sans le nom du logiciel.
+    readonly property bool enteteSerree: !deuxEtages && width < 1180
+    readonly property bool enteteEtroite: !deuxEtages && width < 940
 
     readonly property var jeuxApparence: ({
         "classique": {
@@ -451,19 +463,17 @@ ApplicationWindow {
     // repli, plus large, en reste à la taille des autres apparences.
     readonly property bool titresEtroits: marque !== null && policeTitres === marque.titres[0]
 
-    // Bouton de l'en-tête. Sous une apparence de marque, une pastille sur le
-    // bandeau, comme les onglets du site : pleine en cyan pour le module
-    // affiché et l'action principale, cernée pour les autres boutons à
-    // bascule, nue pour le reste ; les non-lus en pastille rouge. Ailleurs,
-    // le bouton d'outil du style, intact : son fond et sa couleur ne sont
-    // recouverts que le temps de l'apparence.
+    // Bouton de la barre tactile (et « ‹ » de la vue compacte). Sous une
+    // apparence de marque, une pastille sur le bandeau, comme les onglets du
+    // site : pleine en cyan quand il est choisi, cernée pour les autres
+    // boutons à bascule, nue pour le reste ; les non-lus en pastille rouge.
+    // Ailleurs, le bouton d'outil du style, intact : son fond et sa couleur
+    // ne sont recouverts que le temps de l'apparence.
     component BoutonEntete: ToolButton {
         id: be
-        // Action principale : pleine même sans être choisie.
-        property bool plein: false
         property bool cerne: false
         property int compteur: 0
-        readonly property bool actif: be.checked || be.plein
+        readonly property bool actif: be.checked
         readonly property bool avecCompteur: fenetre.marque !== null && be.compteur > 0
 
         Rectangle {
@@ -500,6 +510,265 @@ ApplicationWindow {
             target: be
             property: "rightPadding"
             value: be.avecCompteur ? compteurEntete.implicitWidth + be.marge + 4 : be.marge
+        }
+    }
+
+    // En-tête du bureau (0.6.14, demande de Manu du 22/10 : onglets,
+    // boutons et menus se mélangeaient) : quatre sortes d'éléments, chacune
+    // son habit, dans l'ordre — les onglets (où l'on est), les boutons (ce
+    // que l'on fait), les interrupteurs (ce que l'on allume), puis les menus,
+    // regroupés à droite. « sombre » : posé sur le bandeau d'une apparence de
+    // marque, en clair.
+    function encreEntete(sombre) {
+        return sombre && marque ? marque.texteBandeau : palette.windowText
+    }
+    function survolEntete(sombre) {
+        var e = encreEntete(sombre)
+        return Qt.rgba(e.r, e.g, e.b, sombre && marque ? 0.14 : 0.08)
+    }
+
+    // Onglet : le texte seul ; la vue affichée en gras, soulignée.
+    component OngletEntete: ToolButton {
+        id: og
+        property bool sombre: fenetre.marque !== null
+        checkable: true
+        font.bold: og.checked
+        leftPadding: fenetre.compact || fenetre.enteteEtroite ? 8 : 14
+        rightPadding: og.leftPadding
+        // La hauteur de la barre d'avant : les onglets la donnent.
+        topPadding: 6
+        bottomPadding: 6
+        Accessible.role: Accessible.PageTab
+        contentItem: Label {
+            text: og.text
+            font: og.font
+            color: fenetre.encreEntete(og.sombre)
+            opacity: og.checked || og.hovered ? 1 : 0.72
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            color: og.hovered && !og.checked ? fenetre.survolEntete(og.sombre)
+                 : og.checked && og.sombre && fenetre.marque ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+            Rectangle {
+                visible: og.checked
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 3
+                color: fenetre.accent
+            }
+        }
+    }
+
+    // Bouton : un cadre ; plein pour l'action principale. « dessin » : son
+    // icône (cf. dessinerPlus), « iconeSeule » : sans libellé.
+    component BoutonOutil: ToolButton {
+        id: bo
+        property bool principal: false
+        property bool sombre: fenetre.marque !== null
+        property var dessin: null
+        property bool iconeSeule: false
+        readonly property color encre: bo.principal ? (fenetre.marque ? fenetre.marque.bandeau : fenetre.palette.highlightedText)
+                                                    : fenetre.encreEntete(bo.sombre)
+        font.bold: bo.principal
+        leftPadding: bo.iconeSeule ? 7 : 12
+        rightPadding: bo.iconeSeule ? 7 : 14
+        topPadding: 3
+        bottomPadding: 3
+        ToolTip.visible: bo.iconeSeule && bo.hovered
+        ToolTip.text: bo.text
+        Accessible.name: bo.text
+        contentItem: RowLayout {
+            spacing: 6
+            Canvas {
+                visible: bo.dessin !== null
+                Layout.preferredWidth: 13
+                Layout.preferredHeight: 13
+                Layout.alignment: Qt.AlignVCenter
+                property color encre: bo.encre
+                onEncreChanged: requestPaint()
+                onPaint: if (bo.dessin) bo.dessin(getContext("2d"), width, height, encre)
+            }
+            Label {
+                visible: !bo.iconeSeule
+                text: bo.text
+                font: bo.font
+                color: bo.encre
+                Layout.alignment: Qt.AlignVCenter
+            }
+        }
+        background: Rectangle {
+            implicitHeight: 24
+            radius: fenetre.marque ? height / 2 : 3
+            color: bo.principal ? (bo.down ? Qt.darker(fenetre.accent, 1.15) : bo.hovered ? Qt.lighter(fenetre.accent, 1.08) : fenetre.accent)
+                 : bo.down || bo.hovered ? fenetre.survolEntete(bo.sombre)
+                 : bo.sombre && fenetre.marque ? "transparent" : fenetre.palette.button
+            border.width: bo.principal ? 0 : 1
+            border.color: bo.sombre && fenetre.marque ? Qt.rgba(1, 1, 1, 0.45)
+                        : Qt.rgba(fenetre.palette.windowText.r, fenetre.palette.windowText.g, fenetre.palette.windowText.b, 0.32)
+        }
+    }
+
+    // Interrupteur : un curseur allumé ou éteint, devant son libellé ; les
+    // non-lus en pastille après.
+    component InterrupteurEntete: ToolButton {
+        id: ie
+        property bool sombre: fenetre.marque !== null
+        property int compteur: 0
+        checkable: true
+        leftPadding: 6
+        rightPadding: 8
+        topPadding: 3
+        bottomPadding: 3
+        Accessible.role: Accessible.CheckBox
+        contentItem: RowLayout {
+            spacing: 7
+            Rectangle {
+                id: rail
+                implicitWidth: 28
+                implicitHeight: 16
+                radius: height / 2
+                Layout.alignment: Qt.AlignVCenter
+                readonly property color eteint: fenetre.encreEntete(ie.sombre)
+                color: ie.checked ? fenetre.accent : Qt.rgba(rail.eteint.r, rail.eteint.g, rail.eteint.b, 0.3)
+                Rectangle {
+                    width: 12
+                    height: 12
+                    radius: 6
+                    y: 2
+                    x: ie.checked ? rail.width - width - 2 : 2
+                    color: "#ffffff"
+                    Behavior on x { NumberAnimation { duration: 120 } }
+                }
+            }
+            Label {
+                text: ie.text
+                font: ie.font
+                color: fenetre.encreEntete(ie.sombre)
+                Layout.alignment: Qt.AlignVCenter
+            }
+            CompteurNonLus {
+                visible: ie.compteur > 0
+                nombre: ie.compteur
+                taille: fenetre.tailleBase
+                Layout.alignment: Qt.AlignVCenter
+            }
+        }
+        background: Rectangle {
+            radius: 4
+            color: ie.hovered ? fenetre.survolEntete(ie.sombre) : "transparent"
+        }
+    }
+
+    // Menu : le libellé suivi de ▼ ; la liste s'ouvre dessous.
+    component MenuEntete: ToolButton {
+        id: me
+        property bool sombre: fenetre.marque !== null
+        property Menu menu: null
+        leftPadding: fenetre.enteteEtroite ? 6 : 10
+        rightPadding: me.leftPadding
+        topPadding: 3
+        bottomPadding: 3
+        Accessible.role: Accessible.ButtonMenu
+        onClicked: me.menu.popup(me, 0, me.height)
+        contentItem: RowLayout {
+            spacing: 6
+            Label {
+                text: me.text
+                font: me.font
+                color: fenetre.encreEntete(me.sombre)
+                Layout.alignment: Qt.AlignVCenter
+            }
+            Canvas {
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 5
+                Layout.alignment: Qt.AlignVCenter
+                property color encre: fenetre.encreEntete(me.sombre)
+                onEncreChanged: requestPaint()
+                onPaint: {
+                    var c = getContext("2d")
+                    c.reset()
+                    c.fillStyle = encre
+                    c.beginPath()
+                    c.moveTo(0, 0)
+                    c.lineTo(width, 0)
+                    c.lineTo(width / 2, height)
+                    c.closePath()
+                    c.fill()
+                }
+            }
+        }
+        background: Rectangle {
+            radius: 4
+            color: me.hovered || me.down || (me.menu !== null && me.menu.visible) ? fenetre.survolEntete(me.sombre) : "transparent"
+        }
+    }
+
+    component SeparateurEntete: Rectangle {
+        property bool sombre: fenetre.marque !== null
+        readonly property color encre: fenetre.encreEntete(sombre)
+        implicitWidth: 1
+        Layout.preferredHeight: 20
+        Layout.alignment: Qt.AlignVCenter
+        Layout.leftMargin: fenetre.enteteEtroite ? 2 : 6
+        Layout.rightMargin: Layout.leftMargin
+        color: Qt.rgba(encre.r, encre.g, encre.b, 0.25)
+    }
+
+    // Boutons et interrupteurs du courrier : sur la barre (« barre »), ou
+    // sur la bande dessous (« etages »).
+    component ActionsEntete: RowLayout {
+        id: ae
+        property bool sombre: fenetre.marque !== null
+        spacing: 6
+        BoutonOutil {
+            sombre: ae.sombre
+            principal: true
+            dessin: fenetre.dessinerPlus
+            text: fenetre.enteteSerree ? qsTr("Nouveau") : qsTr("Nouveau message")
+            onClicked: fenetre.rediger("nouveau")
+            ToolTip.visible: hovered && fenetre.enteteSerree
+            ToolTip.text: qsTr("Nouveau message (Ctrl+N)")
+        }
+        BoutonOutil {
+            sombre: ae.sombre
+            dessin: fenetre.dessinerActualiser
+            iconeSeule: fenetre.enteteSerree
+            text: qsTr("Actualiser")
+            onClicked: fenetre.module === "agenda" ? boite.synchroniserAgendas(true) : boite.actualiser()
+        }
+        SeparateurEntete { sombre: ae.sombre }
+        // Boîte de réception unifiée : les réceptions de tous les comptes,
+        // avec leurs non-lus (emplacement choisi par Manu le 10/10). Éteinte,
+        // la liste revient au dossier.
+        InterrupteurEntete {
+            sombre: ae.sombre
+            compteur: fenetre.nonLusReceptions
+            text: fenetre.compact || fenetre.enteteSerree ? qsTr("BàL") : qsTr("Toutes les BàL")
+            checked: fenetre.vueUnifiee
+            onClicked: {
+                checked = Qt.binding(function() { return fenetre.vueUnifiee })
+                if (fenetre.vueUnifiee)
+                    fenetre.quitterBoitesUnifiees()
+                else
+                    fenetre.ouvrirBoitesUnifiees()
+            }
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
+            ToolTip.text: qsTr("Les boîtes de réception de tous les comptes, en une liste")
+        }
+        InterrupteurEntete {
+            sombre: ae.sombre
+            visible: (!fenetre.compact || fenetre.vue === 0) && fenetre.module === "courrier"
+            checked: reglages.afficherMasques
+            text: fenetre.enteteSerree ? qsTr("Masqués") : qsTr("Dossiers masqués")
+            onToggled: {
+                reglages.afficherMasques = checked
+                fenetre.rafraichirArborescence()
+            }
+            ToolTip.visible: hovered && fenetre.enteteSerree
+            ToolTip.text: qsTr("Dossiers masqués")
         }
     }
 
@@ -605,7 +874,10 @@ ApplicationWindow {
     }
 
     // ------------------------------------------------------------- en-tête
-    header: ToolBar {
+    // L'en-tête occupe la place de la barre de menus de la fenêtre, tout en
+    // haut : celle de « header », dessous, revient à la bande des outils de
+    // la disposition « etages » (0.6.14).
+    menuBar: ToolBar {
         id: entete
         // Deux barres, une seule visible : la hauteur se donne ici — avec deux
         // enfants, la barre ne la tire plus d'elle-même et s'écrasait
@@ -773,7 +1045,7 @@ ApplicationWindow {
                 Layout.leftMargin: 4
             }
             Label {
-                visible: fenetre.marque !== null && !fenetre.compact
+                visible: fenetre.marque !== null && !fenetre.compact && !fenetre.enteteEtroite
                 text: "MMail"
                 color: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
                 font.family: fenetre.policeTitres
@@ -788,98 +1060,40 @@ ApplicationWindow {
                 font.pixelSize: 22
                 onClicked: fenetre.vue = fenetre.vue - 1
             }
-            // Courrier ou agenda : deux boutons, un seul qui bascule sur un
+            // Courrier ou agenda : deux onglets, un seul qui bascule sur un
             // écran étroit.
-            BoutonEntete {
-                visible: fenetre.compact && !fenetre.tactile
+            OngletEntete {
+                visible: fenetre.compact
+                checkable: false
                 text: fenetre.module === "agenda" ? qsTr("Courrier") : qsTr("Agenda")
                 onClicked: fenetre.module = fenetre.module === "agenda" ? "courrier" : "agenda"
+                Layout.fillHeight: true
             }
             ButtonGroup { id: groupeModule }
-            BoutonEntete {
+            OngletEntete {
                 visible: !fenetre.compact
-                cerne: true
                 text: qsTr("Courrier")
-                checkable: true
                 checked: fenetre.module === "courrier"
                 ButtonGroup.group: groupeModule
                 onClicked: fenetre.module = "courrier"
                 ToolTip.visible: hovered
+                ToolTip.delay: 500
                 ToolTip.text: qsTr("Courrier (Ctrl+1)")
+                Layout.fillHeight: true
             }
-            BoutonEntete {
+            OngletEntete {
                 visible: !fenetre.compact
-                cerne: true
                 text: qsTr("Agenda")
-                checkable: true
                 checked: fenetre.module === "agenda"
                 ButtonGroup.group: groupeModule
                 onClicked: fenetre.module = "agenda"
                 ToolTip.visible: hovered
-                ToolTip.text: qsTr("Agenda (Ctrl+2)")
-            }
-            ToolSeparator { visible: !fenetre.compact && fenetre.marque === null }
-            Item {
-                visible: !fenetre.compact && fenetre.marque !== null
-                Layout.preferredWidth: 8
-            }
-            BoutonEntete {
-                plein: true
-                text: fenetre.marque ? qsTr("+  Nouveau message") : qsTr("Nouveau message")
-                font.bold: true
-                onClicked: fenetre.rediger("nouveau")
-            }
-            // Boîte de réception unifiée : les réceptions de tous les comptes,
-            // avec leurs non-lus (emplacement choisi par Manu le 10/10) — en
-            // pastille rouge sous une apparence de marque.
-            BoutonEntete {
-                cerne: true
-                compteur: fenetre.nonLusReceptions
-                text: (fenetre.compact ? qsTr("BàL") : qsTr("Toutes les BàL"))
-                      + (fenetre.marque === null && fenetre.nonLusReceptions > 0
-                         ? "  (" + fenetre.nonLusReceptions + ")" : "")
-                checkable: true
-                checked: fenetre.vueUnifiee
-                font.bold: fenetre.nonLusReceptions > 0
-                onClicked: {
-                    checked = Qt.binding(function() { return fenetre.vueUnifiee })
-                    fenetre.ouvrirBoitesUnifiees()
-                }
-                ToolTip.visible: hovered
                 ToolTip.delay: 500
-                ToolTip.text: qsTr("Les boîtes de réception de tous les comptes, en une liste")
+                ToolTip.text: qsTr("Agenda (Ctrl+2)")
+                Layout.fillHeight: true
             }
-            BoutonEntete {
-                id: boutonComptes
-                text: qsTr("Comptes")
-                visible: !fenetre.compact || fenetre.vue === 0
-                onClicked: menuComptes.popup(boutonComptes, 0, boutonComptes.height)
-            }
-            BoutonEntete {
-                text: qsTr("Actualiser")
-                onClicked: fenetre.module === "agenda" ? boite.synchroniserAgendas(true) : boite.actualiser()
-            }
-            BoutonEntete {
-                visible: (!fenetre.compact || fenetre.vue === 0) && fenetre.module === "courrier"
-                checkable: true
-                checked: reglages.afficherMasques
-                text: qsTr("Dossiers masqués")
-                onToggled: {
-                    reglages.afficherMasques = checked
-                    fenetre.rafraichirArborescence()
-                }
-            }
-            BoutonEntete {
-                id: boutonAffichage
-                text: qsTr("Affichage")
-                onClicked: menuAffichage.popup(boutonAffichage, 0, boutonAffichage.height)
-            }
-            BoutonEntete {
-                id: boutonAide
-                text: "?"
-                font.bold: true
-                onClicked: menuAide.popup(boutonAide, 0, boutonAide.height)
-            }
+            SeparateurEntete { visible: !fenetre.deuxEtages }
+            ActionsEntete { visible: !fenetre.deuxEtages }
             Label {
                 text: fenetre.compact && fenetre.vue > 0 && fenetre.module === "courrier" ? fenetre.libelleCourant() : ""
                 color: fenetre.marque ? fenetre.marque.texteBandeau : fenetre.palette.windowText
@@ -900,6 +1114,44 @@ ApplicationWindow {
                     value: fenetre.marque ? fenetre.marque.texteBandeau : "black"
                 }
             }
+            // Les menus, à droite, dans l'ordre d'Outlook.
+            MenuEntete {
+                text: qsTr("Comptes")
+                visible: !fenetre.compact || fenetre.vue === 0
+                menu: menuComptes
+            }
+            MenuEntete {
+                text: qsTr("Affichage")
+                menu: menuAffichage
+            }
+            MenuEntete {
+                text: fenetre.compact ? "?" : qsTr("Aide")
+                menu: menuAide
+            }
+        }
+    }
+
+    // Disposition « etages » : la bande des boutons et des interrupteurs,
+    // claire, sous le bandeau.
+    header: Rectangle {
+        id: bandeOutils
+        visible: fenetre.deuxEtages
+        implicitHeight: visible ? rangOutils.implicitHeight + 10 : 0
+        color: fenetre.marque ? Qt.tint(fenetre.palette.window, Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b, 0.10))
+                              : Qt.darker(fenetre.palette.window, 1.03)
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: Qt.rgba(fenetre.palette.windowText.r, fenetre.palette.windowText.g, fenetre.palette.windowText.b, 0.12)
+        }
+        ActionsEntete {
+            id: rangOutils
+            sombre: false
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
         }
     }
 
@@ -2157,6 +2409,40 @@ ApplicationWindow {
     }
 
     /// Loupe du champ de recherche : un cercle et un manche.
+    /// « + » du bouton « Nouveau message ».
+    function dessinerPlus(ctx, w, h, encre) {
+        ctx.reset()
+        ctx.fillStyle = encre
+        var e = Math.max(2, Math.round(w * 0.16))
+        ctx.fillRect(0, Math.round((h - e) / 2), w, e)
+        ctx.fillRect(Math.round((w - e) / 2), 0, e, h)
+    }
+
+    /// Flèche en cercle du bouton « Actualiser », pointe en haut à gauche.
+    function dessinerActualiser(ctx, w, h, encre) {
+        ctx.reset()
+        ctx.strokeStyle = encre
+        ctx.fillStyle = encre
+        var r = Math.min(w, h) * 0.36
+        var cx = w / 2, cy = h / 2
+        ctx.lineWidth = Math.max(1.5, w * 0.13)
+        var debut = -Math.PI * 0.25, fin = Math.PI * 1.35
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, debut, fin, false)
+        ctx.stroke()
+        // La pointe au bout de l'arc, dans le sens de la rotation.
+        var px = cx + r * Math.cos(fin), py = cy + r * Math.sin(fin)
+        var dx = -Math.sin(fin), dy = Math.cos(fin)
+        var nx = Math.cos(fin), ny = Math.sin(fin)
+        var t = r * 0.75
+        ctx.beginPath()
+        ctx.moveTo(px + dx * t, py + dy * t)
+        ctx.lineTo(px + nx * t * 0.8 - dx * t * 0.2, py + ny * t * 0.8 - dy * t * 0.2)
+        ctx.lineTo(px - nx * t * 0.8 - dx * t * 0.2, py - ny * t * 0.8 - dy * t * 0.2)
+        ctx.closePath()
+        ctx.fill()
+    }
+
     function dessinerLoupe(ctx, w, h, encre) {
         ctx.reset()
         ctx.strokeStyle = encre
@@ -2814,6 +3100,7 @@ ApplicationWindow {
             }
             TextField {
                 id: champAdresseMicrosoft
+                MenuSaisie {}
                 Layout.fillWidth: true
                 placeholderText: qsTr("prenom.nom@entreprise.fr")
                 inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoAutoUppercase
@@ -3366,6 +3653,16 @@ ApplicationWindow {
     }
 
     /// Boîte de réception unifiée : les réceptions de tous les comptes.
+    /// « Toutes les BàL » éteint (interrupteur de l'en-tête, 0.6.14) : retour
+    /// au dossier ouvert dans le noyau — celui du dernier message lu dans la
+    /// liste —, à défaut à la boîte de réception du premier compte.
+    function quitterBoitesUnifiees() {
+        if (boite.dossierCourant.length > 0)
+            ouvrirDossier(boite.compteCourant, boite.dossierCourant)
+        else if (comptesConnus.length > 0)
+            ouvrirDossier(comptesConnus[0].compte, "INBOX")
+    }
+
     function ouvrirBoitesUnifiees() {
         tiroir.close()
         if (rechercheGlobale)
@@ -3583,6 +3880,42 @@ ApplicationWindow {
         for (var i = 0; i < modeleMessages.count; ++i)
             nouvelle[modeleMessages.get(i).uid] = true
         selection = nouvelle
+    }
+
+    /// « Inverser la sélection » (0.6.14, demande de Manu du 22/10) : les
+    /// messages de la liste qui n'étaient pas choisis, et eux seuls.
+    function inverserSelection() {
+        if (listeMulti)
+            return
+        completerListe()
+        var nouvelle = {}
+        for (var i = 0; i < modeleMessages.count; ++i) {
+            var uid = modeleMessages.get(i).uid
+            if (selection[uid] !== true)
+                nouvelle[uid] = true
+        }
+        selection = nouvelle
+        var nombre = Object.keys(nouvelle).length
+        messageEtat.texte = nombre === 0 ? qsTr("Aucun message sélectionné.")
+                : accord(nombre, qsTr("message sélectionné."), qsTr("messages sélectionnés."))
+    }
+
+    /// Ce que portent les messages choisis, pour le menu d'un message : au
+    /// moins un non lu, au moins un sans drapeau.
+    function etatSelection() {
+        var etat = { nonLu: false, sansDrapeau: false }
+        for (var i = 0; i < modeleMessages.count; ++i) {
+            var m = modeleMessages.get(i)
+            var choisi = listeMulti ? cleResultat(m.compte, m.chemin, m.uid) === cleChoisie
+                                    : selection[m.uid] === true
+            if (!choisi)
+                continue
+            if (!m.lu)
+                etat.nonLu = true
+            if (!m.suivi)
+                etat.sansDrapeau = true
+        }
+        return etat
     }
 
     // ---- rédaction
@@ -4144,6 +4477,16 @@ ApplicationWindow {
     function choisirApparence(nom) {
         apparence = nom
         messageEtat.texte = qsTr("Apparence : %1.").arg(jeuxApparence[nom].libelle)
+    }
+
+    readonly property var nomsDisposition: ["barre", "etages"]
+    readonly property var libellesDisposition: ({
+        "barre": qsTr("Une barre"),
+        "etages": qsTr("Deux étages")
+    })
+    function choisirDisposition(nom) {
+        disposition = nom
+        messageEtat.texte = qsTr("Disposition : %1.").arg(libellesDisposition[nom])
     }
 
     /// Écrit une pièce jointe du message affiché pour la joindre à une
@@ -4727,6 +5070,18 @@ ApplicationWindow {
                 scenarios.lancerScenarioRechercheEffacee()
             if (essai.scenario === "majuscule")
                 scenarios.lancerScenarioMajuscule()
+            // Scénarios de la 0.6.14 : disposition de l'en-tête, inversion de
+            // la sélection, menu du clic droit d'un champ ; menus ouverts pour
+            // une capture.
+            if (essai.scenario === "disposition")
+                scenarios.lancerScenarioDisposition()
+            if (essai.scenario === "inverser-selection")
+                scenarios.lancerScenarioInverserSelection()
+            if (essai.scenario === "menu-champ")
+                scenarios.lancerScenarioMenuChamp()
+            if (essai.scenario === "menu-affichage" || essai.scenario === "menu-message"
+                    || essai.scenario === "menu-saisie")
+                scenarios.lancerScenarioMenuOuvert()
             // Scénario « partagees » (0.6.8) : une boîte partagée par le
             // serveur, proposée dans « De ».
             if (essai.scenario === "partagees")

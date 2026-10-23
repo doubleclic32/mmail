@@ -64,6 +64,7 @@ Dialog {
         }
         TextField {
             id: champNouveauDossier
+            MenuSaisie {}
             Layout.fillWidth: true
             placeholderText: qsTr("Nom du dossier")
             onTextEdited: dlgNouveauDossier.motif = ""

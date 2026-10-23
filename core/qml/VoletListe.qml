@@ -41,6 +41,7 @@ ColumnLayout {
         spacing: 4
         TextField {
             id: champRecherche
+            MenuSaisie {}
             Layout.fillWidth: true
             placeholderText: fenetre.tactile ? qsTr("Rechercher") : qsTr("Rechercher (Ctrl+E)")
             selectByMouse: true

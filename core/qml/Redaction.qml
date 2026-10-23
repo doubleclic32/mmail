@@ -632,6 +632,7 @@ Page {
             Label { text: qsTr("À :") }
             TextField {
                 id: champA
+                MenuSaisie {}
                 onTextEdited: {
                     redac.modifie = true
                     redac.proposer(champA)
@@ -645,6 +646,7 @@ Page {
             Label { text: qsTr("Cc :"); visible: redac.afficherCopies }
             TextField {
                 id: champCc
+                MenuSaisie {}
                 onTextEdited: {
                     redac.modifie = true
                     redac.proposer(champCc)
@@ -658,6 +660,7 @@ Page {
             Label { text: qsTr("Cci :"); visible: redac.afficherCopies }
             TextField {
                 id: champCci
+                MenuSaisie {}
                 onTextEdited: {
                     redac.modifie = true
                     redac.proposer(champCci)
@@ -671,6 +674,7 @@ Page {
             Label { text: qsTr("Objet :") }
             TextField {
                 id: champObjet
+                MenuSaisie {}
                 Layout.fillWidth: true
                 onTextEdited: redac.modifie = true
             }
@@ -822,6 +826,13 @@ Page {
             }
             TextArea {
                 id: corpsRedaction
+                // « Coller » colle aussi une image ou des fichiers, comme Ctrl+V.
+                MenuSaisie {
+                    coller: function() {
+                        if (!redac.collerImage())
+                            corpsRedaction.paste()
+                    }
+                }
                 textFormat: TextEdit.RichText
                 wrapMode: TextEdit.Wrap
                 // Au doigt, glisser fait défiler : le choix du texte passe par
@@ -1051,9 +1062,9 @@ Page {
             GridLayout {
                 columns: 2
                 Label { text: qsTr("Jour :") }
-                TextField { id: champJourDiffere; placeholderText: "30/09/2026"; Layout.fillWidth: true }
+                TextField { id: champJourDiffere; placeholderText: "30/09/2026"; Layout.fillWidth: true; MenuSaisie {} }
                 Label { text: qsTr("Heure :") }
-                TextField { id: champHeureDiffere; placeholderText: "08:00"; Layout.fillWidth: true }
+                TextField { id: champHeureDiffere; placeholderText: "08:00"; Layout.fillWidth: true; MenuSaisie {} }
             }
             Label {
                 id: noteDiffere
@@ -1131,6 +1142,7 @@ Page {
             }
             TextField {
                 id: champAdresseLien
+                MenuSaisie {}
                 Layout.fillWidth: true
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
                 onAccepted: dlgAdresseLien.accept()

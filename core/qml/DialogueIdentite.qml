@@ -102,6 +102,7 @@ Dialog {
         Label { text: qsTr("Nom affiché chez les destinataires :") }
         TextField {
             id: champNomAffiche
+            MenuSaisie {}
             Layout.fillWidth: true
             placeholderText: qsTr("Prénom Nom")
         }
@@ -164,6 +165,7 @@ Dialog {
             Layout.preferredHeight: Math.min(320, fenetre.height * 0.4)
             TextArea {
                 id: champSignature
+                MenuSaisie {}
                 textFormat: TextEdit.RichText
                 wrapMode: TextEdit.Wrap
                 selectByMouse: true
@@ -241,6 +243,7 @@ Dialog {
         onAccepted: mefSignature.poserLien(champLienSignature.text)
         TextField {
             id: champLienSignature
+            MenuSaisie {}
             anchors.left: parent.left
             anchors.right: parent.right
             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase

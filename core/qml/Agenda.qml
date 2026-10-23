@@ -1074,6 +1074,7 @@ Pane {
                 visible: (popupFiche.f.description || "").length > 0
                 TextArea {
                     id: texteFiche
+                    MenuSaisie {}
                     readOnly: true
                     selectByMouse: true
                     wrapMode: TextArea.Wrap
@@ -1368,6 +1369,7 @@ Pane {
                     Label { text: qsTr("Titre") }
                     TextField {
                         id: champTitre
+                        MenuSaisie {}
                         Layout.fillWidth: true
                         placeholderText: qsTr("Objet de l'événement")
                         onAccepted: popupSaisie.enregistrer()
@@ -1375,6 +1377,7 @@ Pane {
                     Label { text: qsTr("Lieu") }
                     TextField {
                         id: champLieu
+                        MenuSaisie {}
                         Layout.fillWidth: true
                     }
                     Item {
@@ -1391,6 +1394,7 @@ Pane {
                         spacing: 4
                         TextField {
                             id: champDebutJour
+                            MenuSaisie {}
                             Layout.preferredWidth: 120
                             placeholderText: qsTr("jj/mm/aaaa")
                             onEditingFinished: popupSaisie.debutChange()
@@ -1403,6 +1407,7 @@ Pane {
                         }
                         TextField {
                             id: champDebutHeure
+                            MenuSaisie {}
                             visible: !caseJournee.checked
                             Layout.preferredWidth: 70
                             placeholderText: qsTr("hh:mm")
@@ -1414,6 +1419,7 @@ Pane {
                         spacing: 4
                         TextField {
                             id: champFinJour
+                            MenuSaisie {}
                             Layout.preferredWidth: 120
                             placeholderText: qsTr("jj/mm/aaaa")
                         }
@@ -1425,6 +1431,7 @@ Pane {
                         }
                         TextField {
                             id: champFinHeure
+                            MenuSaisie {}
                             visible: !caseJournee.checked
                             Layout.preferredWidth: 70
                             placeholderText: qsTr("hh:mm")
@@ -1459,6 +1466,7 @@ Pane {
                         spacing: 4
                         TextField {
                             id: champJusquAu
+                            MenuSaisie {}
                             Layout.preferredWidth: 120
                             placeholderText: qsTr("sans fin")
                         }
@@ -1479,6 +1487,7 @@ Pane {
                         spacing: 0
                         TextField {
                             id: champParticipants
+                            MenuSaisie {}
                             Layout.fillWidth: true
                             placeholderText: qsTr("adresses, séparées par des virgules")
                             // Propositions pour l'adresse en cours de saisie : la
@@ -1529,6 +1538,7 @@ Pane {
                     }
                     TextArea {
                         id: champDescription
+                        MenuSaisie {}
                         Layout.fillWidth: true
                         Layout.preferredHeight: 110
                         wrapMode: TextArea.Wrap

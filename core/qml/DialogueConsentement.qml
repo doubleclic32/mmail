@@ -41,6 +41,7 @@ Dialog {
             Layout.fillWidth: true
             TextField {
                 id: champConsentement
+                MenuSaisie {}
                 Layout.fillWidth: true
                 readOnly: true
                 selectByMouse: true
