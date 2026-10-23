@@ -499,6 +499,42 @@ fn premier_contact(adresses: &Address<'_>) -> (String, String) {
         .unwrap_or_default()
 }
 
+/// En-tête d'un message pour sa fenêtre (0.6.16) : expéditeur, destinataires
+/// et copie — chacun « Nom <adresse> », séparés par « ; » —, et date (RFC
+/// 3339, vide si absente). JSON : `{"de":…,"a":…,"cc":…,"date":…}`.
+pub fn entete_affichable(brut: &[u8]) -> String {
+    let Some(message) = MessageParser::default().parse(brut) else {
+        return r#"{"de":"","a":"","cc":"","date":""}"#.to_string();
+    };
+    let complets = |adresses: Option<&Address<'_>>| -> String {
+        adresses
+            .map(|a| {
+                a.iter()
+                    .filter_map(|c| {
+                        let nom = c.name().unwrap_or_default().trim();
+                        let adresse = c.address().unwrap_or_default().trim();
+                        match (nom.is_empty(), adresse.is_empty()) {
+                            (true, true) => None,
+                            (true, false) => Some(adresse.to_string()),
+                            (false, true) => Some(nom.to_string()),
+                            (false, false) if nom == adresse => Some(adresse.to_string()),
+                            (false, false) => Some(format!("{nom} <{adresse}>")),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "de": complets(message.from()),
+        "a": complets(message.to()),
+        "cc": complets(message.cc()),
+        "date": message.date().map(|d| d.to_rfc3339()).unwrap_or_default(),
+    })
+    .to_string()
+}
+
 /// Destinataires, nommés comme dans la liste d'Outlook (« Nom; Nom ») : ceux
 /// de `To`, à défaut ceux de `Cc` ; chacun par son nom d'affichage, à défaut
 /// son adresse. La liste les montre à la place de l'expéditeur dans les
@@ -617,6 +653,17 @@ mod tests {
         assert_eq!(ligne.destinataires, "René");
         // En copie cachée seulement : rien à montrer.
         assert_eq!(ligne_index(&entete("From: moi@exemple.fr\r\n\r\n")).destinataires, "");
+    }
+
+    #[test]
+    fn entete_de_la_fenetre_du_message() {
+        let brut = b"From: Moi <moi@exemple.fr>\r\nTo: \"Dupont, Jean\" <jean@exemple.fr>, marie@exemple.fr\r\n\
+                     Cc: =?UTF-8?Q?Ren=C3=A9?= <rene@exemple.fr>\r\nDate: Fri, 16 Oct 2026 10:01:00 +0200\r\n\r\nCorps\r\n";
+        let e: serde_json::Value = serde_json::from_str(&entete_affichable(brut)).unwrap();
+        assert_eq!(e["de"], "Moi <moi@exemple.fr>");
+        assert_eq!(e["a"], "Dupont, Jean <jean@exemple.fr>; marie@exemple.fr");
+        assert_eq!(e["cc"], "René <rene@exemple.fr>");
+        assert_eq!(e["date"], "2026-10-16T10:01:00+02:00");
     }
 
     #[test]

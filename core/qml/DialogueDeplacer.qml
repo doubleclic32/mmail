@@ -15,15 +15,20 @@ import fr.mmedia.mmail.natif
 
 Dialog {
     id: dlgDeplacer
-    title: qsTr("Déplacer %1 vers…").arg(fenetre.accord(Object.keys(fenetre.selection).length, qsTr("message"), qsTr("messages")))
+    // Fenêtre d'un message (0.6.16) qui ouvre ce dialogue pour son message :
+    // elle a `compte`, `chemin` et `deplacerVers(compte, chemin)`. Sans elle,
+    // la sélection de la fenêtre principale.
+    property var pour: null
+    title: pour ? qsTr("Déplacer le message vers…")
+                : qsTr("Déplacer %1 vers…").arg(fenetre.accord(Object.keys(fenetre.selection).length, qsTr("message"), qsTr("messages")))
     modal: true
     anchors.centerIn: Overlay.overlay
     // Zoom de la colonne d'où il est ouvert (liste, message), fixé à
     // l'ouverture ; les dimensions suivent, dans la limite de la fenêtre.
     property real zoom: 1
     font.pointSize: fenetre.tailleBase * zoom
-    width: Math.min(520 * zoom, fenetre.width - 24)
-    height: Math.min(560 * zoom, fenetre.height - 40)
+    width: Math.min(520 * zoom, (pour ? pour.width : fenetre.width) - 24)
+    height: Math.min(560 * zoom, (pour ? pour.height : fenetre.height) - 40)
     standardButtons: Dialog.Ok | Dialog.Cancel
     property var cibles: []
     onOpened: {
@@ -34,7 +39,10 @@ Dialog {
     onAccepted: {
         if (vueCibles.currentIndex >= 0 && vueCibles.currentIndex < modeleCibles.count) {
             var c = modeleCibles.get(vueCibles.currentIndex)
-            fenetre.deplacerVers(c.compte, c.chemin)
+            if (pour)
+                pour.deplacerVers(c.compte, c.chemin)
+            else
+                fenetre.deplacerVers(c.compte, c.chemin)
         }
     }
     function filtrer() {
@@ -42,7 +50,8 @@ Dialog {
         var filtre = champFiltre.text.toLowerCase()
         for (var i = 0; i < cibles.length; ++i) {
             var c = cibles[i]
-            if (c.compte === boite.compteCourant && c.chemin === boite.dossierCourant)
+            if (pour ? c.compte === pour.compte && c.chemin === pour.chemin
+                     : c.compte === boite.compteCourant && c.chemin === boite.dossierCourant)
                 continue
             var texte = (c.adresse + " " + c.chemin + " " + fenetre.libelleLigne(c)).toLowerCase()
             if (filtre.length === 0 || texte.indexOf(filtre) >= 0)

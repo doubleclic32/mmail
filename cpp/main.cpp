@@ -578,6 +578,16 @@ int main(int argc, char* argv[])
         return;
       }
       auto* fenetre = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+      // MMAIL_CAPTURE_FENETRE (essais, 0.6.16) : la dernière fenêtre ouverte
+      // par-dessus la principale — fenêtre d'un message, rédaction.
+      if (!qgetenv("MMAIL_CAPTURE_FENETRE").isEmpty()) {
+        const auto fenetres = QGuiApplication::topLevelWindows();
+        for (auto* autre : fenetres) {
+          auto* rapide = qobject_cast<QQuickWindow*>(autre);
+          if (rapide && rapide != fenetre && rapide->isVisible())
+            fenetre = rapide;
+        }
+      }
       if (!fenetre) {
         QCoreApplication::exit(5);
         return;

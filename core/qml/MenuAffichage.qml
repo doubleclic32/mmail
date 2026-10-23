@@ -36,7 +36,12 @@ Menu {
     }
     // La vue tactile garde la barre d'application d'Android : pas de
     // disposition à choisir (retirée à la création).
-    Component.onCompleted: if (fenetre.tactile) menuAffichage.removeMenu(menuDisposition)
+    Component.onCompleted: {
+        if (fenetre.tactile) {
+            menuAffichage.removeMenu(menuDisposition)
+            menuAffichage.removeMenu(menuDoubleClic)
+        }
+    }
     Menu {
         id: menuDisposition
         title: qsTr("Disposition")
@@ -82,6 +87,27 @@ Menu {
                 checkable: true
                 checked: reglages.delaiLu === modelData.delai
                 onTriggered: reglages.delaiLu = modelData.delai
+            }
+        }
+    }
+    // Double-clic sur un message (0.6.16) : sa fenêtre, comme Outlook, ou
+    // une réponse. Au doigt, le double toucher ne change pas (retiré à la
+    // création, comme la disposition).
+    Menu {
+        id: menuDoubleClic
+        title: qsTr("Double-clic sur un message")
+        onAboutToShow: width = fenetre.largeurMenu(menuDoubleClic)
+        Repeater {
+            model: [
+                { libelle: qsTr("Ouvrir le message"), valeur: "message" },
+                { libelle: qsTr("Ouvrir une réponse"), valeur: "reponse" }
+            ]
+            MenuItem {
+                required property var modelData
+                text: modelData.libelle
+                checkable: true
+                checked: reglages.doubleClic === modelData.valeur
+                onTriggered: reglages.doubleClic = modelData.valeur
             }
         }
     }

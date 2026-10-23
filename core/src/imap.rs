@@ -42,6 +42,10 @@ const REPONSE_MAX: usize = 512 * 1024 * 1024;
 /// serveur qui distille sa réponse octet par octet.
 const ECHEANCE_COMMANDE: Duration = Duration::from_secs(30 * 60);
 
+/// Tranche d'une lecture patiente (`Attente`) : de quoi voir vite qu'une
+/// recherche a été remplacée, sans tourner à vide.
+const TRANCHE: Duration = Duration::from_secs(1);
+
 /// STATUS envoyés d'un coup sans LIST-STATUS : quelques kilo-octets dans
 /// chaque sens, qui tiennent dans les tampons du système — le serveur n'est
 /// jamais bloqué sur ses réponses pendant que MMail écrit encore.
@@ -82,6 +86,11 @@ pub enum Erreur {
     Reseau(String),
     Protocole(String),
     Refuse(String),
+    /// Commande attendue patiemment (`Attente`) restée sans réponse jusqu'au
+    /// bout : la session, au milieu d'une commande, n'est plus utilisable.
+    Delai,
+    /// Attente abandonnée en route (`Attente::continuer` faux) : même chose.
+    Abandon,
 }
 
 impl std::fmt::Display for Erreur {
@@ -90,6 +99,8 @@ impl std::fmt::Display for Erreur {
             Erreur::Reseau(m) => write!(f, "réseau : {m}"),
             Erreur::Protocole(m) => write!(f, "protocole : {m}"),
             Erreur::Refuse(m) => write!(f, "refusé par le serveur : {m}"),
+            Erreur::Delai => write!(f, "le serveur n'a pas répondu à temps"),
+            Erreur::Abandon => write!(f, "attente abandonnée"),
         }
     }
 }
@@ -119,6 +130,20 @@ impl Flux for Tls {
     }
 }
 
+/// Attente d'une commande qui peut durer (0.6.16, recherche sur le
+/// serveur) : la lecture se fait par tranches (`TRANCHE`) jusqu'à `delai`,
+/// au lieu d'abandonner la session au premier silence de 30 s (`DELAI`).
+#[derive(Clone)]
+pub struct Attente {
+    pub delai: Duration,
+    /// Chaque signe de vie du serveur — `* OK Indexed 40% of the mailbox`,
+    /// que Dovecot envoie pendant qu'il indexe — repousse l'échéance de
+    /// `delai` ; `ECHEANCE_COMMANDE` borne le tout.
+    pub prolonger: bool,
+    /// Faux : l'attente est abandonnée à la tranche suivante (`Erreur::Abandon`).
+    pub continuer: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
 /// Session IMAP ouverte sur un serveur.
 pub struct Client {
     flux: Box<dyn Flux>,
@@ -136,6 +161,8 @@ pub struct Client {
     echeance: Option<Instant>,
     /// Espaces des boîtes d'autres utilisateurs, une fois demandés.
     espaces_autres: Option<Vec<(String, String)>>,
+    /// Attente patiente de la commande en cours, et son échéance.
+    patience: Option<(Attente, Instant)>,
 }
 
 impl Client {
@@ -164,6 +191,7 @@ impl Client {
             idle: None,
             echeance: None,
             espaces_autres: None,
+            patience: None,
         };
         // Salutation : une seule ligne non étiquetée.
         let salutation = client.lire_ligne()?;
@@ -626,12 +654,45 @@ impl Client {
     /// de `categories` est un critère — l'un de ses mots-clés (`KEYWORD`) —,
     /// et les critères s'ajoutent aux mots. Un critère vide ne trouve rien.
     pub fn chercher(&mut self, texte: &str, categories: &[Vec<String>]) -> Resultat<Vec<u32>> {
+        let Some(commande) = self.commande_recherche(texte, categories)? else {
+            return Ok(Vec::new());
+        };
+        let (texte, _) = self.commande(&commande)?;
+        Ok(protocole::analyser_search(&texte))
+    }
+
+    /// Comme `chercher`, en attendant le serveur selon `attente` (0.6.16) : un
+    /// dossier dont l'index plein texte n'est pas construit fait attendre
+    /// Dovecot que son indexeur ait fini, sans rien envoyer. `Erreur::Delai`,
+    /// `Erreur::Abandon` : la session est à fermer, le serveur cherche encore.
+    pub fn chercher_patiemment(
+        &mut self,
+        texte: &str,
+        categories: &[Vec<String>],
+        attente: Attente,
+    ) -> Resultat<Vec<u32>> {
+        let Some(commande) = self.commande_recherche(texte, categories)? else {
+            return Ok(Vec::new());
+        };
+        let fin = Instant::now() + attente.delai;
+        self.patience = Some((attente, fin));
+        let reponse = self.flux.delai_lecture(TRANCHE).map_err(Erreur::from).and_then(|()| self.commande(&commande));
+        self.patience = None;
+        let remis = self.flux.delai_lecture(DELAI);
+        let (texte, _) = reponse?;
+        remis?;
+        Ok(protocole::analyser_search(&texte))
+    }
+
+    /// `UID SEARCH` d'un texte et de catégories ; `None` : rien à chercher,
+    /// ou un critère qui ne peut rien trouver.
+    fn commande_recherche(&self, texte: &str, categories: &[Vec<String>]) -> Resultat<Option<String>> {
         let mots: Vec<&str> = texte.split_whitespace().collect();
         if mots.is_empty() && categories.is_empty() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         if categories.iter().any(|c| c.is_empty() || c.iter().any(|m| !protocole::mot_cle_valide(m))) {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let litteraux = self.sait("LITERAL+");
         let mut criteres = String::new();
@@ -653,8 +714,7 @@ impl Client {
                 return Err(Erreur::Refuse("le serveur ne sait pas chercher ce texte".into()));
             }
         }
-        let (texte, _) = self.commande(&format!("UID SEARCH CHARSET UTF-8{criteres}"))?;
-        Ok(protocole::analyser_search(&texte))
+        Ok(Some(format!("UID SEARCH CHARSET UTF-8{criteres}")))
     }
 
     /// UID des messages du dossier sélectionné portant un `Message-ID` donné :
@@ -877,13 +937,41 @@ impl Client {
             return Err(Erreur::Reseau("le serveur ne termine pas sa réponse".into()));
         }
         let mut tampon = [0u8; 16384];
-        let lus = self.flux.read(&mut tampon)?;
+        let lus = loop {
+            match self.flux.read(&mut tampon) {
+                Ok(lus) => break lus,
+                // Lecture patiente : une tranche sans rien, on regarde si
+                // l'attente continue, puis on relit — ce qui est arrivé de la
+                // ligne en cours reste dans `reste`.
+                Err(e) if self.patience.is_some() && tranche_ecoulee(&e) => {
+                    let (attente, fin) = self.patience.as_ref().expect("attente");
+                    if !(attente.continuer)() {
+                        return Err(Erreur::Abandon);
+                    }
+                    if Instant::now() >= *fin || self.echeance.is_some_and(|t| Instant::now() > t) {
+                        return Err(Erreur::Delai);
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         if lus == 0 {
             return Err(Erreur::Reseau("connexion fermée par le serveur".into()));
+        }
+        if let Some((attente, fin)) = self.patience.as_mut() {
+            if attente.prolonger {
+                *fin = (*fin).max(Instant::now() + attente.delai);
+            }
         }
         self.reste.extend_from_slice(&tampon[..lus]);
         Ok(())
     }
+}
+
+/// Vrai si une lecture a seulement attendu sa tranche sans rien recevoir :
+/// `WouldBlock` sous Linux, `TimedOut` sous Windows.
+fn tranche_ecoulee(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
 }
 
 /// Configuration TLS du bureau : le vérificateur de la plateforme, qui lit le
@@ -1163,6 +1251,62 @@ mod tests {
         assert_eq!(journal.lock().unwrap().as_slice(), ["SELECT \"INBOX\"", "IDLE", "DONE"]);
         // Hors IDLE, terminer ne fait rien.
         assert!(client.idle_terminer().unwrap().is_empty());
+    }
+
+    /// Attente d'essai : `delai` en millisecondes, toujours continuée sauf
+    /// `continuer` faux.
+    fn attente(delai: u64, prolonger: bool, continuer: bool) -> Attente {
+        Attente { delai: Duration::from_millis(delai), prolonger, continuer: Arc::new(move || continuer) }
+    }
+
+    #[test]
+    fn recherche_patiente_attend_le_serveur() {
+        use crate::simule::lente;
+        // Le serveur se tait 20 ms, puis répond : la session reste ouverte
+        // et sert encore (0.6.16).
+        let (mut client, journal) = session(
+            DOVECOT,
+            vec![
+                lente("UID SEARCH CHARSET UTF-8 TEXT", &[(20, "* SEARCH 3 8\r\n")], "OK Search completed"),
+                echange("NOOP", "", "OK"),
+            ],
+        );
+        assert_eq!(client.chercher_patiemment("devis", &[], attente(5_000, false, true)).unwrap(), vec![3, 8]);
+        client.noop().unwrap();
+        assert_eq!(journal.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn recherche_patiente_sans_reponse() {
+        use crate::simule::lente;
+        let (mut client, _) =
+            session(DOVECOT, vec![lente("UID SEARCH", &[(usize::MAX, "* SEARCH 3\r\n")], "OK")]);
+        assert!(matches!(client.chercher_patiemment("devis", &[], attente(30, false, true)), Err(Erreur::Delai)));
+        let (mut client, _) =
+            session(DOVECOT, vec![lente("UID SEARCH", &[(usize::MAX, "* SEARCH 3\r\n")], "OK")]);
+        assert!(matches!(client.chercher_patiemment("devis", &[], attente(5_000, false, false)), Err(Erreur::Abandon)));
+    }
+
+    #[test]
+    fn recherche_patiente_prolongee_par_les_signes_de_vie() {
+        use crate::simule::lente;
+        // Dovecot qui indexe : une ligne de progression toutes les 40 ms, la
+        // réponse au bout de 240 — bien au-delà de l'attente de 150 ms, que
+        // chaque ligne repousse.
+        let progression = "* OK Indexed 20% of the mailbox, ETA 0:40\r\n";
+        let morceaux = [
+            (40, progression),
+            (40, progression),
+            (40, progression),
+            (40, progression),
+            (40, progression),
+            (40, "* SEARCH 5\r\n"),
+        ];
+        let (mut client, _) = session(DOVECOT, vec![lente("UID SEARCH", &morceaux, "OK Search completed")]);
+        assert_eq!(client.chercher_patiemment("devis", &[], attente(150, true, true)).unwrap(), vec![5]);
+        // Sans prolongation, la même réponse arrive trop tard.
+        let (mut client, _) = session(DOVECOT, vec![lente("UID SEARCH", &morceaux, "OK Search completed")]);
+        assert!(matches!(client.chercher_patiemment("devis", &[], attente(150, false, true)), Err(Erreur::Delai)));
     }
 
     #[test]

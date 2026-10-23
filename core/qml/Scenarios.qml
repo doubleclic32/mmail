@@ -20,6 +20,61 @@ import fr.mmedia.mmail.natif
 QtObject {
     id: scenarios
 
+    /// Secondes écoulées depuis `depart` (Date.now()), arrondies à 5 : de
+    /// quoi lire une attente sans rendre la trace différente d'un essai à
+    /// l'autre.
+    function secondesDepuis(depart) {
+        return Math.round((Date.now() - depart) / 5000) * 5
+    }
+
+    /// Scénario « double-clic » (0.6.16) : la fenêtre du message a reçu son
+    /// corps. Marquage non lu puis lu depuis la fenêtre, fermeture ; puis
+    /// l'option « Ouvrir une réponse », et les brouillons.
+    function etapeScenarioDoubleClic(f) {
+        if (essai.fenetreLue)
+            return
+        essai.fenetreLue = true
+        console.log("scenario: fenêtre « " + f.title + " » | De :", f.entete.de, "| À :", f.entete.a,
+                    "| Cc :", f.entete.cc || "—", "| html", f.html, "| pièces", f.pieces.length,
+                    "| ligne lue", modeleMessages.get(0).lu)
+        var suite = function() {
+            f.marquer(false)
+            console.log("scenario: depuis la fenêtre, non lu → ligne lue", modeleMessages.get(0).lu,
+                        "| bouton", f.lu ? "Marquer comme non lu" : "Marquer comme lu")
+            f.marquer(true)
+            console.log("scenario: puis lu → ligne lue", modeleMessages.get(0).lu)
+            f.close()
+            Qt.callLater(function() {
+                console.log("scenario: fenêtre fermée | fenêtres", fenetre.fenetresMessage.length)
+                reglages.doubleClic = "reponse"
+                var avant = Object.keys(fenetre.redactions).length
+                fenetre.choisir(1, 0)
+                fenetre.doubleClicMessage(1)
+                console.log("scenario: option « Ouvrir une réponse » : rédactions", avant, "→",
+                            Object.keys(fenetre.redactions).length, "| fenêtres de message",
+                            fenetre.fenetresMessage.length)
+                reglages.doubleClic = "message"
+                essai.etape = "brouillons"
+                fenetre.ouvrirDossier(boite.compteCourant, "Drafts")
+            })
+        }
+        // MMAIL_DOSSIER « garder » : la fenêtre reste ouverte, pour une
+        // capture (--capture, MMAIL_CAPTURE_FENETRE).
+        if (identifiantsEssai.dossier !== "garder")
+            suite()
+    }
+
+    /// `action` dans `ms` millisecondes, une fois.
+    function plusTard(ms, action) {
+        var minuterie = Qt.createQmlObject('import QtQuick; Timer {}', fenetre)
+        minuterie.interval = ms
+        minuterie.triggered.connect(function() {
+            minuterie.destroy()
+            action()
+        })
+        minuterie.start()
+    }
+
     /// Scénario « vidage » : chaque issue, puis l'état des comptes cinq
     /// secondes après la dernière — le 01/10, ils étaient tous passés en
     /// « erreur » après un vidage.

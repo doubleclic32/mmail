@@ -142,6 +142,52 @@ Connections {
             console.log("scenario: l'index trouve", modeleMessages.count, "message(s)")
             return
         }
+        // Scénario « double-clic » (0.6.16) : le premier message de INBOX,
+        // non lu, ouvert d'un double-clic avec le marquage « Jamais » — sa
+        // fenêtre s'ouvre et il passe lu (suite dans etapeScenarioDoubleClic) ;
+        // puis un brouillon, qui se reprend.
+        if (fenetre.essai && fenetre.essai.scenario === "double-clic" && !fenetre.essai.ouvert && chemin === "INBOX") {
+            fenetre.essai.ouvert = true
+            Qt.callLater(function() {
+                reglages.delaiLu = -1
+                fenetre.choisir(0, 0)
+                var avant = modeleMessages.get(0).lu
+                fenetre.doubleClicMessage(0)
+                console.log("scenario: double-clic sur « " + modeleMessages.get(0).sujet + " » | marquage", reglages.delaiLu,
+                            "| lu avant", avant, "| après", modeleMessages.get(0).lu,
+                            "| fenêtres", fenetre.fenetresMessage.length)
+            })
+        }
+        if (fenetre.essai && fenetre.essai.scenario === "double-clic" && fenetre.essai.etape === "brouillons"
+                && chemin === "Drafts" && !fenetre.essai.repris) {
+            // La liste du dossier se pose après ce signal ; vide, c'est
+            // l'index avant la lecture du serveur : on attend la suivante.
+            scenarios.plusTard(1500, function() {
+                if (fenetre.essai.repris || modeleMessages.count === 0)
+                    return
+                fenetre.essai.repris = true
+                var avant = Object.keys(fenetre.redactions).length
+                fenetre.choisir(0, 0)
+                fenetre.doubleClicMessage(0)
+                console.log("scenario: brouillon « " + (modeleMessages.count > 0 ? modeleMessages.get(0).sujet : "—")
+                            + " » : rédactions", avant, "→", Object.keys(fenetre.redactions).length,
+                            "| fenêtres de message", fenetre.fenetresMessage.length)
+                scenarios.plusTard(3000, Qt.quit)
+            })
+        }
+        // Scénario « recherche-lente » (0.6.16) : le texte de MMAIL_DOSSIER
+        // cherché dans INBOX, où le banc fait durer la recherche (LENTEUR),
+        // puis dans toutes les boîtes ; le compte doit rester connecté (suite
+        // dans onResultatsServeur, onRechercheInachevee, onResultatsPartout).
+        if (fenetre.essai && fenetre.essai.scenario === "recherche-lente" && !fenetre.essai.cherche) {
+            fenetre.essai.cherche = true
+            fenetre.essai.depart = Date.now()
+            colonneListe.champRecherche.text = identifiantsEssai.dossier || "essai"
+            fenetre.lancerRecherche()
+            console.log("scenario: dossier actif, l'index trouve", modeleMessages.count, "message(s) | compte",
+                        fenetre.compteParId(compte).etat, "|", messageEtat.texte)
+            return
+        }
         // Scénario « recherche-serveur » : INBOX seule passée par l'index,
         // le texte de MMAIL_DOSSIER est cherché dans toutes les boîtes ; le
         // serveur le trouve aussi dans le corps des messages et dans les
@@ -271,8 +317,11 @@ Connections {
         }
     }
 
-    function onCorpsRecu(uid, texte, brut, html, bloquees, pieces, confirmation) {
-        if (uid !== fenetre.uidCourant || brut !== fenetre.sourceVisible)
+    function onCorpsRecu(uid, texte, brut, html, bloquees, pieces, confirmation, entete, compte, chemin) {
+        // Un UID ne désigne un message que dans son dossier : celui d'une
+        // fenêtre de message (0.6.16) peut porter le même numéro.
+        if (uid !== fenetre.uidCourant || brut !== fenetre.sourceVisible
+                || compte !== boite.compteCourant || chemin !== boite.dossierCourant)
             return
         // Le format d'abord : le texte s'interprète selon lui.
         fenetre.lienSurvole = ""
@@ -515,6 +564,12 @@ Connections {
         if (uids.length > 0 || fini)
             fenetre.poserResultats()
         messageEtat.texte = fenetre.etatRecherchePartout()
+        if (fini && fenetre.essai && fenetre.essai.scenario === "recherche-lente") {
+            console.log("scenario: toutes les boîtes, fin après", scenarios.secondesDepuis(fenetre.essai.depart),
+                        "s | résultats", modeleMessages.count, "| inachevés", fenetre.inachevesPartout.length,
+                        "| compte", fenetre.compteParId(compte).etat, "|", messageEtat.texte)
+            scenarios.plusTard(8000, Qt.quit)
+        }
         if (fenetre.essai && fenetre.essai.scenario === "recherche-serveur") {
             console.log("scenario: serveur,", chemin, ":", uids.length > 0 ? uids.split(",").length : 0,
                         "| restants", restants, "| liste", modeleMessages.count)
@@ -541,6 +596,25 @@ Connections {
         fenetre.poserResultats()
         messageEtat.texte = qsTr("Recherche « %1 » : %2.").arg(texte)
                 .arg(fenetre.accord(modeleMessages.count, qsTr("résultat"), qsTr("résultats")))
+        if (fenetre.essai && fenetre.essai.scenario === "recherche-lente" && !fenetre.essai.partout) {
+            // `rechercheInachevee`, s'il vient, suit ce signal : le bilan
+            // attend qu'il soit passé.
+            fenetre.essai.partout = true
+            Qt.callLater(function() {
+                console.log("scenario: dossier actif, le serveur rend", uids.length > 0 ? uids.split(",").length : 0,
+                            "UID après", scenarios.secondesDepuis(fenetre.essai.depart), "s | compte",
+                            fenetre.compteParId(compte).etat, "|", messageEtat.texte)
+                // Huit secondes pour une capture de la barre d'état, puis
+                // toutes les boîtes.
+                scenarios.plusTard(8000, function() {
+                    fenetre.essai.depart = Date.now()
+                    colonneListe.porteeRecherche.currentIndex = 1
+                    fenetre.lancerRecherche()
+                    console.log("scenario: toutes les boîtes, dossiers à interroger", fenetre.dossiersPartout,
+                                "|", messageEtat.texte)
+                })
+            })
+        }
         if (fenetre.essai && fenetre.essai.scenario === "recherche") {
             console.log("scenario: liste après le serveur :", modeleMessages.count, "| premier :",
                         modeleMessages.count > 0 ? modeleMessages.get(0).sujet : "—")
@@ -637,6 +711,26 @@ Connections {
             qsTr("messages effacés des corbeilles et indésirables."))
         if (fenetre.essai && fenetre.essai.scenario === "vidage")
             scenarios.bilanScenarioVidage("vidées, " + nombre + " message(s) | " + messageEtat.texte)
+    }
+
+    // Le serveur n'a pas fini de chercher dans un dossier (0.6.16) : ses
+    // résultats sont ceux de l'index, et la barre d'état le dit. Le compte
+    // reste connecté.
+    function onRechercheInachevee(compte, chemin, dossier, texte, motif) {
+        if (texte !== fenetre.recherche)
+            return
+        var c = fenetre.compteParId(compte)
+        var nom = (c ? c.adresse + " › " : "") + dossier
+        if (fenetre.rechercheGlobale) {
+            // Le bilan vient avec `resultatsPartout`, qui suit.
+            fenetre.inachevesPartout = fenetre.inachevesPartout.concat([{ nom: nom, motif: motif }])
+            return
+        }
+        if (compte !== boite.compteCourant || chemin !== boite.dossierCourant)
+            return
+        messageEtat.texte = qsTr("Recherche « %1 » : %2 — le serveur n'a pas fini de chercher dans « %3 » (%4) : résultats des messages déjà sur le poste.")
+                .arg(texte).arg(fenetre.accord(modeleMessages.count, qsTr("résultat"), qsTr("résultats")))
+                .arg(nom).arg(motif)
     }
 
     function onEchec(compte, etape, message) {

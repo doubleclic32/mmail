@@ -709,9 +709,18 @@ fn recherche_dans_le_texte() {
     client.selectionner("INBOX", None).expect("SELECT");
     let trouves = client.chercher_texte(&mot).expect("SEARCH");
     let accent = client.chercher_texte(&format!("{mot} échéance")).expect("SEARCH accentué");
+    // La même, attendue patiemment par tranches (0.6.16) : même résultat, et
+    // la session sert encore ensuite, à la lecture ordinaire.
+    let attente = crate::imap::Attente {
+        delai: std::time::Duration::from_secs(20),
+        prolonger: true,
+        continuer: std::sync::Arc::new(|| true),
+    };
+    let patiente = client.chercher_patiemment(&mot, &[], attente).expect("SEARCH patient");
     client.supprimer(&[uid]).expect("purge");
     assert_eq!(trouves, vec![uid]);
     assert_eq!(accent, vec![uid]);
+    assert_eq!(patiente, vec![uid]);
     assert!(compter(&mut client, "INBOX", &id).is_empty());
 }
 

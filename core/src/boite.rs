@@ -28,16 +28,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::categories::{self, Catalogue, Categorie, Changement};
 use crate::deplacement::{self, Rapport};
-use crate::imap::{Client, Erreur};
+use crate::imap::{Attente, Client, Erreur};
 use crate::magasin::{DossierLocal, Magasin, MessageLocal};
 use crate::synchro::{self, assurer_selection, Echec};
 
@@ -265,16 +265,19 @@ pub mod qobject {
         fn chercher(&self, texte: &QString, partout: bool) -> QString;
 
         /// Cherche aussi dans le texte entier des messages du dossier ouvert,
-        /// sur le serveur. Issue : `resultatsServeur`.
+        /// sur le serveur, par une connexion à part (0.6.16). Issue :
+        /// `resultatsServeur`, précédé de `rechercheInachevee` si le serveur
+        /// n'a pas fini.
         #[qinvokable]
         #[cxx_name = "chercherSurLeServeur"]
         fn chercher_sur_le_serveur(self: Pin<&mut Boite>, texte: &QString) -> bool;
 
         /// Cherche aussi sur le serveur, dans chaque dossier de chaque compte
-        /// connecté, un dossier à la fois et après ce que l'utilisateur
-        /// demande. Rend le nombre de dossiers à interroger ; un texte vide
-        /// arrête la recherche en cours. Issue : `resultatsPartout`, par
-        /// dossier.
+        /// connecté, par une connexion à part pour chaque compte (0.6.16) : un
+        /// dossier lent passe après les autres. Rend le nombre de dossiers à
+        /// interroger ; un texte vide arrête la recherche en cours. Issue :
+        /// `resultatsPartout`, par dossier, après `rechercheInachevee` si le
+        /// serveur n'a pas fini d'y chercher.
         #[qinvokable]
         #[cxx_name = "chercherPartoutSurLeServeur"]
         fn chercher_partout_sur_le_serveur(self: Pin<&mut Boite>, texte: &QString) -> i32;
@@ -307,6 +310,60 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "demanderSource"]
         fn demander_source(self: Pin<&mut Boite>, uid: i32) -> bool;
+
+        /// Fenêtre d'un message (0.6.16) : son corps (`brut` : sa source), lu
+        /// dans son dossier quel que soit le dossier ouvert, sans toucher au
+        /// volet de lecture ni au marquage « lu ». Issue : `corpsRecu`.
+        #[qinvokable]
+        #[cxx_name = "demanderDans"]
+        fn demander_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uid: i32, brut: bool) -> bool;
+
+        /// Comme `ouvrirPiece` et `enregistrerPiece`, pour un message de
+        /// n'importe quel dossier (fenêtre d'un message, 0.6.16).
+        #[qinvokable]
+        #[cxx_name = "ouvrirPieceDans"]
+        fn ouvrir_piece_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uid: i32, indice: i32) -> bool;
+
+        #[qinvokable]
+        #[cxx_name = "enregistrerPieceDans"]
+        fn enregistrer_piece_dans(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            uid: i32,
+            indice: i32,
+            url: &QString,
+        ) -> bool;
+
+        /// Comme `marquerLu`, pour des messages de n'importe quel dossier.
+        #[qinvokable]
+        #[cxx_name = "marquerLuDans"]
+        fn marquer_lu_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString, lu: bool) -> bool;
+
+        /// Comme `deplacer`, depuis n'importe quel dossier.
+        #[qinvokable]
+        #[cxx_name = "deplacerDans"]
+        fn deplacer_dans(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            uids: &QString,
+            compte_cible: i32,
+            chemin_cible: &QString,
+        ) -> bool;
+
+        /// Comme `preparer`, pour un message de n'importe quel dossier.
+        #[qinvokable]
+        #[cxx_name = "preparerDans"]
+        fn preparer_dans(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            uid: i32,
+            mode: &QString,
+            jeton: &QString,
+            adresses: &QString,
+        ) -> bool;
 
         /// Ouvre une pièce jointe d'un message du dossier ouvert avec le
         /// logiciel du système : elle est d'abord écrite dans un dossier de
@@ -705,7 +762,9 @@ pub mod qobject {
         /// `html` : `texte` est du HTML assaini, à afficher en texte riche ;
         /// `bloquees` : nombre d'images distantes non téléchargées.
         /// `pieces` : ses pièces jointes, en JSON (`[{indice, nom, type,
-        /// taille, risquee}]`).
+        /// taille, risquee}]`). `entete` : De, À, Cc et date (JSON, cf.
+        /// `index::entete_affichable`) ; `compte` et `chemin` : son dossier —
+        /// un UID ne désigne un message que dans son dossier (0.6.16).
         #[qsignal]
         #[cxx_name = "corpsRecu"]
         fn corps_recu(
@@ -717,6 +776,9 @@ pub mod qobject {
             bloquees: i32,
             pieces: &QString,
             confirmation: &QString,
+            entete: &QString,
+            compte: i32,
+            chemin: &QString,
         );
 
         /// Une pièce jointe est écrite sur le disque : `url` la désigne pour
@@ -858,6 +920,22 @@ pub mod qobject {
             texte: &QString,
             uids: &QString,
             restants: i32,
+        );
+
+        /// Recherche sur le serveur (0.6.16) : le serveur n'a pas fini de
+        /// chercher dans le dossier `chemin` — `dossier` : son nom lisible,
+        /// `motif` : pourquoi. Ce dossier ne rend que les résultats de l'index ;
+        /// `resultatsServeur` suit ce signal, `resultatsPartout` le précède.
+        /// Le compte, lui, n'est pas touché.
+        #[qsignal]
+        #[cxx_name = "rechercheInachevee"]
+        fn recherche_inachevee(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            dossier: &QString,
+            texte: &QString,
+            motif: &QString,
         );
 
         /// Messages différés partis ; `erreurs` non vide si certains ont échoué.
@@ -1130,12 +1208,6 @@ enum Commande {
     /// Le serveur a signalé, pendant `IDLE`, un changement du dossier ouvert :
     /// il est resynchronisé. Émise par le fil lui-même.
     Signale,
-    /// Chercher un texte dans les messages d'un dossier, sur le serveur.
-    Chercher { chemin: String, texte: String },
-    /// Chercher un texte sur le serveur dans le premier de `chemins` ; la
-    /// suite revient dans la file, derrière ce que l'utilisateur demande.
-    /// `chemins` vide : arrête la recherche en cours.
-    ChercherPartout { texte: String, chemins: Vec<String> },
     /// Garder sur le poste les messages récents d'un dossier (décision 17),
     /// par petits lots, après tout ce que l'utilisateur demande.
     Precharger { chemin: String },
@@ -1148,6 +1220,13 @@ impl Commande {
         if let (Precharger { chemin: a }, Precharger { chemin: b }) = (self, anterieure) {
             return a == b;
         }
+        // Lecture pour la fenêtre d'un message (numéro 0, 0.6.16) : ni
+        // remplacée par l'affichage d'un autre message, ni ne le remplace.
+        if matches!(anterieure, Corps { numero: 0, .. })
+            || (matches!(self, Corps { numero: 0, .. }) && matches!(anterieure, Corps { .. }))
+        {
+            return false;
+        }
         matches!(
             (self, anterieure),
             (OuvrirDossier(_), OuvrirDossier(_))
@@ -1156,33 +1235,25 @@ impl Commande {
                 | (Arborescence, Arborescence)
                 | (EnvoyerDifferes { .. }, EnvoyerDifferes { .. })
                 | (Signale, Signale)
-                | (Chercher { .. }, Chercher { .. })
-                | (ChercherPartout { .. }, ChercherPartout { .. })
         ) || (matches!(anterieure, Veille) && (self.comptee() || matches!(self, Veille)))
     }
 
-    /// Ordre de passage dans la file : ce que l'utilisateur demande, puis la
-    /// recherche sur toutes les boîtes, puis le préchargement.
+    /// Ordre de passage dans la file : ce que l'utilisateur demande, puis le
+    /// préchargement. La recherche sur le serveur a sa propre connexion
+    /// (0.6.16, cf. `Recherche`).
     fn rang(&self) -> u8 {
         match self {
-            Commande::ChercherPartout { .. } => 1,
-            Commande::Precharger { .. } => 2,
+            Commande::Precharger { .. } => 1,
             _ => 0,
         }
     }
 
     /// Vrai si la commande vient de l'interface et compte dans `occupe`.
     fn comptee(&self) -> bool {
-        // Les tâches de fond ne font pas tourner l'indicateur d'activité. La
-        // recherche sur toutes les boîtes, que le fil remet lui-même dans sa
-        // file dossier après dossier, affiche sa propre progression.
+        // Les tâches de fond ne font pas tourner l'indicateur d'activité.
         !matches!(
             self,
-            Commande::Veille
-                | Commande::Signale
-                | Commande::EnvoyerDifferes { .. }
-                | Commande::ChercherPartout { .. }
-                | Commande::Precharger { .. }
+            Commande::Veille | Commande::Signale | Commande::EnvoyerDifferes { .. } | Commande::Precharger { .. }
         )
     }
 }
@@ -1224,11 +1295,12 @@ enum Issue {
     /// Un déplacement n'aura pas lieu (échec, ou commande abandonnée avec la
     /// session) : l'interface remet les lignes qu'elle avait retirées.
     DeplacementEchoue { message: String },
-    /// UID trouvés par le serveur pour une recherche.
-    Recherche { chemin: String, texte: String, uids: Vec<u32> },
+    /// UID trouvés par le serveur pour une recherche ; `inacheve` : le
+    /// serveur n'a pas fini, et pourquoi (0.6.16).
+    Recherche { chemin: String, texte: String, uids: Vec<u32>, inacheve: Option<String> },
     /// UID trouvés par le serveur dans un dossier, pour une recherche sur
     /// toutes les boîtes ; `restants` : dossiers encore à interroger.
-    RecherchePartout { chemin: String, texte: String, uids: Vec<u32>, restants: usize },
+    RecherchePartout { chemin: String, texte: String, uids: Vec<u32>, restants: usize, inacheve: Option<String> },
     /// Un marquage n'a pas atteint le serveur : l'index du dossier a peut-être
     /// pris de l'avance, il sera réconcilié à la prochaine ouverture.
     MarquageAbandonne { chemin: String },
@@ -1323,6 +1395,9 @@ pub struct BoiteRust {
     sauvegarde_en_cours: bool,
     /// Sauvegardes lues par `chercher_sauvegardes`, par numéro de poste.
     sauvegardes_lues: HashMap<String, crate::sauvegarde::Document>,
+    /// Numéro de la recherche sur le serveur en cours : une nouvelle, ou
+    /// l'arrêt, l'augmente, et les fils de la précédente s'arrêtent (0.6.16).
+    recherche: Arc<AtomicU64>,
 }
 
 /// Liste envoyée à l'interface : dossier, et pour chaque message son UID, sa
@@ -1400,6 +1475,7 @@ impl Default for BoiteRust {
             authentifies: HashSet::new(),
             sauvegarde_en_cours: false,
             sauvegardes_lues: HashMap::new(),
+            recherche: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -2659,6 +2735,8 @@ impl qobject::Boite {
     }
 
     pub fn chercher_sur_le_serveur(mut self: Pin<&mut Self>, texte: &QString) -> bool {
+        // Une nouvelle recherche remplace la précédente, partout comprise.
+        let numero = self.recherche.fetch_add(1, Ordering::SeqCst) + 1;
         let Some((compte, chemin, _)) = self.courant.clone() else {
             return false;
         };
@@ -2666,35 +2744,75 @@ impl qobject::Boite {
         if texte.is_empty() || !self.sessions.contains_key(&compte) {
             return false;
         }
-        self.as_mut().envoyer(compte, Commande::Chercher { chemin, texte })
+        self.as_mut().lancer_recherche(compte, texte, vec![chemin], false, numero)
     }
 
     pub fn chercher_partout_sur_le_serveur(mut self: Pin<&mut Self>, texte: &QString) -> i32 {
+        // Nouvelle recherche ou arrêt : les fils de la précédente s'arrêtent.
+        let numero = self.recherche.fetch_add(1, Ordering::SeqCst) + 1;
         let texte = texte.to_string().trim().to_string();
+        if texte.is_empty() {
+            return 0;
+        }
         let mut comptes: Vec<i64> = self.sessions.keys().copied().collect();
         comptes.sort_unstable();
         let mut total = 0;
         for compte in comptes {
             // Tous les dossiers qui contiennent des messages, masqués compris :
             // la boîte de réception d'abord, puis l'ordre de l'arborescence.
-            let chemins: Vec<String> = if texte.is_empty() {
-                Vec::new()
-            } else {
-                self.magasin
-                    .as_ref()
-                    .and_then(|m| m.dossiers(compte).ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|d| d.selectionnable)
-                    .map(|d| d.chemin)
-                    .collect()
-            };
+            let chemins: Vec<String> = self
+                .magasin
+                .as_ref()
+                .and_then(|m| m.dossiers(compte).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|d| d.selectionnable)
+                .map(|d| d.chemin)
+                .collect();
             let nombre = chemins.len();
-            if self.as_mut().envoyer(compte, Commande::ChercherPartout { texte: texte.clone(), chemins }) {
+            if nombre > 0 && self.as_mut().lancer_recherche(compte, texte.clone(), chemins, true, numero) {
                 total += nombre;
             }
         }
         total as i32
+    }
+
+    /// Lance la recherche `numero` dans des dossiers d'un compte, dans son
+    /// propre fil et par sa propre connexion (cf. `Recherche`). Faux si le
+    /// compte n'a pas d'identifiants en mémoire, ou si le fil n'a pu partir.
+    fn lancer_recherche(
+        self: Pin<&mut Self>,
+        compte: i64,
+        texte: String,
+        chemins: Vec<String>,
+        partout: bool,
+        numero: u64,
+    ) -> bool {
+        let Some(identifiants) = self.identites.get(&compte).cloned() else {
+            return false;
+        };
+        let recherche = Recherche {
+            compte,
+            texte,
+            chemins,
+            partout,
+            numero,
+            courante: self.recherche.clone(),
+            patience: PATIENCE_RECHERCHE,
+            delai: delai_recherche(),
+        };
+        let profil = self.profil.clone();
+        let fil = Destinataire::Qt(self.qt_thread());
+        thread::Builder::new()
+            .name(format!("mmail-recherche-{compte}"))
+            .spawn(move || {
+                let mut remettre = |issue: Issue| fil.remettre_recherche(compte, numero, issue);
+                match Magasin::ouvrir(&profil) {
+                    Ok(magasin) => recherche.executer(&mut || ouvrir_imap(&identifiants), &magasin, &mut remettre),
+                    Err(e) => recherche.sans_index(&format!("index local : {e}"), &mut remettre),
+                }
+            })
+            .is_ok()
     }
 
     pub fn trouves_par_uid(&self, compte: i32, chemin: &QString, uids: &QString) -> QString {
@@ -2730,6 +2848,64 @@ impl qobject::Boite {
         self.demander_piece(uid, indice, None, false)
     }
 
+    pub fn demander_dans(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, uid: i32, brut: bool) -> bool {
+        let (compte, chemin) = (compte as i64, chemin.to_string());
+        let Some(dossier) = self.magasin.as_ref().and_then(|m| m.dossier_id(compte, &chemin).ok()) else {
+            return false;
+        };
+        if uid <= 0 {
+            return false;
+        }
+        let uid = uid as u32;
+        // Numéro 0 : hors de la suite des affichages du volet de lecture, que
+        // cette lecture n'interrompt pas (cf. `rendre_si_actuel`). `lu` vrai :
+        // le marquage revient à la fenêtre.
+        let local = Local { compte, chemin: chemin.clone(), dossier, uid, lu: true, brut, en_ligne: false };
+        let garde = self.magasin.as_ref().and_then(|m| m.garde_sur_le_poste(dossier, uid).ok().flatten());
+        if let Some((id, _)) = garde {
+            let profil = self.profil.clone();
+            let fil = self.qt_thread();
+            let lancement = thread::Builder::new().name("mmail-fenetre".into()).spawn(move || {
+                let preparation = Cache::du_profil(&profil)
+                    .lire(id)
+                    .and_then(|octets| rendre_si_actuel(0, &octets, brut, false, compte, &dossier_affichage(&profil), false));
+                let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.afficher_du_poste(local, preparation, 0, false));
+            });
+            if lancement.is_ok() {
+                return true;
+            }
+        }
+        self.as_mut().envoyer(compte, Commande::Corps { chemin, uid, brut, distantes: false, numero: 0 })
+    }
+
+    pub fn ouvrir_piece_dans(self: Pin<&mut Self>, compte: i32, chemin: &QString, uid: i32, indice: i32) -> bool {
+        let designe = self.magasin.as_ref().and_then(|m| {
+            let chemin = chemin.to_string();
+            m.dossier_id(compte as i64, &chemin).ok().map(|id| (compte as i64, chemin, id))
+        });
+        self.demander_piece_dans(designe, uid, indice, None, false)
+    }
+
+    pub fn enregistrer_piece_dans(
+        mut self: Pin<&mut Self>,
+        compte: i32,
+        chemin: &QString,
+        uid: i32,
+        indice: i32,
+        url: &QString,
+    ) -> bool {
+        let fichier = QUrl::from(url).to_local_file().map(|c| c.to_string()).unwrap_or_default();
+        if fichier.is_empty() {
+            self.as_mut().set_erreur(QString::from("emplacement d'enregistrement invalide"));
+            return false;
+        }
+        let designe = self.magasin.as_ref().and_then(|m| {
+            let chemin = chemin.to_string();
+            m.dossier_id(compte as i64, &chemin).ok().map(|id| (compte as i64, chemin, id))
+        });
+        self.demander_piece_dans(designe, uid, indice, Some(PathBuf::from(fichier)), false)
+    }
+
     pub fn joindre_piece(self: Pin<&mut Self>, uid: i32, indice: i32) -> bool {
         self.demander_piece(uid, indice, None, true)
     }
@@ -2743,9 +2919,17 @@ impl qobject::Boite {
         self.demander_piece(uid, indice, Some(PathBuf::from(chemin)), false)
     }
 
-    pub fn marquer_lu(mut self: Pin<&mut Self>, uids: &QString, lu: bool) -> bool {
+    pub fn marquer_lu(self: Pin<&mut Self>, uids: &QString, lu: bool) -> bool {
+        let Some((compte, chemin, _)) = self.courant.clone() else {
+            return false;
+        };
+        self.marquer_lu_dans(compte as i32, &QString::from(&chemin), uids, lu)
+    }
+
+    pub fn marquer_lu_dans(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, uids: &QString, lu: bool) -> bool {
         let uids = lire_uids(uids);
-        let Some((compte, chemin, id)) = self.courant.clone() else {
+        let (compte, chemin) = (compte as i64, chemin.to_string());
+        let Some(id) = self.magasin.as_ref().and_then(|m| m.dossier_id(compte, &chemin).ok()) else {
             return false;
         };
         if uids.is_empty() {
@@ -3039,16 +3223,23 @@ impl qobject::Boite {
         }
     }
 
-    pub fn deplacer(
+    pub fn deplacer(self: Pin<&mut Self>, uids: &QString, compte_cible: i32, chemin_cible: &QString) -> bool {
+        let Some((compte, source, _)) = self.courant.clone() else {
+            return false;
+        };
+        self.deplacer_dans(compte as i32, &QString::from(&source), uids, compte_cible, chemin_cible)
+    }
+
+    pub fn deplacer_dans(
         mut self: Pin<&mut Self>,
+        compte: i32,
+        chemin: &QString,
         uids: &QString,
         compte_cible: i32,
         chemin_cible: &QString,
     ) -> bool {
         let uids = lire_uids(uids);
-        let Some((compte, source, _)) = self.courant.clone() else {
-            return false;
-        };
+        let (compte, source) = (compte as i64, chemin.to_string());
         let cible_compte = compte_cible as i64;
         let chemin_cible = chemin_cible.to_string();
         if uids.is_empty() || (cible_compte == compte && chemin_cible == source) {
@@ -3369,10 +3560,23 @@ impl qobject::Boite {
         }
     }
 
-    pub fn preparer(mut self: Pin<&mut Self>, uid: i32, mode: &QString, jeton: &QString, adresses: &QString) -> bool {
+    pub fn preparer(self: Pin<&mut Self>, uid: i32, mode: &QString, jeton: &QString, adresses: &QString) -> bool {
         let Some((compte, chemin, _)) = self.courant.clone() else {
             return false;
         };
+        self.preparer_dans(compte as i32, &QString::from(&chemin), uid, mode, jeton, adresses)
+    }
+
+    pub fn preparer_dans(
+        mut self: Pin<&mut Self>,
+        compte: i32,
+        chemin: &QString,
+        uid: i32,
+        mode: &QString,
+        jeton: &QString,
+        adresses: &QString,
+    ) -> bool {
+        let (compte, chemin) = (compte as i64, chemin.to_string());
         let autres: Vec<String> = serde_json::from_str(&adresses.to_string()).unwrap_or_default();
         let commande = Commande::Preparer {
             chemin,
@@ -3597,8 +3801,16 @@ impl qobject::Boite {
         self.as_mut().set_dossier_courant(chemin);
     }
 
-    fn demander_piece(
+    fn demander_piece(self: Pin<&mut Self>, uid: i32, indice: i32, destination: Option<PathBuf>, joindre: bool) -> bool {
+        let courant = self.courant.clone();
+        self.demander_piece_dans(courant, uid, indice, destination, joindre)
+    }
+
+    /// Une pièce jointe d'un message du dossier `designe` (compte, chemin,
+    /// identifiant dans l'index).
+    fn demander_piece_dans(
         mut self: Pin<&mut Self>,
+        designe: Option<(i64, String, i64)>,
         uid: i32,
         indice: i32,
         destination: Option<PathBuf>,
@@ -3607,7 +3819,7 @@ impl qobject::Boite {
         if uid <= 0 || indice < 0 {
             return false;
         }
-        let Some((compte, chemin, dossier)) = self.courant.clone() else {
+        let Some((compte, chemin, dossier)) = designe else {
             return false;
         };
         let (uid, indice) = (uid as u32, indice as usize);
@@ -3802,6 +4014,28 @@ impl qobject::Boite {
         self.as_mut().rust_mut().sessions.remove(&compte);
     }
 
+    /// `rechercheInachevee`, avec le nom lisible du dossier.
+    fn signaler_inachevee(self: Pin<&mut Self>, compte: i64, chemin: &str, texte: &str, motif: &str) {
+        let separateur = self
+            .magasin
+            .as_ref()
+            .and_then(|m| m.dossiers(compte).ok())
+            .and_then(|d| d.into_iter().find(|d| d.chemin == chemin).map(|d| d.separateur))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "/".into());
+        let mut noms = segments_du_chemin(chemin, &separateur);
+        if noms.first().is_some_and(|n| n.eq_ignore_ascii_case("INBOX")) {
+            noms[0] = "Boîte de réception".into();
+        }
+        self.recherche_inachevee(
+            compte as i32,
+            &QString::from(chemin),
+            &QString::from(&noms.join(" › ")),
+            &QString::from(texte),
+            &QString::from(motif),
+        );
+    }
+
     fn rafraichir_occupe(mut self: Pin<&mut Self>) {
         let occupe = self.sessions.values().any(|s| s.attente.load(Ordering::SeqCst) > 0);
         self.as_mut().set_occupe(occupe);
@@ -3861,7 +4095,9 @@ impl qobject::Boite {
                 }
             }
             Issue::Corps { chemin, uid, lu, non_lu, numero } => {
-                if non_lu {
+                let chemin_qt = QString::from(&chemin);
+                // Numéro 0 : la fenêtre d'un message, qui le marque elle-même.
+                if non_lu && numero != 0 {
                     // Les compteurs de l'arborescence, et la seule ligne du
                     // message : relire la liste entière ralentissait le passage
                     // d'un message à l'autre.
@@ -3885,6 +4121,9 @@ impl qobject::Boite {
                     lu.bloquees as i32,
                     &QString::from(&lu.pieces),
                     &QString::from(&lu.confirmation),
+                    &QString::from(&lu.entete),
+                    compte_qt,
+                    &chemin_qt,
                 );
                 let invitation = lu.invitation.as_ref().map(|e| self.as_mut().decrire_invitation(compte, e)).unwrap_or_default();
                 self.as_mut().invitation_recue(uid as i32, &QString::from(&invitation));
@@ -3938,7 +4177,10 @@ impl qobject::Boite {
                 // de la connexion : ici, seulement de quoi rendre les lignes.
                 self.as_mut().deplacement_termine(0, &QString::from(&message));
             }
-            Issue::RecherchePartout { chemin, texte, uids, restants } => {
+            Issue::RecherchePartout { chemin, texte, uids, restants, inacheve } => {
+                if let Some(motif) = inacheve {
+                    self.as_mut().signaler_inachevee(compte, &chemin, &texte, &motif);
+                }
                 let uids: Vec<String> = uids.iter().map(u32::to_string).collect();
                 self.as_mut().resultats_partout(
                     compte_qt,
@@ -3948,7 +4190,7 @@ impl qobject::Boite {
                     restants as i32,
                 );
             }
-            Issue::Recherche { chemin, texte, uids } => {
+            Issue::Recherche { chemin, texte, uids, inacheve } => {
                 let uids: Vec<String> = uids.iter().map(u32::to_string).collect();
                 self.as_mut().resultats_serveur(
                     compte_qt,
@@ -3956,6 +4198,9 @@ impl qobject::Boite {
                     &QString::from(&texte),
                     &QString::from(&uids.join(",")),
                 );
+                if let Some(motif) = inacheve {
+                    self.as_mut().signaler_inachevee(compte, &chemin, &texte, &motif);
+                }
             }
             Issue::MarquageAbandonne { chemin } => {
                 if let Some(magasin) = self.magasin.as_ref() {
@@ -4334,6 +4579,27 @@ enum Destinataire {
     Essai(mpsc::Sender<Issue>),
 }
 
+impl Destinataire {
+    /// Remet l'issue d'une recherche sur le serveur, que l'interface ignore
+    /// si une autre recherche l'a remplacée entre-temps (0.6.16).
+    fn remettre_recherche(&self, compte: i64, numero: u64, issue: Issue) {
+        match self {
+            // Échoue seulement si l'objet Qt n'existe plus : rien à faire alors.
+            Destinataire::Qt(fil) => {
+                let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| {
+                    if boite.recherche.load(Ordering::SeqCst) == numero {
+                        boite.recevoir(compte, issue);
+                    }
+                });
+            }
+            #[cfg(test)]
+            Destinataire::Essai(canal) => {
+                let _ = canal.send(issue);
+            }
+        }
+    }
+}
+
 /// De quoi remettre une issue à l'interface depuis un autre fil que celui du
 /// compte (l'envoi SMTP).
 struct Retour {
@@ -4537,8 +4803,8 @@ impl Travail {
             }
             let (restantes, abandonnees) = regrouper(file);
             file = restantes;
-            // La recherche sur toutes les boîtes, puis le préchargement, passent
-            // après tout ce que l'utilisateur demande (tri stable).
+            // Le préchargement passe après tout ce que l'utilisateur demande
+            // (tri stable).
             file.sort_by_key(Commande::rang);
             self.terminer(abandonnees);
 
@@ -4548,14 +4814,6 @@ impl Travail {
                 Commande::OuvrirDossier(chemin) => Some(chemin.clone()),
                 Commande::Veille => etabli.ouvert.clone(),
                 Commande::Signale => Some(dossier_surveille(&etabli)),
-                _ => None,
-            };
-            // Recherche sur toutes les boîtes : les dossiers suivants reviennent
-            // dans la file, un à la fois.
-            let suite = match &commande {
-                Commande::ChercherPartout { texte, chemins } if chemins.len() > 1 => {
-                    Some(Commande::ChercherPartout { texte: texte.clone(), chemins: chemins[1..].to_vec() })
-                }
                 _ => None,
             };
             let est_veille = matches!(commande, Commande::Veille);
@@ -4577,9 +4835,6 @@ impl Travail {
             };
             if let (false, Some(chemin)) = (perdue, a_precharger) {
                 file.push(Commande::Precharger { chemin });
-            }
-            if let (false, Some(suite)) = (perdue, suite) {
-                file.push(suite);
             }
             if perdue {
                 // Les commandes en attente ne seront pas traitées : chacune
@@ -4784,27 +5039,6 @@ impl Travail {
                 Some(match self.enregistrer_brouillon(e, &redaction) {
                     Ok(uid) => Issue::BrouillonEnregistre { jeton, uid },
                     Err(message) => Issue::EchecRedaction { jeton, message },
-                })
-            }
-            Commande::Chercher { chemin, texte } => {
-                let resultat = self.chercher_au_serveur(e, &chemin, &texte);
-                Some(match resultat {
-                    Ok(uids) => Issue::Recherche { chemin, texte, uids },
-                    Err(err) if err.reseau() => echec("reseau", format!("recherche : {err}"), &err),
-                    // Refusée par le serveur : l'index seul répond.
-                    Err(_) => Issue::Recherche { chemin, texte, uids: Vec::new() },
-                })
-            }
-            Commande::ChercherPartout { texte, chemins } => {
-                // Liste vide : la recherche en cours est arrêtée, rien à rendre.
-                let chemin = chemins.first().cloned().filter(|_| !texte.is_empty())?;
-                let restants = chemins.len() - 1;
-                Some(match self.chercher_au_serveur(e, &chemin, &texte) {
-                    Ok(uids) => Issue::RecherchePartout { chemin, texte, uids, restants },
-                    Err(err) if err.reseau() => echec("reseau", format!("recherche : {err}"), &err),
-                    // Dossier refusé (droits, disparu) : il ne rend rien, la
-                    // recherche passe au suivant.
-                    Err(_) => Issue::RecherchePartout { chemin, texte, uids: Vec::new(), restants },
                 })
             }
             Commande::Signale => {
@@ -5260,19 +5494,6 @@ impl Travail {
         resultat
     }
 
-    /// Cherche `texte` sur le serveur dans le dossier `chemin`, et range dans
-    /// l'index ceux des messages trouvés qu'il n'a pas encore — les plus
-    /// récents, `RECHERCHE_MAX` au plus : un dossier jamais ouvert, ou dont la
-    /// première lecture n'est pas finie, rend ses résultats comme les autres.
-    fn chercher_au_serveur(&self, e: &mut Etabli, chemin: &str, texte: &str) -> Result<Vec<u32>, Echec> {
-        assurer_selection(&mut e.client, chemin)?;
-        let (mots, categories) = criteres_recherche(&e.magasin, texte);
-        let uids = e.client.chercher(&mots, &categories)?;
-        let id = e.magasin.dossier_id(self.compte, chemin)?;
-        synchro::completer(&e.magasin, &mut e.client, id, &uids, RECHERCHE_MAX)?;
-        Ok(uids)
-    }
-
     /// Garde sur le poste, par lot de quelques messages, ceux d'un dossier reçus
     /// depuis moins d'un mois (décision 17), et retire ceux qui sont sortis de
     /// la fenêtre. Le dossier ouvert reste sélectionné. Rend vrai s'il en
@@ -5559,6 +5780,9 @@ struct Lu {
     confirmation: String,
     /// Partie calendrier d'une invitation, d'une réponse ou d'une annulation.
     invitation: Option<crate::invitation::Extrait>,
+    /// De, À, Cc et date, pour la fenêtre du message (0.6.16, JSON ; vide
+    /// pour la source).
+    entete: String,
 }
 
 /// Lit le corps d'un message du dossier ouvert. Un message de moins d'un mois
@@ -5638,7 +5862,9 @@ fn rendre_si_actuel(
     atelier: &Path,
     confirmation_possible: bool,
 ) -> Option<Lu> {
-    let actuel = || AFFICHAGE.load(Ordering::SeqCst) == numero;
+    // Numéro 0 : la fenêtre d'un message (0.6.16), hors du volet de lecture
+    // — toujours actuelle.
+    let actuel = || numero == 0 || AFFICHAGE.load(Ordering::SeqCst) == numero;
     if !actuel() {
         return None;
     }
@@ -5648,7 +5874,9 @@ fn rendre_si_actuel(
         redaction::confirmation_demandee(octets).unwrap_or_default()
     };
     let invitation = if brut { None } else { crate::invitation::extraire(octets) };
-    let mut lu = Lu { texte: String::new(), brut, html: false, bloquees: 0, pieces: String::new(), confirmation, invitation };
+    let entete = if brut { String::new() } else { crate::index::entete_affichable(octets) };
+    let mut lu =
+        Lu { texte: String::new(), brut, html: false, bloquees: 0, pieces: String::new(), confirmation, invitation, entete };
     lu.pieces = json_pieces(&crate::index::pieces_jointes(octets));
     if brut {
         lu.texte = String::from_utf8_lossy(octets).into_owned();
@@ -5664,7 +5892,7 @@ fn rendre_si_actuel(
         }
         // Les images ne servent qu'à l'affichage : si leur écriture échoue,
         // le message s'affiche sans elles plutôt que pas du tout.
-        let (html, bloquees) = poser_images(corps, compte, telechargees, atelier);
+        let (html, bloquees) = poser_images(corps, compte, telechargees, atelier, numero == 0);
         lu.texte = html;
         lu.html = true;
         lu.bloquees = bloquees;
@@ -5735,20 +5963,25 @@ fn poser_images(
     compte: i64,
     telechargees: Vec<Option<(String, Vec<u8>)>>,
     atelier: &Path,
+    fenetre: bool,
 ) -> (String, usize) {
     use crate::rendu::{extension_image, REPERE_DISTANTE, REPERE_IMAGE};
     let serie = SERIE_AFFICHAGE.fetch_add(1, Ordering::Relaxed);
     let prefixe = format!("{compte}-");
     // Seuls les affichages précédents de ce compte s'effacent : un autre
-    // compte peut être en train d'écrire les siens.
-    if let Ok(entrees) = std::fs::read_dir(atelier) {
-        for entree in entrees.flatten() {
-            if entree.file_name().to_string_lossy().starts_with(&prefixe) {
-                let _ = std::fs::remove_dir_all(entree.path());
+    // compte peut être en train d'écrire les siens. Les images d'une fenêtre
+    // de message (0.6.16) restent tant qu'elle est ouverte — jusqu'au
+    // prochain lancement, qui vide le dossier.
+    if !fenetre {
+        if let Ok(entrees) = std::fs::read_dir(atelier) {
+            for entree in entrees.flatten() {
+                if entree.file_name().to_string_lossy().starts_with(&prefixe) {
+                    let _ = std::fs::remove_dir_all(entree.path());
+                }
             }
         }
     }
-    let dossier = atelier.join(format!("{compte}-{serie}"));
+    let dossier = atelier.join(if fenetre { format!("fenetre-{serie}") } else { format!("{compte}-{serie}") });
     let pret = std::fs::create_dir_all(&dossier).is_ok();
     let ecrire = |nom: String, octets: &[u8]| -> Option<String> {
         let fichier = dossier.join(nom);
@@ -5885,6 +6118,229 @@ fn marquer_provenance(fichier: &Path) {
         let mut flux = fichier.as_os_str().to_owned();
         flux.push(":Zone.Identifier");
         let _ = std::fs::write(PathBuf::from(flux), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+}
+
+// ------------------------------------------------- recherche sur le serveur
+
+/// Attente d'une recherche sur le serveur (0.6.16) : 5 min 30 s, sauf réglage
+/// de la machine (`MMAIL_DELAI_RECHERCHE`, en secondes, de 5 à 3 600). Un
+/// dossier dont l'index plein texte n'est pas construit fait attendre le
+/// serveur que son indexeur ait fini, sans rien envoyer : Mailcow l'attend
+/// 300 s (`fts_index_timeout`) avant de répondre `NO [INUSE]`. MMail coupait
+/// au bout de 30 s, et le compte passait « erreur » (22/10, LALANNE).
+fn delai_recherche() -> Duration {
+    static DELAI: OnceLock<Duration> = OnceLock::new();
+    *DELAI.get_or_init(|| {
+        let secondes = std::env::var("MMAIL_DELAI_RECHERCHE")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|s| (5..=3600).contains(s))
+            .unwrap_or(330);
+        Duration::from_secs(secondes)
+    })
+}
+
+/// Première attente d'un dossier, dans une recherche sur plusieurs : au-delà,
+/// il passe après les autres, qui n'ont pas à l'attendre. Un dossier dont
+/// l'index est construit répond en une seconde ou deux.
+const PATIENCE_RECHERCHE: Duration = Duration::from_secs(15);
+
+/// Recherche sur le serveur dans des dossiers d'un compte, par sa propre
+/// connexion et dans son propre fil (0.6.16). Elle passait par la session du
+/// compte, qui ne faisait rien d'autre en attendant — et qui tombait au bout
+/// de 30 s sans réponse, le compte passant « erreur ». Ici, la session du
+/// compte n'est pas touchée ; un dossier qui tarde passe après les autres,
+/// puis a toute l'attente (`delai`) ; une recherche remplacée s'arrête.
+struct Recherche {
+    compte: i64,
+    texte: String,
+    chemins: Vec<String>,
+    /// Recherche dans toutes les boîtes : issues `RecherchePartout`.
+    partout: bool,
+    numero: u64,
+    /// Numéro de la recherche en cours, tenu par l'interface.
+    courante: Arc<AtomicU64>,
+    /// Première attente de chaque dossier quand il y en a plusieurs
+    /// (`PATIENCE_RECHERCHE`).
+    patience: Duration,
+    /// Attente d'un dossier seul, ou des dossiers reportés (`delai_recherche`).
+    delai: Duration,
+}
+
+/// Ce qu'un dossier a donné.
+enum Etape {
+    Trouves(Vec<u32>),
+    /// Pas de réponse à la première attente : repris après les autres.
+    Reporte,
+    /// Le serveur n'a pas fini : pourquoi.
+    Inacheve(String),
+    /// Recherche remplacée : on s'arrête là.
+    Abandon,
+}
+
+impl Recherche {
+    fn actuelle(&self) -> bool {
+        self.courante.load(Ordering::SeqCst) == self.numero
+    }
+
+    /// Interroge le serveur dossier après dossier et remet une issue pour
+    /// chacun. `ouvrir` ouvre une session authentifiée sur le compte.
+    fn executer(
+        &self,
+        ouvrir: &mut dyn FnMut() -> Result<Client, Erreur>,
+        magasin: &Magasin,
+        remettre: &mut dyn FnMut(Issue),
+    ) {
+        let (mots, categories) = criteres_recherche(magasin, &self.texte);
+        let mut client = None;
+        let mut restants = self.chemins.len();
+        // Un dossier seul a toute l'attente d'emblée ; à plusieurs, ceux qui
+        // tardent passent après les autres.
+        let seul = self.chemins.len() == 1;
+        let premiere = if seul { self.delai } else { self.patience };
+        let mut reportes = Vec::new();
+        for chemin in &self.chemins {
+            if !self.actuelle() {
+                break;
+            }
+            match self.dans_le_dossier(&mut client, ouvrir, magasin, chemin, (mots.as_str(), categories.as_slice()), premiere, seul) {
+                Etape::Reporte => reportes.push(chemin.clone()),
+                Etape::Abandon => return,
+                etape => {
+                    restants -= 1;
+                    remettre(self.issue(chemin, etape, restants));
+                }
+            }
+        }
+        for chemin in &reportes {
+            if !self.actuelle() {
+                break;
+            }
+            match self.dans_le_dossier(&mut client, ouvrir, magasin, chemin, (mots.as_str(), categories.as_slice()), self.delai, true) {
+                Etape::Abandon => return,
+                etape => {
+                    restants -= 1;
+                    remettre(self.issue(chemin, etape, restants));
+                }
+            }
+        }
+        if let Some(mut client) = client {
+            client.fermer();
+        }
+    }
+
+    /// L'index du poste ne s'ouvre pas : chaque dossier rend son motif.
+    fn sans_index(&self, motif: &str, remettre: &mut dyn FnMut(Issue)) {
+        for (rang, chemin) in self.chemins.iter().enumerate() {
+            let restants = self.chemins.len() - rang - 1;
+            remettre(self.issue(chemin, Etape::Inacheve(motif.to_string()), restants));
+        }
+    }
+
+    fn issue(&self, chemin: &str, etape: Etape, restants: usize) -> Issue {
+        let (uids, inacheve) = match etape {
+            Etape::Trouves(uids) => (uids, None),
+            Etape::Inacheve(motif) => (Vec::new(), Some(motif)),
+            Etape::Reporte | Etape::Abandon => (Vec::new(), None),
+        };
+        let (chemin, texte) = (chemin.to_string(), self.texte.clone());
+        if self.partout {
+            Issue::RecherchePartout { chemin, texte, uids, restants, inacheve }
+        } else {
+            Issue::Recherche { chemin, texte, uids, inacheve }
+        }
+    }
+
+    /// Cherche dans un dossier, et range dans l'index ceux des messages
+    /// trouvés qu'il n'a pas encore — les plus récents, `RECHERCHE_MAX` au
+    /// plus : un dossier jamais ouvert rend ses résultats comme les autres.
+    /// Sans réponse, la session est fermée (elle est au milieu d'une
+    /// commande) ; `dernier` : pas de reprise après, l'échec est rendu.
+    #[allow(clippy::too_many_arguments)]
+    fn dans_le_dossier(
+        &self,
+        client: &mut Option<Client>,
+        ouvrir: &mut dyn FnMut() -> Result<Client, Erreur>,
+        magasin: &Magasin,
+        chemin: &str,
+        (mots, categories): (&str, &[Vec<String>]),
+        delai: Duration,
+        dernier: bool,
+    ) -> Etape {
+        let echec = |motif: String| if dernier { Etape::Inacheve(motif) } else { Etape::Reporte };
+        if client.is_none() {
+            match ouvrir() {
+                Ok(c) => *client = Some(c),
+                Err(e) => return echec(format!("connexion impossible ({e})")),
+            }
+        }
+        let c = client.as_mut().expect("session de recherche");
+        let etat = match c.examiner(chemin) {
+            Ok(etat) => etat,
+            // Disparu, ou refusé : il ne rend rien.
+            Err(Erreur::Refuse(_)) => return Etape::Trouves(Vec::new()),
+            Err(e) => {
+                *client = None;
+                return echec(format!("connexion perdue ({e})"));
+            }
+        };
+        let courante = self.courante.clone();
+        let numero = self.numero;
+        let attente = Attente {
+            delai,
+            // Au dernier passage, la progression envoyée par le serveur
+            // (`* OK Indexed 40% …`) prolonge l'attente.
+            prolonger: dernier,
+            continuer: Arc::new(move || courante.load(Ordering::SeqCst) == numero),
+        };
+        let debut = Instant::now();
+        let uids = match c.chercher_patiemment(mots, categories, attente) {
+            Ok(uids) => uids,
+            Err(Erreur::Abandon) => {
+                *client = None;
+                return Etape::Abandon;
+            }
+            Err(Erreur::Delai) => {
+                *client = None;
+                return echec(format!("pas de réponse du serveur en {}", duree_lisible(debut.elapsed())));
+            }
+            // Dovecot a attendu son indexeur jusqu'au bout (`fts_index_timeout`).
+            Err(Erreur::Refuse(m)) if m.contains("[INUSE]") => {
+                return Etape::Inacheve("le serveur prépare encore l'index de recherche de ce dossier".into())
+            }
+            // Recherche refusée (texte que le serveur ne sait pas chercher…).
+            Err(Erreur::Refuse(_)) => return Etape::Trouves(Vec::new()),
+            Err(e) => {
+                *client = None;
+                return echec(format!("connexion perdue ({e})"));
+            }
+        };
+        let Ok(id) = magasin.dossier_id(self.compte, chemin) else {
+            return Etape::Trouves(uids);
+        };
+        // Dossier recréé sur le serveur depuis la dernière synchronisation :
+        // ces UID ne désignent plus les messages de l'index, que la session
+        // du compte reprendra.
+        if magasin.dossier(id).ok().flatten().is_some_and(|d| d.uid_validity != 0 && d.uid_validity != etat.uid_validity) {
+            return Etape::Trouves(Vec::new());
+        }
+        if let Err(e) = synchro::completer(magasin, c, id, &uids, RECHERCHE_MAX) {
+            if e.reseau() {
+                *client = None;
+            }
+        }
+        Etape::Trouves(uids)
+    }
+}
+
+/// Une durée pour l'utilisateur : « 45 s », « 5 min », « 5 min 30 s ».
+fn duree_lisible(duree: Duration) -> String {
+    let secondes = duree.as_secs();
+    match (secondes / 60, secondes % 60) {
+        (0, s) => format!("{s} s"),
+        (m, 0) => format!("{m} min"),
+        (m, s) => format!("{m} min {s} s"),
     }
 }
 
@@ -6173,8 +6629,9 @@ mod tests {
     fn dossier(chemin: &str) -> Commande {
         Commande::OuvrirDossier(chemin.into())
     }
+    /// Lecture pour le volet : son numéro d'affichage n'est jamais 0.
     fn corps(uid: u32) -> Commande {
-        Commande::Corps { chemin: "INBOX".into(), uid, brut: false, distantes: false, numero: 0 }
+        Commande::Corps { chemin: "INBOX".into(), uid, brut: false, distantes: false, numero: uid as u64 }
     }
     fn noms(file: &[Commande]) -> Vec<String> {
         file.iter()
@@ -6195,8 +6652,6 @@ mod tests {
                 Commande::Reprendre(_) => "reprendre".into(),
                 Commande::Veille => "veille".into(),
                 Commande::Signale => "signale".into(),
-                Commande::Chercher { texte, .. } => format!("chercher {texte}"),
-                Commande::ChercherPartout { texte, chemins } => format!("partout {texte} {}", chemins.join("|")),
                 Commande::Precharger { chemin } => format!("precharger {chemin}"),
                 Commande::Preparer { .. } => "preparer".into(),
                 Commande::Envoyer { .. } => "envoyer".into(),
@@ -6206,25 +6661,24 @@ mod tests {
             .collect()
     }
 
-    fn partout(texte: &str, chemins: &[&str]) -> Commande {
-        Commande::ChercherPartout { texte: texte.into(), chemins: chemins.iter().map(|c| c.to_string()).collect() }
+    #[test]
+    fn prechargement_derriere_ce_que_l_utilisateur_demande() {
+        let (mut file, abandonnees) =
+            regrouper(vec![Commande::Precharger { chemin: "INBOX".into() }, dossier("Sent"), corps(4)]);
+        file.sort_by_key(Commande::rang);
+        assert_eq!(noms(&file), vec!["ouvrir Sent", "corps 4", "precharger INBOX"]);
+        assert_eq!(abandonnees, 0);
+        assert!(!Commande::Precharger { chemin: "INBOX".into() }.comptee());
     }
 
+    /// La lecture pour la fenêtre d'un message (numéro 0, 0.6.16) reste dans
+    /// la file, quoi que l'on demande ensuite au volet.
     #[test]
-    fn recherche_partout_derriere_l_utilisateur_et_devant_le_prechargement() {
-        let (mut file, abandonnees) = regrouper(vec![
-            Commande::Precharger { chemin: "INBOX".into() },
-            partout("devis", &["INBOX", "Archives"]),
-            dossier("Sent"),
-            // Une nouvelle recherche remplace la précédente, avec ses dossiers.
-            partout("facture", &["Archives"]),
-            corps(4),
-        ]);
-        file.sort_by_key(Commande::rang);
-        assert_eq!(noms(&file), vec!["ouvrir Sent", "corps 4", "partout facture Archives", "precharger INBOX"]);
-        // Ni l'une ni l'autre ne comptait dans l'indicateur d'activité.
-        assert_eq!(abandonnees, 0);
-        assert!(!partout("x", &[]).comptee());
+    fn lecture_d_une_fenetre_jamais_abandonnee() {
+        let fenetre = Commande::Corps { chemin: "Archives".into(), uid: 9, brut: false, distantes: false, numero: 0 };
+        let (file, abandonnees) = regrouper(vec![fenetre, corps(1), dossier("Sent"), corps(2)]);
+        assert_eq!(noms(&file), vec!["corps 9", "ouvrir Sent", "corps 2"]);
+        assert_eq!(abandonnees, 1);
     }
 
     #[test]
@@ -6864,5 +7318,119 @@ mod tests {
         // Ni LOGOUT sur une connexion morte, ni commande après la coupure.
         assert_eq!(journal.lock().unwrap().as_slice(), ["SELECT \"INBOX\""]);
         drop(envoi);
+    }
+
+    // ---------------------------------------- recherche sur le serveur (0.6.16)
+
+    /// Recherche de « devis », numéro 1, en cours.
+    fn recherche(chemins: &[&str], partout: bool, patience_ms: u64, delai_ms: u64) -> Recherche {
+        Recherche {
+            compte: 1,
+            texte: "devis".into(),
+            chemins: chemins.iter().map(|c| c.to_string()).collect(),
+            partout,
+            numero: 1,
+            courante: Arc::new(AtomicU64::new(1)),
+            patience: Duration::from_millis(patience_ms),
+            delai: Duration::from_millis(delai_ms),
+        }
+    }
+
+    fn examen(chemin: &str) -> crate::simule::Echange {
+        crate::simule::echange(
+            &format!("EXAMINE \"{chemin}\""),
+            "* 3 EXISTS\r\n* OK [UIDVALIDITY 7] UIDs valid\r\n",
+            "OK [READ-ONLY] fait",
+        )
+    }
+
+    /// Issues d'une recherche contre des sessions simulées, ouvertes l'une
+    /// après l'autre, et le nombre de sessions ouvertes.
+    fn issues_de(r: &Recherche, sessions: Vec<Client>) -> (Vec<String>, usize) {
+        let magasin = Magasin::en_memoire().unwrap();
+        let mut sessions = std::collections::VecDeque::from(sessions);
+        let mut ouvertes = 0;
+        let mut issues = Vec::new();
+        let mut ouvrir = || {
+            ouvertes += 1;
+            sessions.pop_front().ok_or_else(|| Erreur::Reseau("serveur injoignable".into()))
+        };
+        r.executer(&mut ouvrir, &magasin, &mut |issue| {
+            issues.push(match issue {
+                Issue::RecherchePartout { chemin, uids, restants, inacheve, .. } => {
+                    format!("{chemin} {uids:?} reste {restants} : {}", inacheve.as_deref().unwrap_or("fini"))
+                }
+                Issue::Recherche { chemin, uids, inacheve, .. } => {
+                    format!("{chemin} {uids:?} : {}", inacheve.as_deref().unwrap_or("fini"))
+                }
+                _ => "autre issue".into(),
+            })
+        });
+        (issues, ouvertes)
+    }
+
+    /// Un dossier qui tarde passe après les autres, par une nouvelle session :
+    /// celle qui attendait est au milieu d'une commande. Aucune issue ne
+    /// touche au compte (ni `Echec`, ni `session_perdue`).
+    #[test]
+    fn dossier_lent_apres_les_autres() {
+        use crate::simule::{echange, lente, session, DOVECOT};
+        let (s1, j1) = session(DOVECOT, vec![examen("INBOX"), lente("UID SEARCH", &[(usize::MAX, "* SEARCH 2\r\n")], "OK")]);
+        let (s2, j2) = session(
+            DOVECOT,
+            vec![
+                examen("Archives"),
+                echange("UID SEARCH", "* SEARCH\r\n", "OK"),
+                examen("INBOX"),
+                lente("UID SEARCH", &[(20, "* SEARCH 4\r\n")], "OK"),
+                echange("LOGOUT", "* BYE\r\n", "OK"),
+            ],
+        );
+        let (issues, ouvertes) = issues_de(&recherche(&["INBOX", "Archives"], true, 30, 5_000), vec![s1, s2]);
+        assert_eq!(issues, ["Archives [] reste 1 : fini", "INBOX [4] reste 0 : fini"]);
+        assert_eq!(ouvertes, 2);
+        assert_eq!(j1.lock().unwrap().len(), 2, "pas de LOGOUT au milieu d'une commande");
+        assert_eq!(j2.lock().unwrap().last().unwrap(), "LOGOUT");
+    }
+
+    /// Un dossier seul a toute l'attente ; sans réponse, ou si Dovecot a
+    /// renoncé à attendre son indexeur, le motif est rendu avec le dossier.
+    #[test]
+    fn dossier_sans_reponse_rendu_avec_son_motif() {
+        use crate::simule::{echange, lente, session, DOVECOT};
+        let (s, _) = session(DOVECOT, vec![examen("INBOX"), lente("UID SEARCH", &[(usize::MAX, "* SEARCH 2\r\n")], "OK")]);
+        let (issues, _) = issues_de(&recherche(&["INBOX"], false, 30, 40), vec![s]);
+        assert_eq!(issues, ["INBOX [] : pas de réponse du serveur en 0 s"]);
+        let (s, _) = session(
+            DOVECOT,
+            vec![
+                examen("INBOX"),
+                echange("UID SEARCH", "", "NO [INUSE] Timeout while waiting for indexing to finish"),
+                echange("LOGOUT", "* BYE\r\n", "OK"),
+            ],
+        );
+        let (issues, _) = issues_de(&recherche(&["INBOX"], false, 30, 5_000), vec![s]);
+        assert_eq!(issues, ["INBOX [] : le serveur prépare encore l'index de recherche de ce dossier"]);
+        // Serveur injoignable : le dossier le dit, rien de plus.
+        let (issues, ouvertes) = issues_de(&recherche(&["INBOX"], false, 30, 5_000), vec![]);
+        assert_eq!(issues, ["INBOX [] : connexion impossible (réseau : serveur injoignable)"]);
+        assert_eq!(ouvertes, 1);
+    }
+
+    /// Une recherche remplacée ne rend plus rien, et n'ouvre rien.
+    #[test]
+    fn recherche_remplacee_muette() {
+        let r = recherche(&["INBOX", "Archives"], true, 30, 5_000);
+        r.courante.store(2, Ordering::SeqCst);
+        let (issues, ouvertes) = issues_de(&r, vec![]);
+        assert!(issues.is_empty());
+        assert_eq!(ouvertes, 0);
+    }
+
+    #[test]
+    fn durees_lisibles() {
+        assert_eq!(duree_lisible(Duration::from_secs(45)), "45 s");
+        assert_eq!(duree_lisible(Duration::from_secs(300)), "5 min");
+        assert_eq!(duree_lisible(Duration::from_secs(330)), "5 min 30 s");
     }
 }

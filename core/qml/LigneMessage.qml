@@ -318,9 +318,11 @@ SwipeDelegate {
                 fenetre.choisir(index, 0)
             menuMessage.popup(zone, souris.x, souris.y)
         }
+        // Ouvre le message dans sa fenêtre, ou une réponse selon le réglage ;
+        // un brouillon se reprend (0.6.16).
         onDoubleClicked: function(souris) {
             if (souris.button === Qt.LeftButton)
-                fenetre.rediger(fenetre.dossierDeReprise ? "brouillon" : "repondre")
+                fenetre.doubleClicMessage(index)
         }
         drag.onActiveChanged: fenetre.glisse = drag.active ? etiquette : null
         onReleased: {

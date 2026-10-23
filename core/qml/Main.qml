@@ -253,6 +253,8 @@ ApplicationWindow {
     property var trouvesPartout: ({})
     property int dossiersPartout: 0
     property int dossiersFaits: 0
+    // … et ceux où le serveur n'a pas fini de chercher (0.6.16) : { nom, motif }.
+    property var inachevesPartout: []
     readonly property int resultatsMax: 1000
     property bool resultatsTronques: false
     // Tri des résultats d'une recherche (demande de Manu, 11/10) : fait sur le
@@ -384,6 +386,9 @@ ApplicationWindow {
         property int delaiLu: 0
         // Majuscule en début de phrase dans la rédaction (0.6.12).
         property bool majusculeAuto: true
+        // Double-clic sur un message (0.6.16) : « message », l'ouvrir dans sa
+        // fenêtre, comme Outlook ; « reponse », ouvrir une réponse.
+        property string doubleClic: "message"
     }
 
     // ---------------------------------------------------------- apparences
@@ -1864,6 +1869,127 @@ ApplicationWindow {
                 Qt.callLater(function() { fenetreRedaction.destroy() })
             }
         }
+    }
+
+    // ------------------------------------------------ fenêtre d'un message
+    Component {
+        id: composantFenetreMessage
+        FenetreMessage {}
+    }
+    // Fenêtres de message ouvertes : gardées ici, sans quoi le ramasse-miettes
+    // de JavaScript pourrait les détruire.
+    property var fenetresMessage: []
+
+    /// Double-clic sur un message (0.6.16, demande de Dominique BARTHELEMY
+    /// précisée par Manu le 23/10) : comme dans Outlook, le message s'ouvre
+    /// dans sa fenêtre — ou une réponse, au choix (Affichage › Double-clic
+    /// sur un message). Un brouillon se reprend.
+    function doubleClicMessage(index) {
+        if (dossierDeReprise)
+            rediger("brouillon")
+        else if (reglages.doubleClic === "reponse")
+            rediger("repondre")
+        else
+            ouvrirFenetreMessage(index)
+    }
+
+    /// Ouvre le message de la ligne `index` dans sa fenêtre ; il passe « lu »
+    /// aussitôt, quel que soit le réglage du volet de lecture.
+    function ouvrirFenetreMessage(index) {
+        if (index < 0 || index >= modeleMessages.count)
+            return null
+        var l = modeleMessages.get(index)
+        var m = {
+            compte: listeMulti ? l.compte : boite.compteCourant,
+            chemin: listeMulti ? l.chemin : boite.dossierCourant,
+            uid: l.uid,
+            role: listeMulti ? (l.role || "") : roleCourant,
+            sujet: l.sujet,
+            expediteur: l.expediteur,
+            adresse: l.adresse,
+            date: l.date,
+            lu: true,
+            suivi: l.suivi,
+            motsCles: l.motsCles || ""
+        }
+        var f = composantFenetreMessage.createObject(null, m)
+        if (!f)
+            return null
+        fenetresMessage = fenetresMessage.concat([f])
+        if (!l.lu) {
+            boite.marquerLuDans(m.compte, m.chemin, String(m.uid), true)
+            modeleMessages.setProperty(index, "lu", true)
+        }
+        f.raise()
+        f.requestActivate()
+        return f
+    }
+
+    function oublierFenetreMessage(f) {
+        fenetresMessage = fenetresMessage.filter(function(x) { return x !== f })
+    }
+
+    /// Rang dans la liste d'un message désigné par son dossier, -1 s'il n'y
+    /// est pas.
+    function rangDuMessage(m) {
+        if (!listeMulti && (m.compte !== boite.compteCourant || m.chemin !== boite.dossierCourant))
+            return -1
+        for (var i = 0; i < modeleMessages.count; ++i) {
+            var l = modeleMessages.get(i)
+            if (l.uid === m.uid && (!listeMulti || (l.compte === m.compte && l.chemin === m.chemin)))
+                return i
+        }
+        return -1
+    }
+
+    /// Une fenêtre de message a marqué son message : sa ligne suit.
+    function apresMarquageFenetre(m, champ, valeur) {
+        var i = rangDuMessage(m)
+        if (i < 0)
+            return
+        modeleMessages.setProperty(i, champ, valeur)
+        if (uidCourant === m.uid && champ === "motsCles")
+            majCategoriesAffichees()
+    }
+
+    /// Une fenêtre de message a supprimé ou déplacé son message : sa ligne
+    /// quitte la liste, comme pour un déplacement fait d'ici.
+    function retirerMessageDeLaListe(m) {
+        var i = rangDuMessage(m)
+        if (i < 0)
+            return
+        if (uidCourant === m.uid && boite.compteCourant === m.compte && boite.dossierCourant === m.chemin) {
+            retirerDeLaListe([m.uid])
+            return
+        }
+        var retires = enDeplacement
+        retires[m.compte + "|" + m.chemin + "|" + m.uid] = true
+        enDeplacement = retires
+        deplacementsEnVol += 1
+        modeleMessages.remove(i)
+    }
+
+    /// Répondre, transférer ou reprendre depuis la fenêtre d'un message.
+    function redigerDepuis(m, mode) {
+        var r = ouvrirRedaction(m.compte)
+        r.attendre(mode === "brouillon" ? qsTr("Reprise du brouillon…") : qsTr("Préparation…"))
+        if (!boite.preparerDans(m.compte, m.chemin, m.uid, mode, r.jeton, JSON.stringify(autresAdresses(m.compte))))
+            r.echouer(boite.erreur.length > 0 ? boite.erreur : qsTr("Préparation impossible."))
+    }
+
+    /// « Créer un filtre… » depuis la fenêtre d'un message : le dialogue des
+    /// filtres, dans la fenêtre principale ramenée devant.
+    function creerFiltrePour(m, nom, adresse) {
+        var compte = ""
+        for (var c = 0; c < comptesConnus.length; ++c) {
+            if (comptesConnus[c].compte === m.compte)
+                compte = comptesConnus[c].adresse
+        }
+        fenetre.raise()
+        fenetre.requestActivate()
+        dlgFiltres.ouvrir({ nom: nom || adresse, actif: true, compte: compte, tout: true,
+                            conditions: [{ champ: "expediteur", operateur: "est", valeur: adresse }],
+                            lu: false, suivi: false, destination: "dossier", dossier: "", arreter: false })
     }
 
     Component {
@@ -3714,6 +3840,9 @@ ApplicationWindow {
         poserResultats()
         if (!boite.chercherSurLeServeur(texte))
             messageEtat.texte = qsTr("Recherche dans l'index seulement (compte hors ligne).")
+        else
+            messageEtat.texte = qsTr("Recherche « %1 » : %2 sur le poste — le serveur cherche aussi dans le texte des messages…")
+                    .arg(texte).arg(accord(modeleMessages.count, qsTr("résultat"), qsTr("résultats")))
     }
 
     /// Résultats de l'index et ceux que le serveur a trouvés dans le texte des
@@ -3802,6 +3931,7 @@ ApplicationWindow {
         trouvesPartout = ({})
         dossiersPartout = 0
         dossiersFaits = 0
+        inachevesPartout = []
         resultatsTronques = false
     }
 
@@ -3815,7 +3945,14 @@ ApplicationWindow {
             return debut + qsTr(" (messages déjà sur le poste seulement : aucun compte connecté).")
         if (dossiersFaits < dossiersPartout)
             return debut + qsTr(" — recherche sur le serveur, dossier %1 sur %2…").arg(dossiersFaits + 1).arg(dossiersPartout)
-        return debut + "."
+        if (inachevesPartout.length === 0)
+            return debut + "."
+        // Dossiers où le serveur n'a pas fini : les premiers par leur nom.
+        var noms = inachevesPartout.slice(0, 3).map(function(d) { return "« " + d.nom + " »" })
+        if (inachevesPartout.length > 3)
+            noms.push(qsTr("%1 autres").arg(inachevesPartout.length - 3))
+        return debut + qsTr(" — le serveur n'a pas fini de chercher dans %1 (%2) : messages déjà sur le poste seulement.")
+                .arg(noms.join(", ")).arg(inachevesPartout[0].motif)
     }
 
     /// Sort de la recherche : la liste du dossier revient entière — celui d'où
