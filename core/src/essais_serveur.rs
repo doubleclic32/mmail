@@ -151,6 +151,61 @@ fn boite_partagee_reconnue() {
     assert!(apres.expect("arborescence après le partage").is_empty());
 }
 
+/// Catégories (0.6.15) sur une boîte partagée comme chez Mailcow : B partage
+/// sa boîte de réception avec A (droits de contact@ chez Lalanne). A crée une
+/// catégorie dans le catalogue de la boîte (`METADATA`) et la pose sur un
+/// message ; B relit le catalogue et voit le mot-clé, que la recherche trouve.
+#[test]
+#[ignore = "exige un serveur IMAP à boîtes partagées et métadonnées, et deux comptes"]
+fn categories_sur_boite_partagee() {
+    use crate::categories::{Categorie, Catalogue, Changement, ENTREE};
+    let ua = variable("MMAIL_UTILISATEUR");
+    let mut b = session2();
+    assert!(b.sait("METADATA"), "le serveur ne garde pas de métadonnées");
+    let (id_message, brut) = message_essai("Catégories");
+    let uid_b = b.deposer("INBOX", &[], DATE_ESSAI, &brut).unwrap().unwrap();
+    b.brute(&format!("SETACL INBOX \"{ua}\" lrswiptek")).expect("SETACL");
+    let resultat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut a = session();
+        let (magasin, ca, cb) = index(&mut a, Some(&mut b));
+        // La boîte de réception partagée : « Shared/<B>/INBOX » chez Mailcow
+        // (`mail_shared_explicit_inbox`), « Shared/<B> » sinon (CI).
+        let dossiers: Vec<String> = magasin.dossiers(ca).unwrap().into_iter()
+            .filter(|d| d.selectionnable && d.chemin.starts_with("Shared/"))
+            .map(|d| d.chemin)
+            .collect();
+        let partagee = dossiers.iter().find(|c| c.ends_with("/INBOX"))
+            .or_else(|| dossiers.iter().find(|c| !c["Shared/".len()..].contains('/')))
+            .cloned()
+            .expect("boîte partagée vue par A");
+        let mot_cle = format!("epreuve_{uid_b}");
+        let categorie = Categorie { mot_cle: mot_cle.clone(), nom: "Épreuve à faire".into(), couleur: "#0B8043".into() };
+        synchro::changer_catalogue(&mut a, &magasin, ca, &partagee, &Changement::Poser(categorie.clone()))
+            .expect("catalogue écrit par A");
+        // B relit le catalogue de sa propre boîte de réception.
+        assert!(synchro::relire_catalogue(&mut b, &magasin, cb, "INBOX").expect("relecture par B"));
+        let (valeur, serveur) = magasin.catalogue(cb, "INBOX").unwrap().unwrap();
+        assert!(serveur);
+        assert!(Catalogue::lire(&valeur).liste().contains(&categorie), "{valeur}");
+        // A pose la catégorie sur le message de B, à travers le partage.
+        synchro::synchroniser(&mut a, &magasin, ca, &partagee).expect("synchro A");
+        a.selectionner(&partagee, None).unwrap();
+        let uid_a = a.chercher_message_id(&id_message).unwrap()[0];
+        synchro::marquer_categorie(&mut a, &magasin, ca, &partagee, &[uid_a], &mot_cle, true).expect("STORE par A");
+        synchro::synchroniser(&mut b, &magasin, cb, "INBOX").expect("synchro B");
+        let id_b = magasin.dossier_id(cb, "INBOX").unwrap();
+        assert!(magasin.message(id_b, uid_b).unwrap().unwrap().mots_cles.split(' ').any(|m| m == mot_cle));
+        assert_eq!(b.chercher("", &[vec![mot_cle.clone()]]).unwrap(), vec![uid_b]);
+        b.ecrire_metadonnee("INBOX", ENTREE, None).expect("catalogue effacé");
+    }));
+    // Retirés avant tout constat : un échec ne laisse ni partage ni message.
+    b.brute(&format!("DELETEACL INBOX \"{ua}\"")).expect("DELETEACL");
+    nettoyer(&mut b, "INBOX", &id_message);
+    if let Err(e) = resultat {
+        std::panic::resume_unwind(e);
+    }
+}
+
 #[test]
 #[ignore = "exige un serveur IMAP et un compte"]
 fn sous_dossier_cree_et_abonne() {

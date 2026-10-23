@@ -29,6 +29,44 @@ pub fn porte(drapeaux: &[String], noms: &[&str]) -> bool {
     drapeaux.iter().any(|d| noms.iter().any(|n| d.eq_ignore_ascii_case(n)))
 }
 
+/// Mots-clés que posent les logiciels pour eux-mêmes, et qui ne sont pas des
+/// catégories (0.6.15) : réponse, transfert, accusé de réception, tri des
+/// indésirables, pièces jointes, envoi en attente, couleurs du drapeau d'Apple.
+const NON_CATEGORIES: &[&str] = &[
+    "$Answered", "$Forwarded", "Forwarded", "$ReplyAll", "$MDNSent", "$Junk", "$NotJunk", "Junk",
+    "NonJunk", "NotJunk", "$AutoJunk", "$AutoNotJunk", "$Phishing", "$HasAttachment",
+    "$HasNoAttachment", "$SubmitPending", "$Submitted", "$MailFlagBit0", "$MailFlagBit1",
+    "$MailFlagBit2", "$IsTrusted", "$Notify", "$Muted", "$Important",
+];
+
+/// Mots-clés d'un message qui peuvent être des catégories (0.6.15) : ni
+/// drapeau système (`\Seen`…), ni mot-clé d'usage (`$Forwarded`…). Une
+/// seule fois chacun, par ordre alphabétique, séparés par une espace — un
+/// mot-clé IMAP n'en contient jamais.
+pub fn mots_cles(drapeaux: &[String]) -> String {
+    let mut garde: Vec<&str> = Vec::new();
+    for d in drapeaux {
+        if d.starts_with('\\') || d.is_empty() || porte(std::slice::from_ref(d), NON_CATEGORIES) {
+            continue;
+        }
+        if !garde.iter().any(|g| g.eq_ignore_ascii_case(d)) {
+            garde.push(d);
+        }
+    }
+    garde.sort_by_key(|m| m.to_ascii_lowercase());
+    garde.join(" ")
+}
+
+/// Vrai si `mot` peut s'écrire tel quel comme mot-clé IMAP (un `atom` de la
+/// RFC 3501) : ASCII imprimable, sans espace ni caractère réservé, et sans
+/// « \\ » en tête, réservé aux drapeaux système.
+pub fn mot_cle_valide(mot: &str) -> bool {
+    !mot.is_empty()
+        && mot.len() <= 64
+        && !mot.starts_with('\\')
+        && mot.bytes().all(|o| o.is_ascii_graphic() && !b"(){%*\"\\]".contains(&o))
+}
+
 /// Un dossier tel que l'annonce `LIST`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dossier {
@@ -89,6 +127,9 @@ pub struct EtatDossier {
     pub uid_validity: u32,
     pub uid_next: u32,
     pub highest_mod_seq: u64,
+    /// Vrai si le serveur refuse les mots-clés libres dans ce dossier
+    /// (`PERMANENTFLAGS` sans `\*`, comme Microsoft 365) : pas de catégories.
+    pub sans_mots_cles: bool,
 }
 
 /// En-têtes d'un message, tels que les rend un `FETCH` d'index.
@@ -135,6 +176,11 @@ impl Entete {
     /// Envoi différé réservé par un MMail (`\Draft`, cf. `Client::reserver`).
     pub fn reserve(&self) -> bool {
         self.drapeaux.iter().any(|d| d.eq_ignore_ascii_case("\\Draft"))
+    }
+
+    /// Catégories du message (cf. `mots_cles`).
+    pub fn mots_cles(&self) -> String {
+        mots_cles(&self.drapeaux)
     }
 }
 
@@ -213,7 +259,14 @@ fn groupe_namespace(texte: &str) -> Option<(Option<String>, &str)> {
 /// qu'un nœud sans messages (`\Noselect`). Un utilisateur désigné sans
 /// domaine non plus. Sans doublon, par ordre alphabétique.
 pub fn adresses_partagees(dossiers: &[Dossier], espaces: &[(String, String)]) -> Vec<String> {
-    let mut adresses: Vec<String> = Vec::new();
+    boites_partagees(dossiers, espaces).into_iter().map(|(adresse, _)| adresse).collect()
+}
+
+/// Comme `adresses_partagees`, avec le chemin de la boîte de réception de
+/// chacune (« Shared/contact@exemple.fr/INBOX », ou « Shared/contact@exemple.fr ») :
+/// c'est sur elle que se range le catalogue des catégories de la boîte (0.6.15).
+pub fn boites_partagees(dossiers: &[Dossier], espaces: &[(String, String)]) -> Vec<(String, String)> {
+    let mut boites: Vec<(String, String)> = Vec::new();
     for d in dossiers.iter().filter(|d| d.selectionnable()) {
         for (prefixe, separateur) in espaces {
             if prefixe.is_empty() || separateur.is_empty() {
@@ -229,14 +282,40 @@ pub fn adresses_partagees(dossiers: &[Dossier], espaces: &[(String, String)]) ->
             };
             let adresse = decoder_utf7(utilisateur);
             if crate::redaction::adresse_valide(&adresse)
-                && !adresses.iter().any(|a| a.eq_ignore_ascii_case(&adresse))
+                && !boites.iter().any(|(a, _)| a.eq_ignore_ascii_case(&adresse))
             {
-                adresses.push(adresse);
+                boites.push((adresse, d.chemin.clone()));
             }
         }
     }
-    adresses.sort_by_key(|a| a.to_lowercase());
-    adresses
+    boites.sort_by_key(|(a, _)| a.to_lowercase());
+    boites
+}
+
+/// Valeur d'une entrée rendue par `GETMETADATA` (RFC 5464) :
+/// « * METADATA INBOX (/shared/… {n}) », le littéral étant remplacé par son
+/// marqueur ; ou une chaîne citée ; `None` pour `NIL` ou une entrée absente.
+pub fn analyser_metadata(reponse: &str, litteraux: &[Vec<u8>], entree: &str) -> Option<String> {
+    for ligne in reponse.lines() {
+        let ligne = ligne.trim();
+        if !ligne.starts_with("* METADATA ") {
+            continue;
+        }
+        // L'entrée est cherchée sans égard à la casse : la RFC n'en tient pas compte.
+        let Some(debut) = ligne.to_ascii_lowercase().find(&format!("{} ", entree.to_ascii_lowercase())) else {
+            continue;
+        };
+        let reste = ligne[debut + entree.len()..].trim_start();
+        if reste.starts_with(MARQUEUR) {
+            let indice = indice_litteral(reste)?;
+            return litteraux.get(indice).map(|o| String::from_utf8_lossy(o).into_owned());
+        }
+        if reste.starts_with("NIL") {
+            return None;
+        }
+        return jeton(reste).map(|(valeur, _)| valeur);
+    }
+    None
 }
 
 /// Lit l'état d'un dossier dans les réponses non étiquetées d'un `SELECT`.
@@ -258,6 +337,13 @@ pub fn analyser_select(reponse: &str) -> EtatDossier {
         }
         if let Some(valeur) = valeur_de_code(ligne, "HIGHESTMODSEQ ") {
             etat.highest_mod_seq = valeur.parse().unwrap_or(0);
+        }
+        // Sans `PERMANENTFLAGS`, tout drapeau est permanent (RFC 3501
+        // § 6.3.1) : seule sa présence sans `\*` interdit les mots-clés.
+        if let Some(debut) = ligne.find("[PERMANENTFLAGS ") {
+            if let Some((drapeaux, _)) = entre_parentheses(&ligne[debut..]) {
+                etat.sans_mots_cles = !drapeaux.split_whitespace().any(|d| d == "\\*");
+            }
         }
     }
     etat
@@ -671,6 +757,65 @@ mod tests {
         assert!(!e(&["\\Answered"]).transfere());
         assert!(e(&["\\Answered", "$ReplyAll"]).repondu_tous());
         assert!(!e(&["\\Answered"]).repondu_tous());
+    }
+
+    #[test]
+    fn categories_des_drapeaux() {
+        let d = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            mots_cles(&d(&["\\Seen", "$Forwarded", "Saisie", "$label2", "NonJunk", "$MDNSent", "saisie", "devis"])),
+            "$label2 devis Saisie"
+        );
+        assert_eq!(mots_cles(&d(&["\\Flagged", "$HasAttachment"])), "");
+        assert!(mot_cle_valide("$label1") && mot_cle_valide("devis_a_faire"));
+        assert!(!mot_cle_valide("") && !mot_cle_valide("a b") && !mot_cle_valide("\\Seen"));
+        assert!(!mot_cle_valide("é") && !mot_cle_valide("a(b") && !mot_cle_valide("a]"));
+    }
+
+    #[test]
+    fn permanentflags_et_mots_cles() {
+        let libres = analyser_select("* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Flags permitted.\r\n");
+        assert!(!libres.sans_mots_cles);
+        // Exchange Online : pas de « \* ».
+        let fermes = analyser_select("* OK [PERMANENTFLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft $MDNSent)] Permanent flags\r\n");
+        assert!(fermes.sans_mots_cles);
+        assert!(!analyser_select("* 3 EXISTS\r\n").sans_mots_cles, "sans PERMANENTFLAGS : tout est permis");
+    }
+
+    #[test]
+    fn metadonnees() {
+        let litteraux = vec![br#"{"version":1}"#.to_vec()];
+        let reponse = format!(
+            "* METADATA \"Shared/contact@x.fr/INBOX\" (/shared/vendor/mmedia/mmail/categories {m}0{m})\r\nm1 OK\r\n",
+            m = MARQUEUR
+        );
+        let entree = "/shared/vendor/mmedia/mmail/categories";
+        assert_eq!(analyser_metadata(&reponse, &litteraux, entree).as_deref(), Some(r#"{"version":1}"#));
+        let cite = "* METADATA INBOX (/shared/vendor/mmedia/mmail/categories \"{\\\"a\\\":1}\")\r\n";
+        assert_eq!(analyser_metadata(cite, &[], entree).as_deref(), Some(r#"{"a":1}"#));
+        assert_eq!(analyser_metadata("* METADATA INBOX (/shared/vendor/mmedia/mmail/categories NIL)\r\n", &[], entree), None);
+        assert_eq!(analyser_metadata("m1 OK\r\n", &[], entree), None);
+    }
+
+    #[test]
+    fn boites_partagees_et_leur_reception() {
+        let dossiers: Vec<Dossier> = [
+            r#"* LIST (\HasChildren) "/" "Shared/contact@x.fr/INBOX""#,
+            r#"* LIST (\Noselect \HasChildren) "/" "Shared/contact@x.fr""#,
+            r#"* LIST (\HasNoChildren) "/" "Shared/compta@x.fr""#,
+            r#"* LIST (\HasNoChildren) "/" "INBOX""#,
+        ]
+        .iter()
+        .filter_map(|l| analyser_list(l))
+        .collect();
+        let espaces = vec![("Shared/".to_string(), "/".to_string())];
+        assert_eq!(
+            boites_partagees(&dossiers, &espaces),
+            vec![
+                ("compta@x.fr".to_string(), "Shared/compta@x.fr".to_string()),
+                ("contact@x.fr".to_string(), "Shared/contact@x.fr/INBOX".to_string()),
+            ]
+        );
     }
 
     #[test]

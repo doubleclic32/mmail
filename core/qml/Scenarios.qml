@@ -1404,9 +1404,10 @@ QtObject {
                 rafraichirListe()
             } else if (suivi.n === 11) {
                 menuMessage.popup()
+                // Dix lignes en 0.6.14, onze avec « Catégoriser » (0.6.15).
                 bilan("menu du message : " + lignesDuMenu() + " lignes, « " + menuMessage.itemAt(5).text
                       + " », « " + menuMessage.itemAt(6).text + " »",
-                      lignesDuMenu() === 10 && menuMessage.unNonLu && menuMessage.itemAt(5).text === qsTr("Marquer comme lu"))
+                      lignesDuMenu() === 11 && menuMessage.unNonLu && menuMessage.itemAt(5).text === qsTr("Marquer comme lu"))
                 menuMessage.close()
                 choisir(0, 0)
             } else if (suivi.n === 13) {
@@ -1527,6 +1528,159 @@ QtObject {
             }
         })
         tic.start()
+    }
+
+    /// Scénario « categories » (0.6.15, demande de Manu du 22/10) : dans la
+    /// boîte de réception (deux messages au moins), une catégorie d'origine
+    /// et une catégorie créée posées ; l'état du sous-menu « Catégoriser » ;
+    /// la recherche « catégorie: » dans l'index et sur le serveur (KEYWORD :
+    /// la preuve que le serveur les garde) ; tout retiré, et toujours retiré
+    /// après relecture du serveur ; la catégorie créée retirée du catalogue,
+    /// une catégorie d'origine renommée puis rétablie. Avec PARTAGE=1, une
+    /// boîte partagée a son propre catalogue.
+    function lancerScenarioCategories() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0, motCle: "", premier: 0, second: 0 }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var mots = function(uid) {
+            var i = indexDe(uid)
+            return i >= 0 ? (modeleMessages.get(i).motsCles || "") : "?"
+        }
+        var catalogue = function(compte, chemin) {
+            return JSON.parse(boite.categories(compte, chemin))
+        }
+        var noms = function(liste) {
+            return liste.map(function(x) { return x.nom }).join(", ")
+        }
+        var recherche = qsTr("catégorie") + ":\"Devis à faire\""
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus.filter(function(x) { return x.adresse === identifiantsEssai.utilisateur })[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                if (modeleMessages.count < 2) {
+                    bilan("il faut deux messages en boîte de réception", false)
+                    suivi.n = 29
+                    return
+                }
+                suivi.premier = modeleMessages.get(0).uid
+                suivi.second = modeleMessages.get(1).uid
+                var depart = catalogue(0, "")
+                bilan("catalogue de départ : " + noms(depart.liste) + " | boîte " + depart.boite
+                      + " | serveur " + depart.serveur,
+                      depart.liste.length === 5 && depart.liste[0].nom === "Important"
+                      && depart.liste[4].nom === "Peut attendre" && depart.boite === "INBOX" && !depart.refusees)
+                choisir(0, 0)
+                basculerCategorie("$label1", true)
+                bilan("Important posée : « " + mots(suivi.premier) + " » | en-tête " + noms(categoriesAffichees),
+                      mots(suivi.premier) === "$label1" && noms(categoriesAffichees) === "Important")
+                suivi.motCle = boite.poserCategorie(0, "", "", "Devis à faire", "#0B8043")
+                bilan("créée : " + suivi.motCle + " | " + noms(catalogue(0, "").liste),
+                      suivi.motCle === "devis_a_faire" && catalogue(0, "").liste.length === 6)
+                choisir(1, Qt.ControlModifier)
+                basculerCategorie(suivi.motCle, true)
+                bilan("posée sur les deux : « " + mots(suivi.premier) + " » / « " + mots(suivi.second) + " »",
+                      mots(suivi.premier) === "$label1 devis_a_faire" && mots(suivi.second) === "devis_a_faire")
+                var etat = etatCategories()
+                bilan("sous-menu : la créée cochée, Important en partie (" + JSON.stringify(etat.porte) + ")",
+                      etat.porte["devis_a_faire"] === "tous" && etat.porte["$label1"] === "certains"
+                      && etat.liste.length === 6 && !etat.refusees)
+                menuMessage.popup()
+                bilan("menu du message : « Catégoriser » présent", entreeDuMenu(menuMessage, qsTr("Catégoriser")) !== null)
+                menuMessage.close()
+            } else if (suivi.n === 10) {
+                lancerRecherche(recherche)
+                bilan("recherche dans l'index : " + modeleMessages.count + " résultat(s)", modeleMessages.count === 2)
+            } else if (suivi.n === 14) {
+                var trouves = uidsServeur.slice().sort().join(",")
+                bilan("recherche sur le serveur (KEYWORD) : " + JSON.stringify(uidsServeur),
+                      trouves === [suivi.premier, suivi.second].sort().join(","))
+                quitterRecherche()
+            } else if (suivi.n === 16) {
+                choisir(Math.max(0, indexDe(suivi.premier)), 0)
+                effacerCategories()
+                bilan("effacées du premier : « " + mots(suivi.premier) + " »", mots(suivi.premier) === "")
+                choisir(Math.max(0, indexDe(suivi.second)), 0)
+                basculerCategorie(suivi.motCle, false)
+                bilan("retirée du second : « " + mots(suivi.second) + " »", mots(suivi.second) === "")
+                bilan("retirée du catalogue", boite.retirerCategorie(0, "", suivi.motCle)
+                      && catalogue(0, "").liste.length === 5)
+                bilan("Important renommée « Urgent »", boite.poserCategorie(0, "", "$label1", "Urgent", "#D50000") === "$label1"
+                      && catalogue(0, "").liste[0].nom === "Urgent")
+                bilan("puis rétablie", boite.retirerCategorie(0, "", "$label1") && catalogue(0, "").liste[0].nom === "Important")
+                bilan("refus : nom vide", boite.poserCategorie(0, "", "", "  ", "#0B8043") === "")
+                if (c.partagees && c.partagees.length > 0) {
+                    var chemin = "Shared/" + c.partagees[0]
+                    var avant = catalogue(c.compte, chemin)
+                    var cree = boite.poserCategorie(c.compte, chemin, "", "Boîte partagée", "#C239B3")
+                    var apres = catalogue(c.compte, chemin)
+                    bilan("boîte partagée : catalogue de " + avant.boite + " (" + noms(apres.liste) + "), le sien intact ("
+                          + catalogue(0, "").liste.length + ")",
+                          avant.boite.indexOf("Shared/") === 0 && cree === "boite_partagee" && apres.liste.length === 6
+                          && catalogue(0, "").liste.length === 5)
+                    boite.retirerCategorie(c.compte, chemin, cree)
+                }
+            } else if (suivi.n === 18) {
+                // Les drapeaux relus du serveur : rien n'y est resté.
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 21) {
+                bilan("après relecture du serveur : « " + mots(suivi.premier) + " » / « " + mots(suivi.second) + " »",
+                      mots(suivi.premier) === "" && mots(suivi.second) === "")
+                var fin = catalogue(0, "")
+                console.log("scenario: catalogue final " + noms(fin.liste) + " | serveur " + fin.serveur)
+            } else if (suivi.n >= 22) {
+                tic.stop()
+                console.log("scenario: categories " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénarios « liste-categories », « menu-categories » et
+    /// « gerer-categories » (0.6.15) : des catégories posées sur les
+    /// messages de la boîte de réception, puis la liste, le sous-menu
+    /// « Catégoriser » ouvert ou le dialogue « Gérer les catégories », pour
+    /// une capture d'écran (--capture), sans quitter.
+    function lancerScenarioCapturesCategories() {
+        var t = Qt.createQmlObject('import QtQuick; Timer { interval: 4000 }', fenetre)
+        t.triggered.connect(function() {
+            ouvrirDossier(comptesConnus[0].compte, "INBOX")
+            var t2 = Qt.createQmlObject('import QtQuick; Timer { interval: 2000 }', fenetre)
+            t2.triggered.connect(function() {
+                var devis = boite.poserCategorie(0, "", "", "Devis à faire", "#0B8043")
+                var compta = boite.poserCategorie(0, "", "", "Comptabilité", "#0078D4")
+                var poser = function(rang, motCle) {
+                    if (rang >= modeleMessages.count)
+                        return
+                    choisir(rang, 0)
+                    basculerCategorie(motCle, true)
+                }
+                poser(0, "$label1")
+                poser(0, devis)
+                poser(1, devis)
+                poser(2, "$label2")
+                poser(3, compta)
+                choisir(0, 0)
+                if (essai.scenario === "menu-categories") {
+                    menuMessage.popup(colonneListe.x + 120, entete.height + bandeOutils.height + 90)
+                    for (var i = 0; i < menuMessage.count; ++i) {
+                        var e = menuMessage.itemAt(i)
+                        if (e && e.text === qsTr("Catégoriser"))
+                            e.triggered()
+                    }
+                } else if (essai.scenario === "gerer-categories") {
+                    gererCategories()
+                }
+            })
+            t2.start()
+        })
+        t.start()
     }
 
     /// Scénarios « menu-affichage », « menu-message » et « menu-saisie »

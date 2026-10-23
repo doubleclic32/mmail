@@ -43,7 +43,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 17;
+const VERSION_SCHEMA: i32 = 18;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -200,6 +200,9 @@ pub struct MessageLocal {
     pub suivi: bool,
     /// Importance annoncée : 1 haute, 0 normale, -1 basse.
     pub importance: i8,
+    /// Catégories (mots-clés IMAP, 0.6.15), séparées par une espace, dans
+    /// l'ordre de `protocole::mots_cles`.
+    pub mots_cles: String,
 }
 
 /// Un message trouvé par une recherche, avec son dossier.
@@ -605,6 +608,25 @@ impl Magasin {
         // l'arborescence.
         if version < 17 {
             self.ajouter_colonne("accounts", "partagees", "TEXT NOT NULL DEFAULT ''")?;
+        }
+        // Version 18 : les catégories (0.6.15) — mots-clés de chaque message ;
+        // dossiers où le serveur les refuse ; catalogue de chaque boîte, tel
+        // que le serveur le garde (ou le poste, sans METADATA). Les
+        // `HIGHESTMODSEQ` sont oubliés : chaque dossier relit ses drapeaux à sa
+        // prochaine ouverture, pas ses en-têtes (comme en version 10).
+        if version < 18 {
+            self.ajouter_colonne("messages", "mots_cles", "TEXT NOT NULL DEFAULT ''")?;
+            self.ajouter_colonne("folders", "sans_mots_cles", "INTEGER NOT NULL DEFAULT 0")?;
+            self.base.execute_batch(
+                "CREATE TABLE IF NOT EXISTS catalogues (
+                     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                     boite      TEXT NOT NULL,
+                     valeur     TEXT NOT NULL,
+                     serveur    INTEGER NOT NULL DEFAULT 0,
+                     PRIMARY KEY (account_id, boite)
+                 );
+                 UPDATE folders SET highestmodseq = 0;",
+            )?;
         }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
@@ -1032,8 +1054,8 @@ impl Magasin {
                 .execute("DELETE FROM messages WHERE folder_id = ?1", params![dossier])?;
         }
         self.base.execute(
-            "UPDATE folders SET uidvalidity = ?2, uidnext = ?3, highestmodseq = ?4 WHERE id = ?1",
-            params![dossier, etat.uid_validity, etat.uid_next, etat.highest_mod_seq],
+            "UPDATE folders SET uidvalidity = ?2, uidnext = ?3, highestmodseq = ?4, sans_mots_cles = ?5 WHERE id = ?1",
+            params![dossier, etat.uid_validity, etat.uid_next, etat.highest_mod_seq, etat.sans_mots_cles as i32],
         )?;
         Ok(rupture)
     }
@@ -1152,12 +1174,14 @@ impl Magasin {
                 let mut insertion = transaction.prepare(
                     "INSERT OR IGNORE INTO messages
                        (folder_id, uid, message_id, expediteur, adresse, sujet, date, horodatage,
-                        taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous, destinataires)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                        taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous, destinataires,
+                        mots_cles)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 )?;
                 let mut mise_a_jour = transaction.prepare(
                     "UPDATE messages SET lu = ?3, repondu = ?4, suivi = ?6, importance = ?7, transfere = ?8, repondu_tous = ?9,
-                        pieces = CASE WHEN pieces_certain = 1 THEN pieces ELSE ?5 END, destinataires = ?10
+                        pieces = CASE WHEN pieces_certain = 1 THEN pieces ELSE ?5 END, destinataires = ?10,
+                        mots_cles = ?11
                      WHERE folder_id = ?1 AND uid = ?2",
                 )?;
                 // Un expéditeur compte une fois par message nouveau dans l'index.
@@ -1184,7 +1208,8 @@ impl Magasin {
                         m.importance as i32,
                         m.transfere as i32,
                         m.repondu_tous as i32,
-                        m.destinataires
+                        m.destinataires,
+                        m.mots_cles
                     ])? == 1;
                     if nouveau {
                         if !m.adresse.is_empty() {
@@ -1201,7 +1226,8 @@ impl Magasin {
                             m.importance as i32,
                             m.transfere as i32,
                             m.repondu_tous as i32,
-                            m.destinataires
+                            m.destinataires,
+                            m.mots_cles
                         ])?;
                     }
                 }
@@ -1221,9 +1247,10 @@ impl Magasin {
             let transaction = self.base.unchecked_transaction()?;
             {
                 let mut requete = transaction.prepare_cached(
-                    "UPDATE messages SET lu = ?3, repondu = ?4, suivi = ?5, transfere = ?6, repondu_tous = ?7
+                    "UPDATE messages SET lu = ?3, repondu = ?4, suivi = ?5, transfere = ?6, repondu_tous = ?7,
+                        mots_cles = ?8
                      WHERE folder_id = ?1 AND uid = ?2
-                       AND (lu, repondu, suivi, transfere, repondu_tous) IS NOT (?3, ?4, ?5, ?6, ?7)",
+                       AND (lu, repondu, suivi, transfere, repondu_tous, mots_cles) IS NOT (?3, ?4, ?5, ?6, ?7, ?8)",
                 )?;
                 for (uid, liste) in lot {
                     let lu = liste.iter().any(|d| d.eq_ignore_ascii_case("\\Seen"));
@@ -1238,7 +1265,8 @@ impl Magasin {
                         repondu as i32,
                         suivi as i32,
                         transfere as i32,
-                        repondu_tous as i32
+                        repondu_tous as i32,
+                        protocole::mots_cles(liste)
                     ])?;
                 }
             }
@@ -1323,6 +1351,75 @@ impl Magasin {
         Ok(())
     }
 
+    /// Pose ou retire localement une catégorie (mot-clé, 0.6.15).
+    pub fn marquer_categorie(&self, dossier: i64, uids: &[u32], mot_cle: &str, present: bool) -> Resultat<()> {
+        let transaction = self.base.unchecked_transaction()?;
+        {
+            let mut lire = transaction.prepare_cached("SELECT mots_cles FROM messages WHERE folder_id = ?1 AND uid = ?2")?;
+            let mut ecrire = transaction.prepare_cached(
+                "UPDATE messages SET mots_cles = ?3 WHERE folder_id = ?1 AND uid = ?2 AND mots_cles IS NOT ?3",
+            )?;
+            for uid in uids {
+                let Some(actuels) = lire.query_row(params![dossier, uid], |l| l.get::<_, String>(0)).optional()? else {
+                    continue;
+                };
+                ecrire.execute(params![dossier, uid, crate::categories::modifier(&actuels, mot_cle, present)])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Vrai si le serveur refuse les catégories dans ce dossier (cf.
+    /// `EtatDossier::sans_mots_cles`) — su à sa dernière ouverture.
+    pub fn sans_mots_cles(&self, dossier: i64) -> Resultat<bool> {
+        Ok(self
+            .base
+            .query_row("SELECT sans_mots_cles FROM folders WHERE id = ?1", params![dossier], |l| l.get::<_, i32>(0))
+            .optional()?
+            .unwrap_or(0)
+            != 0)
+    }
+
+    /// Catalogue des catégories d'une boîte (chemin de sa boîte de réception),
+    /// tel qu'il a été rangé ; et s'il vient du serveur.
+    pub fn catalogue(&self, compte: i64, boite: &str) -> Resultat<Option<(String, bool)>> {
+        Ok(self
+            .base
+            .query_row(
+                "SELECT valeur, serveur FROM catalogues WHERE account_id = ?1 AND boite = ?2",
+                params![compte, boite],
+                |l| Ok((l.get(0)?, l.get::<_, i32>(1)? != 0)),
+            )
+            .optional()?)
+    }
+
+    /// Range le catalogue d'une boîte. Rend vrai s'il a changé.
+    pub fn poser_catalogue(&self, compte: i64, boite: &str, valeur: &str, serveur: bool) -> Resultat<bool> {
+        let n = self.base.execute(
+            "INSERT INTO catalogues (account_id, boite, valeur, serveur) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id, boite) DO UPDATE SET valeur = excluded.valeur, serveur = excluded.serveur
+             WHERE (valeur, serveur) IS NOT (excluded.valeur, excluded.serveur)",
+            params![compte, boite, valeur, serveur as i32],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Tous les catalogues rangés, de tous les comptes : de quoi trouver une
+    /// catégorie par son nom dans une recherche.
+    pub fn tous_les_catalogues(&self) -> Resultat<Vec<String>> {
+        let mut requete = self.base.prepare("SELECT valeur FROM catalogues ORDER BY account_id, boite")?;
+        let valeurs = requete.query_map([], |l| l.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(valeurs)
+    }
+
+    /// Boîtes d'un compte qui ont un catalogue rangé.
+    pub fn boites_cataloguees(&self, compte: i64) -> Resultat<Vec<String>> {
+        let mut requete = self.base.prepare("SELECT boite FROM catalogues WHERE account_id = ?1 ORDER BY boite")?;
+        let boites = requete.query_map(params![compte], |l| l.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(boites)
+    }
+
     /// Marque localement des messages comme lus ou non lus.
     pub fn marquer_lu(&self, dossier: i64, uids: &[u32], lu: bool) -> Resultat<()> {
         let transaction = self.base.unchecked_transaction()?;
@@ -1368,11 +1465,24 @@ impl Magasin {
     /// l'adresse de l'expéditeur : d'un dossier, ou de tous les comptes
     /// (`dossier` absent), les plus récents d'abord, `limite` au plus.
     pub fn chercher(&self, dossier: Option<i64>, texte: &str, limite: usize) -> Resultat<Vec<Trouve>> {
+        self.chercher_avec(dossier, texte, &[], limite)
+    }
+
+    /// Comme `chercher`, avec des catégories (0.6.15) : chaque élément de
+    /// `categories` est un critère — le message porte l'un de ses mots-clés —,
+    /// et les critères s'ajoutent aux mots. Un critère vide ne trouve rien.
+    pub fn chercher_avec(
+        &self,
+        dossier: Option<i64>,
+        texte: &str,
+        categories: &[Vec<String>],
+        limite: usize,
+    ) -> Resultat<Vec<Trouve>> {
         let mots: Vec<String> = texte
             .split_whitespace()
             .map(|m| format!("%{}%", m.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
             .collect();
-        if mots.is_empty() {
+        if mots.is_empty() && categories.is_empty() {
             return Ok(Vec::new());
         }
         let mut conditions: Vec<String> = (0..mots.len())
@@ -1383,6 +1493,17 @@ impl Magasin {
                 )
             })
             .collect();
+        let mut valeurs: Vec<rusqlite::types::Value> = vec![dossier.unwrap_or(0).into()];
+        valeurs.extend(mots.into_iter().map(rusqlite::types::Value::from));
+        // Mots-clés entourés d'espaces : « devis » ne trouve pas « devis_2 ».
+        for critere in categories {
+            let mut variantes = Vec::new();
+            for mot_cle in critere {
+                valeurs.push(format!(" {} ", mot_cle.to_ascii_lowercase()).into());
+                variantes.push(format!("instr(' ' || lower(m.mots_cles) || ' ', ?{}) > 0", valeurs.len()));
+            }
+            conditions.push(if variantes.is_empty() { "0".into() } else { format!("({})", variantes.join(" OR ")) });
+        }
         if dossier.is_some() {
             conditions.push("m.folder_id = ?1".into());
         }
@@ -1390,8 +1511,6 @@ impl Magasin {
             "{SELECT_TROUVE} WHERE {} ORDER BY m.horodatage DESC, m.uid DESC LIMIT {limite}",
             conditions.join(" AND ")
         );
-        let mut valeurs: Vec<rusqlite::types::Value> = vec![dossier.unwrap_or(0).into()];
-        valeurs.extend(mots.into_iter().map(rusqlite::types::Value::from));
         let mut requete = self.base.prepare(&sql)?;
         let trouves = requete
             .query_map(rusqlite::params_from_iter(valeurs), lire_trouve)?
@@ -2031,23 +2150,23 @@ fn lire_dossier(l: &rusqlite::Row<'_>) -> rusqlite::Result<DossierLocal> {
 /// boîtes, boîte de réception unifiée.
 const SELECT_TROUVE: &str = "SELECT m.uid, m.message_id, m.expediteur, m.adresse, m.sujet, m.date, m.horodatage,
         m.taille, m.lu, m.repondu, m.pieces, m.suivi, m.importance, m.transfere, m.repondu_tous,
-        m.destinataires, f.account_id, f.chemin, f.nom, f.separateur, f.role
+        m.destinataires, m.mots_cles, f.account_id, f.chemin, f.nom, f.separateur, f.role
      FROM messages m JOIN folders f ON f.id = m.folder_id";
 
 fn lire_trouve(l: &rusqlite::Row<'_>) -> rusqlite::Result<Trouve> {
     Ok(Trouve {
         message: lire_message(l)?,
-        compte: l.get(16)?,
-        chemin: l.get(17)?,
-        nom_dossier: l.get(18)?,
-        separateur: l.get(19)?,
-        role: l.get(20)?,
+        compte: l.get(17)?,
+        chemin: l.get(18)?,
+        nom_dossier: l.get(19)?,
+        separateur: l.get(20)?,
+        role: l.get(21)?,
     })
 }
 
 const SELECT_MESSAGE: &str = "SELECT uid, message_id, expediteur, adresse, sujet, date,
         horodatage, taille, lu, repondu, pieces, suivi, importance, transfere, repondu_tous,
-        destinataires
+        destinataires, mots_cles
      FROM messages";
 
 fn lire_message(l: &rusqlite::Row<'_>) -> rusqlite::Result<MessageLocal> {
@@ -2068,6 +2187,7 @@ fn lire_message(l: &rusqlite::Row<'_>) -> rusqlite::Result<MessageLocal> {
         transfere: l.get::<_, i32>(13)? != 0,
         repondu_tous: l.get::<_, i32>(14)? != 0,
         destinataires: l.get(15)?,
+        mots_cles: l.get(16)?,
     })
 }
 
@@ -2318,7 +2438,7 @@ mod tests {
     #[test]
     fn changement_d_uidvalidity_vide_le_dossier() {
         let (m, _, id) = boite();
-        let etat = EtatDossier { messages: 1, uid_validity: 100, uid_next: 2, highest_mod_seq: 5 };
+        let etat = EtatDossier { messages: 1, uid_validity: 100, uid_next: 2, highest_mod_seq: 5, ..Default::default() };
         assert!(!m.poser_etat(id, &etat).unwrap(), "premier état : pas de rupture");
         m.poser_messages(id, &[MessageLocal { uid: 1, ..Default::default() }]).unwrap();
 
@@ -2507,7 +2627,7 @@ mod tests {
         let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
         m.poser_dossiers(compte, &[dossier("INBOX", &[])]).unwrap();
         let id = m.dossier_id(compte, "INBOX").unwrap();
-        m.poser_etat(id, &EtatDossier { messages: 1, uid_validity: 42, uid_next: 2, highest_mod_seq: 99 }).unwrap();
+        m.poser_etat(id, &EtatDossier { messages: 1, uid_validity: 42, uid_next: 2, highest_mod_seq: 99, ..Default::default() }).unwrap();
         m.poser_messages(id, &[MessageLocal { uid: 1, sujet: "ancien".into(), ..Default::default() }]).unwrap();
         // Retour à un index de version 9, sans la colonne « transfere ».
         m.base
@@ -2531,14 +2651,84 @@ mod tests {
         let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
         m.poser_dossiers(compte, &[dossier("INBOX", &[])]).unwrap();
         let id = m.dossier_id(compte, "INBOX").unwrap();
-        m.poser_etat(id, &EtatDossier { messages: 1, uid_validity: 42, uid_next: 2, highest_mod_seq: 99 }).unwrap();
+        m.poser_etat(id, &EtatDossier { messages: 1, uid_validity: 42, uid_next: 2, highest_mod_seq: 99, ..Default::default() }).unwrap();
         m.poser_messages(id, &[MessageLocal { uid: 1, transfere: true, ..Default::default() }]).unwrap();
         // Retour à un index de version 10 : la colonne « repondu_tous » manque.
         m.base.execute_batch("ALTER TABLE messages DROP COLUMN repondu_tous; PRAGMA user_version = 10;").unwrap();
         m.migrer().unwrap();
-        assert_eq!(m.dossier(id).unwrap().unwrap().highest_mod_seq, 99, "rien à relire");
+        // La version 11 ne fait rien relire ; la 18 (catégories), si.
+        assert_eq!(m.dossier(id).unwrap().unwrap().highest_mod_seq, 0, "relu pour les catégories");
         let m1 = m.message(id, 1).unwrap().unwrap();
         assert!(m1.transfere && !m1.repondu_tous);
+    }
+
+    #[test]
+    fn migration_version_18_categories() {
+        let m = Magasin::en_memoire().unwrap();
+        let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        m.poser_dossiers(compte, &[dossier("INBOX", &[])]).unwrap();
+        let id = m.dossier_id(compte, "INBOX").unwrap();
+        m.poser_etat(id, &EtatDossier { messages: 1, uid_validity: 42, uid_next: 2, highest_mod_seq: 99, ..Default::default() }).unwrap();
+        m.poser_messages(id, &[MessageLocal { uid: 1, sujet: "ancien".into(), ..Default::default() }]).unwrap();
+        // Retour à un index de version 17, sans rien des catégories.
+        m.base
+            .execute_batch(
+                "ALTER TABLE messages DROP COLUMN mots_cles; ALTER TABLE folders DROP COLUMN sans_mots_cles;
+                 DROP TABLE catalogues; PRAGMA user_version = 17;",
+            )
+            .unwrap();
+        m.migrer().unwrap();
+        let d = m.dossier(id).unwrap().unwrap();
+        assert_eq!(d.highest_mod_seq, 0, "drapeaux à relire");
+        assert_eq!(d.uid_validity, 42, "en-têtes gardés");
+        assert_eq!(m.messages(id).unwrap()[0].sujet, "ancien");
+        // Les drapeaux relus donnent les catégories, sans les mots-clés d'usage.
+        let n = m
+            .poser_drapeaux(id, &[(1, vec!["\\Seen".into(), "$Forwarded".into(), "Devis".into(), "$label1".into()])])
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(m.message(id, 1).unwrap().unwrap().mots_cles, "$label1 Devis");
+        // Inchangés : rien n'est réécrit.
+        assert_eq!(m.poser_drapeaux(id, &[(1, vec!["\\Seen".into(), "Devis".into(), "$label1".into(), "$Forwarded".into()])]).unwrap(), 0);
+        assert!(m.poser_catalogue(compte, "INBOX", "{}", true).unwrap());
+        assert!(!m.poser_catalogue(compte, "INBOX", "{}", true).unwrap(), "inchangé");
+        assert!(m.poser_catalogue(compte, "INBOX", "{}", false).unwrap());
+        assert_eq!(m.catalogue(compte, "INBOX").unwrap(), Some(("{}".to_string(), false)));
+        assert_eq!(m.boites_cataloguees(compte).unwrap(), vec!["INBOX"]);
+    }
+
+    #[test]
+    fn categories_marquees_et_cherchees() {
+        let m = Magasin::en_memoire().unwrap();
+        let compte = m.compte("a@b.fr", "h", 993, "a@b.fr").unwrap();
+        m.poser_dossiers(compte, &[dossier("INBOX", &[]), dossier("Essais", &[])]).unwrap();
+        let id = m.dossier_id(compte, "INBOX").unwrap();
+        let essais = m.dossier_id(compte, "Essais").unwrap();
+        let msg = |uid: u32, sujet: &str, mots_cles: &str| MessageLocal {
+            uid,
+            horodatage: uid as i64,
+            sujet: sujet.into(),
+            mots_cles: mots_cles.into(),
+            ..Default::default()
+        };
+        m.poser_messages(id, &[msg(1, "Facture", "$label1"), msg(2, "Devis", "devis"), msg(3, "Autre", "devis_2")]).unwrap();
+        m.poser_messages(essais, &[msg(4, "Facture ancienne", "devis")]).unwrap();
+        m.marquer_categorie(id, &[1, 2], "Devis", true).unwrap();
+        assert_eq!(m.message(id, 1).unwrap().unwrap().mots_cles, "$label1 Devis");
+        assert_eq!(m.message(id, 2).unwrap().unwrap().mots_cles, "Devis");
+        m.marquer_categorie(id, &[1], "devis", false).unwrap();
+        assert_eq!(m.message(id, 1).unwrap().unwrap().mots_cles, "$label1");
+        let uids = |t: Vec<Trouve>| t.into_iter().map(|t| t.message.uid).collect::<Vec<_>>();
+        let devis = vec![vec!["devis".to_string()]];
+        assert_eq!(uids(m.chercher_avec(Some(id), "", &devis, 50).unwrap()), vec![2], "pas devis_2");
+        assert_eq!(uids(m.chercher_avec(None, "", &devis, 50).unwrap()), vec![4, 2]);
+        assert_eq!(uids(m.chercher_avec(None, "facture", &devis, 50).unwrap()), vec![4]);
+        let l = vec![vec!["devis".to_string(), "$LABEL1".to_string()]];
+        assert_eq!(uids(m.chercher_avec(Some(id), "", &l, 50).unwrap()), vec![2, 1]);
+        assert!(m.chercher_avec(Some(id), "", &[vec![]], 50).unwrap().is_empty(), "nom inconnu");
+        assert!(!m.sans_mots_cles(id).unwrap());
+        m.poser_etat(id, &EtatDossier { uid_validity: 1, sans_mots_cles: true, ..Default::default() }).unwrap();
+        assert!(m.sans_mots_cles(id).unwrap());
     }
 
     #[test]

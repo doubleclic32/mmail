@@ -117,8 +117,12 @@ jobs:
           }
           mail_location = maildir:~/Maildir
           mail_plugins = acl
+          # Métadonnées (RFC 5464) en fichier, comme chez Mailcow : le
+          # catalogue des catégories d'une boîte (0.6.15).
+          mail_attribute_dict = file:%h/dovecot-attributes
           protocol imap {
             mail_plugins = acl imap_acl
+            imap_metadata = yes
           }
           plugin {
             acl = vfile

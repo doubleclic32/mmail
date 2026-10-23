@@ -195,6 +195,9 @@ ApplicationWindow {
     // Importance du message affiché, et adresse qui demande une confirmation
     // de lecture (vide si aucune, ou déjà répondu).
     property int importanceCourante: 0
+    // Catégories du message affiché (0.6.15), en tête du volet de lecture :
+    // [{motCle, nom, couleur}] (cf. majCategoriesAffichees).
+    property var categoriesAffichees: []
     property string confirmationDemandee: ""
     // Rédactions ouvertes : jeton → contenu de la fenêtre de rédaction.
     property int compteurRedactions: 0
@@ -224,7 +227,10 @@ ApplicationWindow {
     // `Boite.invitationRecue`) ; et la réponse en cours d'envoi.
     property var invitation: ({})
     property string reponseInvitation: ""
-    onUidCourantChanged: invitation = ({})
+    onUidCourantChanged: {
+        invitation = ({})
+        majCategoriesAffichees()
+    }
     property bool sourceVisible: false
     // Messages retirés de la liste en attendant la fin de leur déplacement :
     // l'interface reflète le tri tout de suite, le serveur suit (décision 16).
@@ -1479,7 +1485,7 @@ ApplicationWindow {
         ListElement {
             uid: 0; h: 0; expediteur: ""; adresse: ""; destinataires: ""; sujet: ""; date: ""; taille: 0
             lu: false; repondu: false; reponduTous: false; transfere: false; pieces: false
-            suivi: false; importance: 0
+            suivi: false; importance: 0; motsCles: ""
             compte: 0; chemin: ""; dossier: ""; role: ""; cheminAffiche: ""
         }
         Component.onCompleted: clear()
@@ -2291,6 +2297,10 @@ ApplicationWindow {
 
     DialogueNouveauDossier { id: dlgNouveauDossier }
 
+    DialogueCategorie { id: dlgCategorie }
+
+    DialogueCategories { id: dlgCategories }
+
     // ------------------------------------------------------ coffre et session
     Coffre {
         id: coffre
@@ -2579,6 +2589,199 @@ ApplicationWindow {
         }
     }
 
+    // ---- catégories (0.6.15)
+
+    /// Couleurs proposées pour une catégorie créée : celles d'Outlook, assez
+    /// sombres pour un texte blanc, sauf le jaune.
+    readonly property var paletteCategories: ["#D13438", "#F7630C", "#FFB900", "#107C10", "#00B294", "#038387",
+                                              "#0078D4", "#004E8C", "#8764B8", "#5C2E91", "#C239B3", "#E3008C",
+                                              "#8E562E", "#7A7574", "#4C4A48", "#0B8043"]
+    // Catalogues lus (Boite.categories), par compte et dossier ; oubliés à
+    // chaque changement d'un catalogue.
+    property var cacheCategories: ({})
+    Connections {
+        target: boite
+        function onRevisionCategoriesChanged() {
+            fenetre.cacheCategories = ({})
+            fenetre.majCategoriesAffichees()
+        }
+    }
+
+    function categoriesDe(compte, chemin) {
+        var cle = compte + "\u0001" + chemin
+        if (!cacheCategories[cle]) {
+            var c = {}
+            try { c = JSON.parse(boite.categories(compte, chemin)) } catch (e) { c = {} }
+            if (!c.liste)
+                c.liste = []
+            cacheCategories[cle] = c
+        }
+        return cacheCategories[cle]
+    }
+
+    /// Pastilles d'une ligne : les catégories de `motsCles` (séparés par une
+    /// espace) dans l'ordre du catalogue de son dossier, puis les mots-clés
+    /// qu'il ne connaît pas, en gris sous leur propre nom. `revision` n'est là
+    /// que pour que la liaison se refasse quand un catalogue change.
+    function pastilles(compte, chemin, motsCles, revision) {
+        if (!motsCles)
+            return []
+        var mots = motsCles.split(" ").filter(function(m) { return m.length > 0 })
+        var restants = {}
+        mots.forEach(function(m) { restants[m.toLowerCase()] = m })
+        var resultat = []
+        var liste = categoriesDe(compte, chemin).liste
+        for (var i = 0; i < liste.length; ++i) {
+            var cle = liste[i].motCle.toLowerCase()
+            if (restants[cle] !== undefined) {
+                resultat.push({ motCle: liste[i].motCle, nom: liste[i].nom, couleur: liste[i].couleur })
+                delete restants[cle]
+            }
+        }
+        for (var r in restants)
+            resultat.push({ motCle: restants[r], nom: restants[r], couleur: "#8A8F98" })
+        return resultat
+    }
+
+    /// Mots-clés d'une ligne, une catégorie posée ou retirée — triés comme le
+    /// noyau les rend (protocole::mots_cles).
+    function modifierMotsCles(motsCles, motCle, poser) {
+        var mots = (motsCles || "").split(" ").filter(function(m) {
+            return m.length > 0 && m.toLowerCase() !== motCle.toLowerCase()
+        })
+        if (poser)
+            mots.push(motCle)
+        mots.sort(function(a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0 })
+        return mots.join(" ")
+    }
+
+    /// Rangs des lignes choisies : la ligne choisie dans « Toutes les BàL »
+    /// et la recherche globale, sinon celles de la sélection.
+    function rangsChoisis() {
+        var rangs = []
+        for (var i = 0; i < modeleMessages.count; ++i) {
+            var m = modeleMessages.get(i)
+            if (listeMulti ? cleResultat(m.compte, m.chemin, m.uid) === cleChoisie : selection[m.uid] === true)
+                rangs.push(i)
+        }
+        return rangs
+    }
+
+    /// Compte et dossier des messages choisis.
+    function dossierDesChoisis() {
+        if (listeMulti) {
+            var rangs = rangsChoisis()
+            if (rangs.length === 0)
+                return { compte: 0, chemin: "" }
+            var m = modeleMessages.get(rangs[0])
+            return { compte: m.compte, chemin: m.chemin }
+        }
+        return { compte: boite.compteCourant, chemin: boite.dossierCourant }
+    }
+
+    /// Ce que propose le sous-menu « Catégoriser » : les catégories de la
+    /// boîte des messages choisis — et les mots-clés qu'ils portent hors
+    /// catalogue —, et pour chacune si tous la portent ou certains.
+    function etatCategories() {
+        var d = dossierDesChoisis()
+        var c = {}
+        try { c = JSON.parse(boite.categories(d.compte, d.chemin)) } catch (e) { c = {} }
+        var liste = (c.liste || []).slice()
+        var rangs = rangsChoisis()
+        var comptes = {}
+        var connus = {}
+        liste.forEach(function(x) { connus[x.motCle.toLowerCase()] = true })
+        for (var i = 0; i < rangs.length; ++i) {
+            var mots = (modeleMessages.get(rangs[i]).motsCles || "").split(" ")
+            for (var j = 0; j < mots.length; ++j) {
+                if (mots[j].length === 0)
+                    continue
+                var cle = mots[j].toLowerCase()
+                comptes[cle] = (comptes[cle] || 0) + 1
+                if (!connus[cle]) {
+                    connus[cle] = true
+                    liste.push({ motCle: mots[j], nom: mots[j], couleur: "#8A8F98", origine: false })
+                }
+            }
+        }
+        var porte = {}
+        for (var k in comptes)
+            porte[k] = comptes[k] === rangs.length ? "tous" : "certains"
+        return { liste: liste, porte: porte, refusees: c.refusees === true || d.compte === 0,
+                 aucune: Object.keys(comptes).length === 0 }
+    }
+
+    /// Pose (ou retire) une catégorie sur les messages choisis.
+    function basculerCategorie(motCle, poser) {
+        var rangs = rangsChoisis()
+        if (rangs.length === 0)
+            return
+        if (listeMulti) {
+            var m = modeleMessages.get(rangs[0])
+            if (!boite.marquerCategorieDans(m.compte, m.chemin, String(m.uid), motCle, poser) && boite.erreur.length > 0)
+                messageEtat.texte = boite.erreur
+        } else {
+            var uids = rangs.map(function(i) { return modeleMessages.get(i).uid })
+            if (!boite.marquerCategorie(uids.join(","), motCle, poser) && boite.erreur.length > 0)
+                messageEtat.texte = boite.erreur
+        }
+        for (var i = 0; i < rangs.length; ++i)
+            modeleMessages.setProperty(rangs[i], "motsCles",
+                                       modifierMotsCles(modeleMessages.get(rangs[i]).motsCles, motCle, poser))
+        majCategoriesAffichees()
+    }
+
+    /// « Effacer toutes les catégories » des messages choisis.
+    function effacerCategories() {
+        var etat = etatCategories()
+        for (var k in etat.porte)
+            basculerCategorie(etat.liste.filter(function(x) { return x.motCle.toLowerCase() === k })[0].motCle, false)
+    }
+
+    /// Première couleur de la palette qu'aucune catégorie de `liste` ne prend.
+    function couleurLibre(liste) {
+        var prises = {}
+        var dejaLa = liste || []
+        dejaLa.forEach(function(x) { prises[(x.couleur || "").toUpperCase()] = true })
+        for (var i = 0; i < paletteCategories.length; ++i)
+            if (!prises[paletteCategories[i]])
+                return paletteCategories[i]
+        return paletteCategories[0]
+    }
+
+    /// Nouvelle catégorie dans la boîte des messages choisis ; `appliquer` :
+    /// posée aussitôt sur eux.
+    function nouvelleCategorie(appliquer) {
+        var d = dossierDesChoisis()
+        dlgCategorie.ouvrir(d.compte, d.chemin, "", "", couleurLibre(categoriesDe(d.compte, d.chemin).liste), appliquer)
+    }
+
+    function gererCategories() {
+        var d = dossierDesChoisis()
+        dlgCategories.ouvrir(d.compte, d.chemin)
+    }
+
+    /// Cherche les messages d'une catégorie, comme on taperait
+    /// « catégorie:"Devis" » dans la recherche.
+    function chercherCategorie(nom) {
+        lancerRecherche(qsTr("catégorie") + ":\"" + nom + "\"")
+    }
+
+    /// Catégories du message affiché, pour l'en-tête du volet de lecture.
+    function majCategoriesAffichees() {
+        var i = -1
+        if (uidCourant > 0)
+            i = indexCourant >= 0 && indexCourant < modeleMessages.count
+                    && modeleMessages.get(indexCourant).uid === uidCourant ? indexCourant : indexDe(uidCourant)
+        if (i < 0) {
+            categoriesAffichees = []
+            return
+        }
+        var l = modeleMessages.get(i)
+        categoriesAffichees = listeMulti ? pastilles(l.compte, l.chemin, l.motsCles || "")
+                                         : pastilles(boite.compteCourant, boite.dossierCourant, l.motsCles || "")
+    }
+
     /// « mardi 30 septembre à 08:00 » pour une heure d'envoi (secondes Unix).
     function heureEnvoi(secondes) {
         var d = new Date(secondes * 1000)
@@ -2609,7 +2812,7 @@ ApplicationWindow {
     function dialogueOuvert() {
         return dlgCompte.visible || dlgConsentement.visible || dlgDeplacer.visible || dlgRetrait.visible
             || dlgAide.visible || dlgAPropos.visible || dlgLien.visible || dlgIdentite.visible
-            || dlgNouveauDossier.visible
+            || dlgNouveauDossier.visible || dlgCategorie.visible || dlgCategories.visible
             // Sur téléphone, la rédaction couvre la fenêtre principale.
             || (compact && Object.keys(redactions).length > 0)
     }
@@ -3328,6 +3531,7 @@ ApplicationWindow {
             colonneListe.vueMessages.positionViewAtBeginning()
         oublierAbsents(absents)
         majInfoDossier()
+        majCategoriesAffichees()
     }
 
     /// Vrai si la liste est tout en haut. Des messages qui arrivent au-dessus
@@ -3389,6 +3593,7 @@ ApplicationWindow {
             absents[uidCourant] = true
         oublierAbsents(absents)
         majInfoDossier()
+        majCategoriesAffichees()
     }
 
     // Pagination (0.5.9) : ouvrir un dossier de 40 000 messages figeait la
@@ -4151,6 +4356,7 @@ ApplicationWindow {
             adresseAffichee = ligne.adresse
         }
         confirmationDemandee = ""
+        majCategoriesAffichees()
         afficherTexte(qsTr("Chargement…"))
         // Le contenu après un court délai : en parcourant la liste au clavier,
         // seul le message où l'on s'arrête est chargé (et marqué lu).
@@ -5082,6 +5288,13 @@ ApplicationWindow {
             if (essai.scenario === "menu-affichage" || essai.scenario === "menu-message"
                     || essai.scenario === "menu-saisie")
                 scenarios.lancerScenarioMenuOuvert()
+            // Scénarios de la 0.6.15 : catégories de couleur ; liste, menu et
+            // dialogue pour une capture.
+            if (essai.scenario === "categories")
+                scenarios.lancerScenarioCategories()
+            if (essai.scenario === "liste-categories" || essai.scenario === "menu-categories"
+                    || essai.scenario === "gerer-categories")
+                scenarios.lancerScenarioCapturesCategories()
             // Scénario « partagees » (0.6.8) : une boîte partagée par le
             // serveur, proposée dans « De ».
             if (essai.scenario === "partagees")

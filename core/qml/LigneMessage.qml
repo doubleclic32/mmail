@@ -31,7 +31,8 @@ SwipeDelegate {
                       model.pieces === true ? qsTr("pièce jointe") : "",
                       model.reponduTous === true ? qsTr("répondu à tous") : model.repondu === true ? qsTr("répondu") : "",
                       model.transfere === true ? qsTr("transféré") : "",
-                      model.suivi === true ? qsTr("suivi") : ""]
+                      model.suivi === true ? qsTr("suivi") : "",
+                      ligne.pastilles.map(function(p) { return qsTr("catégorie %1").arg(p.nom) }).join(", ")]
                      .filter(function(x) { return x }).join(", ")
     Accessible.selectable: true
     Accessible.selected: choisi
@@ -43,6 +44,11 @@ SwipeDelegate {
     // tiers de la largeur : lâchée passé le tiers, la ligne part. L'action
     // attend derrière le bandeau « Annuler » (cf. fenetre.glisserLigne).
     readonly property string roleLigne: fenetre.listeMulti ? (model.role || "") : fenetre.roleCourant
+    // Catégories du message (0.6.15) : [{motCle, nom, couleur}], dans l'ordre
+    // du catalogue de sa boîte.
+    readonly property var pastilles: fenetre.pastilles(fenetre.listeMulti ? model.compte : boite.compteCourant,
+                                                       fenetre.listeMulti ? model.chemin : boite.dossierCourant,
+                                                       model.motsCles || "", boite.revisionCategories)
     // Éléments envoyés : les destinataires, comme Outlook, plutôt que
     // l'expéditeur, partout soi-même (demande de Fabienne, 18/10). Tant que
     // le dossier n'a pas été relu, ou sans « À » ni « Cc », l'expéditeur.
@@ -205,6 +211,19 @@ SwipeDelegate {
                      : model.lu ? fenetre.palette.windowText : fenetre.texteAccent
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+            }
+            // Catégories : un carré de leur couleur en bout de ligne, avant
+            // le drapeau, comme la colonne « Catégories » d'Outlook ; leur
+            // nom au survol.
+            Repeater {
+                model: ligne.pastilles
+                PastilleCategorie {
+                    required property var modelData
+                    nom: modelData.nom
+                    couleur: modelData.couleur
+                    taille: Math.round(dateLigne.implicitHeight * 0.72)
+                    Layout.alignment: Qt.AlignVCenter
+                }
             }
         }
         // Recherche dans toutes les boîtes : le dossier du message, sur

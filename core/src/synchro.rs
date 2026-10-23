@@ -24,7 +24,8 @@ use std::collections::HashSet;
 use crate::imap::{self, Client};
 use crate::index::ligne_index;
 use crate::magasin::{self, Magasin, MessageLocal};
-use crate::protocole::{adresses_partagees, ensemble_uid, EtatDossier};
+use crate::categories::{self, Catalogue, Changement};
+use crate::protocole::{adresses_partagees, boites_partagees, ensemble_uid, EtatDossier};
 
 /// Échec d'une opération qui touche à la fois le serveur et l'index.
 #[derive(Debug)]
@@ -89,13 +90,63 @@ impl Bilan {
 
 /// Relit l'arborescence d'un compte et les compteurs de tous ses dossiers,
 /// et note les adresses de ses boîtes partagées, proposées dans le champ
-/// « De » (0.6.8).
-pub fn arborescence(client: &mut Client, magasin: &Magasin, compte: i64) -> Result<(), Echec> {
+/// « De » (0.6.8). Relit aussi les catalogues de catégories du compte et de
+/// ses boîtes partagées (0.6.15) : rend vrai si l'un d'eux a changé.
+pub fn arborescence(client: &mut Client, magasin: &Magasin, compte: i64) -> Result<bool, Echec> {
     let (dossiers, statuts) = client.dossiers_et_compteurs()?;
     magasin.poser_dossiers(compte, &dossiers)?;
     magasin.poser_compteurs(compte, &statuts)?;
     let espaces = client.espaces_autres()?;
     magasin.poser_partagees(compte, &adresses_partagees(&dossiers, &espaces))?;
+    let mut boites = vec!["INBOX".to_string()];
+    boites.extend(boites_partagees(&dossiers, &espaces).into_iter().map(|(_, chemin)| chemin));
+    let mut change = false;
+    for boite in boites {
+        change |= relire_catalogue(client, magasin, compte, &boite)?;
+    }
+    Ok(change)
+}
+
+/// Relit le catalogue de catégories d'une boîte sur le serveur, s'il sait le
+/// garder (`METADATA`). Un refus du serveur (boîte sans droit de lecture) le
+/// laisse tel quel. Rend vrai s'il a changé.
+pub fn relire_catalogue(client: &mut Client, magasin: &Magasin, compte: i64, boite: &str) -> Result<bool, Echec> {
+    if !client.sait("METADATA") {
+        return Ok(false);
+    }
+    match client.lire_metadonnee(boite, categories::ENTREE) {
+        Ok(valeur) => {
+            let valeur = Catalogue::lire(valeur.as_deref().unwrap_or("")).ecrire();
+            Ok(magasin.poser_catalogue(compte, boite, &valeur, true)?)
+        }
+        Err(imap::Erreur::Refuse(_)) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Change le catalogue d'une boîte : relu sur le serveur juste avant, pour ne
+/// rien perdre de ce qu'un autre poste y a mis, puis réécrit. Sans
+/// `METADATA`, le catalogue du poste seul.
+pub fn changer_catalogue(
+    client: &mut Client,
+    magasin: &Magasin,
+    compte: i64,
+    boite: &str,
+    changement: &Changement,
+) -> Result<(), Echec> {
+    let serveur = client.sait("METADATA");
+    let actuel = if serveur {
+        client.lire_metadonnee(boite, categories::ENTREE)?.unwrap_or_default()
+    } else {
+        magasin.catalogue(compte, boite)?.map(|(v, _)| v).unwrap_or_default()
+    };
+    let mut catalogue = Catalogue::lire(&actuel);
+    catalogue.appliquer(changement).map_err(|m| Echec::Imap(imap::Erreur::Refuse(m)))?;
+    let valeur = catalogue.ecrire();
+    if serveur {
+        client.ecrire_metadonnee(boite, categories::ENTREE, Some(&valeur))?;
+    }
+    magasin.poser_catalogue(compte, boite, &valeur, serveur)?;
     Ok(())
 }
 
@@ -278,6 +329,25 @@ pub fn marquer_suivi(
     Ok(())
 }
 
+/// Pose ou retire une catégorie (mot-clé) sur des messages d'un dossier.
+pub fn marquer_categorie(
+    client: &mut Client,
+    magasin: &Magasin,
+    compte: i64,
+    chemin: &str,
+    uids: &[u32],
+    mot_cle: &str,
+    present: bool,
+) -> Result<(), Echec> {
+    let id = magasin.dossier_id(compte, chemin)?;
+    if !crate::protocole::mot_cle_valide(mot_cle) {
+        return Err(Echec::Imap(imap::Erreur::Refuse(format!("catégorie invalide : {mot_cle}"))));
+    }
+    marquer_au_serveur(client, magasin, id, chemin, uids, mot_cle, present)?;
+    magasin.marquer_categorie(id, uids, mot_cle, present)?;
+    Ok(())
+}
+
 /// Pose un drapeau sur le serveur. L'interface a déjà écrit l'index : si le
 /// serveur ne suit pas, la reprise QRESYNC ne le verra jamais (rien n'a changé
 /// de son côté). Le `HIGHESTMODSEQ` du dossier est alors oublié, ce qui fait
@@ -327,7 +397,7 @@ mod tests {
             .map(|uid| MessageLocal { uid, horodatage: uid as i64, sujet: format!("m{uid}"), ..Default::default() })
             .collect();
         m.poser_messages(id, &lignes).unwrap();
-        m.poser_etat(id, &EtatDossier { messages: 3, uid_validity: 1, uid_next: 4, highest_mod_seq: 10 })
+        m.poser_etat(id, &EtatDossier { messages: 3, uid_validity: 1, uid_next: 4, highest_mod_seq: 10, ..Default::default() })
             .unwrap();
         (m, compte, id)
     }

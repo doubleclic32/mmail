@@ -35,6 +35,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
+use crate::categories::{self, Catalogue, Categorie, Changement};
 use crate::deplacement::{self, Rapport};
 use crate::imap::{Client, Erreur};
 use crate::magasin::{DossierLocal, Magasin, MessageLocal};
@@ -68,6 +69,9 @@ pub mod qobject {
         /// après (`marquageLuDiffere`), -1 jamais — à la main seulement
         /// (0.6.9, demande de Gwenaëlle).
         #[qproperty(i32, delai_lu, cxx_name = "delaiLu")]
+        /// Augmente à chaque changement d'un catalogue de catégories (0.6.15) :
+        /// l'interface relit alors `categories()`.
+        #[qproperty(i32, revision_categories, cxx_name = "revisionCategories")]
         type Boite = super::BoiteRust;
 
         /// Ouvre l'index local du profil. Local et immédiat ; à appeler avant
@@ -348,6 +352,56 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "marquerSuiviDans"]
         fn marquer_suivi_dans(self: Pin<&mut Boite>, compte: i32, chemin: &QString, uids: &QString, suivi: bool) -> bool;
+
+        /// Catégories proposées pour un dossier (0.6.15) — `compte` 0 : le
+        /// dossier ouvert —, en JSON : `{compte, boite, serveur, refusees,
+        /// creees, max, liste: [{motCle, nom, couleur, origine}]}`. `boite` :
+        /// la boîte de réception dont le catalogue vaut pour ce dossier ;
+        /// `serveur` : catalogue gardé sur le serveur, sinon sur ce poste ;
+        /// `refusees` : le serveur refuse les catégories dans ce dossier.
+        #[qinvokable]
+        #[cxx_name = "categories"]
+        fn categories(&self, compte: i32, chemin: &QString) -> QString;
+
+        /// Pose ou retire une catégorie (mot-clé) sur des messages du dossier
+        /// ouvert — UID séparés par des virgules.
+        #[qinvokable]
+        #[cxx_name = "marquerCategorie"]
+        fn marquer_categorie(self: Pin<&mut Boite>, uids: &QString, mot_cle: &QString, present: bool) -> bool;
+
+        /// Comme `marquerCategorie`, pour un dossier donné de n'importe quel
+        /// compte (« Toutes les BàL », recherche globale).
+        #[qinvokable]
+        #[cxx_name = "marquerCategorieDans"]
+        fn marquer_categorie_dans(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            uids: &QString,
+            mot_cle: &QString,
+            present: bool,
+        ) -> bool;
+
+        /// Crée (`mot_cle` vide) ou modifie une catégorie du catalogue qui vaut
+        /// pour ce dossier. Rend son mot-clé ; vide en cas de refus, motif dans
+        /// `erreur`.
+        #[qinvokable]
+        #[cxx_name = "poserCategorie"]
+        fn poser_categorie(
+            self: Pin<&mut Boite>,
+            compte: i32,
+            chemin: &QString,
+            mot_cle: &QString,
+            nom: &QString,
+            couleur: &QString,
+        ) -> QString;
+
+        /// Retire une catégorie du catalogue qui vaut pour ce dossier ; une
+        /// catégorie d'origine reprend son nom et sa couleur. Les messages
+        /// gardent leur mot-clé.
+        #[qinvokable]
+        #[cxx_name = "retirerCategorie"]
+        fn retirer_categorie(self: Pin<&mut Boite>, compte: i32, chemin: &QString, mot_cle: &QString) -> bool;
 
         /// Répond à une demande de confirmation de lecture : l'envoie, ou
         /// l'ignore ; dans les deux cas, la demande ne sera plus posée.
@@ -1042,6 +1096,11 @@ enum Commande {
     /// mis sa ligne à jour et ne relit pas la liste.
     MarquerLu { chemin: String, uids: Vec<u32>, lu: bool, discret: bool },
     MarquerSuivi { chemin: String, uids: Vec<u32>, suivi: bool },
+    /// Poser ou retirer une catégorie (0.6.15).
+    MarquerCategorie { chemin: String, uids: Vec<u32>, mot_cle: String, present: bool },
+    /// Changer le catalogue des catégories d'une boîte (chemin de sa boîte de
+    /// réception), relu sur le serveur juste avant.
+    Catalogue { boite: String, changement: Changement },
     /// Envoyer une confirmation de lecture (identifiants présents) ou
     /// l'ignorer (absents) ; le message reçoit `$MDNSent` dans les deux cas.
     Confirmer { chemin: String, uid: u32, identifiants: Option<Identifiants> },
@@ -1251,6 +1310,10 @@ pub struct BoiteRust {
     marquages: HashMap<(i64, u32), u64>,
     agenda_occupe: bool,
     delai_lu: i32,
+    revision_categories: i32,
+    /// Empreinte des catalogues rangés à la dernière relecture : un
+    /// changement fait augmenter `revision_categories`.
+    empreinte_catalogues: u64,
     /// Message affiché non lu dont `delai_lu` diffère le marquage ; oublié dès
     /// qu'un autre message est demandé.
     lu_differe: Option<LuDiffere>,
@@ -1331,6 +1394,8 @@ impl Default for BoiteRust {
             marquages: HashMap::new(),
             agenda_occupe: false,
             delai_lu: 0,
+            revision_categories: 0,
+            empreinte_catalogues: 0,
             lu_differe: None,
             authentifies: HashSet::new(),
             sauvegarde_en_cours: false,
@@ -2579,14 +2644,16 @@ impl qobject::Boite {
         let Some(magasin) = self.magasin.as_ref() else {
             return QString::from("[]");
         };
-        let texte = texte.to_string();
+        let (texte, categories) = criteres_recherche(magasin, &texte.to_string());
         if partout {
-            return QString::from(&json_trouves(&magasin.chercher(None, &texte, RECHERCHE_MAX).unwrap_or_default()));
+            return QString::from(&json_trouves(
+                &magasin.chercher_avec(None, &texte, &categories, RECHERCHE_MAX).unwrap_or_default(),
+            ));
         }
         let Some((_, _, id)) = self.courant.as_ref() else {
             return QString::from("[]");
         };
-        let trouves = magasin.chercher(Some(*id), &texte, RECHERCHE_MAX).unwrap_or_default();
+        let trouves = magasin.chercher_avec(Some(*id), &texte, &categories, RECHERCHE_MAX).unwrap_or_default();
         let messages: Vec<MessageLocal> = trouves.into_iter().map(|t| t.message).collect();
         QString::from(&json_messages(&messages))
     }
@@ -2777,6 +2844,169 @@ impl qobject::Boite {
         }
         self.as_mut().reviser();
         self.as_mut().envoyer(compte, Commande::MarquerSuivi { chemin, uids, suivi })
+    }
+
+    /// Compte et chemin désignés par l'interface : `compte` 0, le dossier
+    /// ouvert.
+    fn dossier_designe(&self, compte: i32, chemin: &QString) -> Option<(i64, String)> {
+        if compte == 0 {
+            return self.courant.as_ref().map(|(c, chemin, _)| (*c, chemin.clone()));
+        }
+        Some((compte as i64, chemin.to_string()))
+    }
+
+    pub fn categories(&self, compte: i32, chemin: &QString) -> QString {
+        let Some(magasin) = self.magasin.as_ref() else {
+            return QString::from("{}");
+        };
+        let Some((compte, chemin)) = self.dossier_designe(compte, chemin) else {
+            return QString::from("{}");
+        };
+        let boite = boite_categories(magasin, compte, &chemin);
+        let (valeur, serveur) = magasin.catalogue(compte, &boite).ok().flatten().unwrap_or_default();
+        let catalogue = Catalogue::lire(&valeur);
+        let refusees = magasin
+            .dossier_id(compte, &chemin)
+            .and_then(|id| magasin.sans_mots_cles(id))
+            .unwrap_or(false);
+        let liste: Vec<serde_json::Value> = catalogue
+            .liste()
+            .into_iter()
+            .map(|c| {
+                serde_json::json!({
+                    "motCle": c.mot_cle,
+                    "nom": c.nom,
+                    "couleur": c.couleur,
+                    "origine": categories::est_d_origine(&c.mot_cle),
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "compte": compte,
+            "boite": boite,
+            "serveur": serveur,
+            "refusees": refusees,
+            "creees": catalogue.creees(),
+            "max": categories::MAX_CREEES,
+            "liste": liste,
+        });
+        QString::from(&json.to_string())
+    }
+
+    pub fn marquer_categorie(self: Pin<&mut Self>, uids: &QString, mot_cle: &QString, present: bool) -> bool {
+        let Some((compte, chemin, _)) = self.courant.clone() else {
+            return false;
+        };
+        self.marquer_categorie_de(compte, chemin, lire_uids(uids), mot_cle.to_string(), present)
+    }
+
+    pub fn marquer_categorie_dans(
+        self: Pin<&mut Self>,
+        compte: i32,
+        chemin: &QString,
+        uids: &QString,
+        mot_cle: &QString,
+        present: bool,
+    ) -> bool {
+        self.marquer_categorie_de(compte as i64, chemin.to_string(), lire_uids(uids), mot_cle.to_string(), present)
+    }
+
+    fn marquer_categorie_de(
+        mut self: Pin<&mut Self>,
+        compte: i64,
+        chemin: String,
+        uids: Vec<u32>,
+        mot_cle: String,
+        present: bool,
+    ) -> bool {
+        if uids.is_empty() || !crate::protocole::mot_cle_valide(&mot_cle) {
+            return false;
+        }
+        if let Some(magasin) = self.magasin.as_ref() {
+            if let Ok(id) = magasin.dossier_id(compte, &chemin) {
+                if magasin.sans_mots_cles(id).unwrap_or(false) {
+                    self.as_mut().set_erreur(QString::from("ce serveur ne garde pas les catégories"));
+                    return false;
+                }
+                let _ = magasin.marquer_categorie(id, &uids, &mot_cle, present);
+            }
+        }
+        self.as_mut().reviser();
+        self.as_mut().envoyer(compte, Commande::MarquerCategorie { chemin, uids, mot_cle, present })
+    }
+
+    pub fn poser_categorie(
+        mut self: Pin<&mut Self>,
+        compte: i32,
+        chemin: &QString,
+        mot_cle: &QString,
+        nom: &QString,
+        couleur: &QString,
+    ) -> QString {
+        let Some((compte, chemin)) = self.dossier_designe(compte, chemin) else {
+            return QString::from("");
+        };
+        let Some(magasin) = self.magasin.as_ref() else {
+            return QString::from("");
+        };
+        let boite = boite_categories(magasin, compte, &chemin);
+        let (valeur, serveur) = magasin.catalogue(compte, &boite).ok().flatten().unwrap_or_default();
+        let catalogue = Catalogue::lire(&valeur);
+        let mut mot_cle = mot_cle.to_string();
+        if mot_cle.is_empty() {
+            let pris: Vec<String> = catalogue.liste().into_iter().map(|c| c.mot_cle).collect();
+            mot_cle = categories::mot_cle_pour(&nom.to_string(), &pris);
+        }
+        let changement = Changement::Poser(Categorie {
+            mot_cle: mot_cle.clone(),
+            nom: nom.to_string().trim().to_string(),
+            couleur: couleur.to_string().to_ascii_uppercase(),
+        });
+        if self.as_mut().changer_catalogue(compte, boite, catalogue, serveur, changement) {
+            QString::from(&mot_cle)
+        } else {
+            QString::from("")
+        }
+    }
+
+    pub fn retirer_categorie(mut self: Pin<&mut Self>, compte: i32, chemin: &QString, mot_cle: &QString) -> bool {
+        let Some((compte, chemin)) = self.dossier_designe(compte, chemin) else {
+            return false;
+        };
+        let Some(magasin) = self.magasin.as_ref() else {
+            return false;
+        };
+        let boite = boite_categories(magasin, compte, &chemin);
+        let (valeur, serveur) = magasin.catalogue(compte, &boite).ok().flatten().unwrap_or_default();
+        let catalogue = Catalogue::lire(&valeur);
+        self.as_mut()
+            .changer_catalogue(compte, boite, catalogue, serveur, Changement::Retirer(mot_cle.to_string()))
+    }
+
+    /// Applique un changement au catalogue rangé — l'interface le voit tout de
+    /// suite —, puis le confie au fil du compte, qui le reporte sur le
+    /// serveur. Hors connexion, le serveur reprend la main à la relecture
+    /// suivante : le changement n'y est pas.
+    fn changer_catalogue(
+        mut self: Pin<&mut Self>,
+        compte: i64,
+        boite: String,
+        mut catalogue: Catalogue,
+        serveur: bool,
+        changement: Changement,
+    ) -> bool {
+        if let Err(motif) = catalogue.appliquer(&changement) {
+            self.as_mut().set_erreur(QString::from(&motif));
+            return false;
+        }
+        if let Some(magasin) = self.magasin.as_ref() {
+            let _ = magasin.poser_catalogue(compte, &boite, &catalogue.ecrire(), serveur);
+        }
+        self.as_mut().verifier_catalogues();
+        if self.sessions.contains_key(&compte) || self.identites.contains_key(&compte) {
+            self.as_mut().envoyer(compte, Commande::Catalogue { boite, changement });
+        }
+        true
     }
 
     pub fn repondre_confirmation(mut self: Pin<&mut Self>, uid: i32, envoyer: bool) -> bool {
@@ -3337,6 +3567,24 @@ impl qobject::Boite {
     fn reviser(mut self: Pin<&mut Self>) {
         let suivante = self.revision.wrapping_add(1);
         self.as_mut().set_revision(suivante);
+        self.as_mut().verifier_catalogues();
+    }
+
+    /// Fait augmenter `revision_categories` si un catalogue rangé a changé —
+    /// relu par un fil de compte, ou changé ici.
+    fn verifier_catalogues(mut self: Pin<&mut Self>) {
+        use std::hash::{Hash, Hasher};
+        let Some(valeurs) = self.magasin.as_ref().and_then(|m| m.tous_les_catalogues().ok()) else {
+            return;
+        };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        valeurs.hash(&mut h);
+        let empreinte = h.finish();
+        if empreinte != self.empreinte_catalogues {
+            self.as_mut().rust_mut().empreinte_catalogues = empreinte;
+            let suivante = self.revision_categories.wrapping_add(1);
+            self.as_mut().set_revision_categories(suivante);
+        }
     }
 
     fn poser_courant(mut self: Pin<&mut Self>, courant: Option<(i64, String, i64)>) {
@@ -3908,6 +4156,49 @@ fn image_autorisee(profil: &str, adresse: &str) -> Option<(String, Vec<u8>)> {
 }
 
 /// « 3,5,7 » → [3, 5, 7] ; ce qui n'est pas un nombre est ignoré.
+/// Mots et critères de catégorie d'un texte cherché (cf.
+/// `categories::separer_criteres`) : chaque nom devient les mots-clés qu'il
+/// désigne dans les catalogues rangés.
+fn criteres_recherche(magasin: &Magasin, texte: &str) -> (String, Vec<Vec<String>>) {
+    let (mots, noms) = categories::separer_criteres(texte);
+    if noms.is_empty() {
+        return (mots, Vec::new());
+    }
+    let catalogues = magasin.tous_les_catalogues().unwrap_or_default();
+    (mots, noms.iter().map(|n| categories::mots_cles_nommes(n, &catalogues)).collect())
+}
+
+/// Boîte dont le catalogue de catégories vaut pour un dossier (0.6.15) : la
+/// boîte partagée qui le contient — chemin de sa boîte de réception, comme
+/// « Shared/contact@exemple.fr/INBOX » —, à défaut la boîte de réception du
+/// compte.
+fn boite_categories(magasin: &Magasin, compte: i64, chemin: &str) -> String {
+    let partagees = magasin.compte_par_id(compte).ok().flatten().map(|c| c.partagees).unwrap_or_default();
+    if partagees.is_empty() {
+        return "INBOX".into();
+    }
+    let dossiers = magasin.dossiers(compte).unwrap_or_default();
+    let separateur = dossiers
+        .iter()
+        .find(|d| d.chemin == chemin)
+        .map(|d| d.separateur.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/".into());
+    let segments: Vec<&str> = chemin.split(separateur.as_str()).collect();
+    for (i, segment) in segments.iter().enumerate() {
+        let adresse = crate::protocole::decoder_utf7(segment);
+        if partagees.iter().any(|a| a.eq_ignore_ascii_case(&adresse)) {
+            let racine = segments[..=i].join(&separateur);
+            let reception = format!("{racine}{separateur}INBOX");
+            if dossiers.iter().any(|d| d.chemin == reception && d.selectionnable) {
+                return reception;
+            }
+            return racine;
+        }
+    }
+    "INBOX".into()
+}
+
 fn lire_uids(texte: &QString) -> Vec<u32> {
     texte
         .to_string()
@@ -4114,9 +4405,9 @@ impl Travail {
             Commande::Deplacer { .. } => {
                 Issue::DeplacementEchoue { message: format!("{motif} — messages non déplacés") }
             }
-            Commande::MarquerLu { chemin, .. } | Commande::MarquerSuivi { chemin, .. } => {
-                Issue::MarquageAbandonne { chemin }
-            }
+            Commande::MarquerLu { chemin, .. }
+            | Commande::MarquerSuivi { chemin, .. }
+            | Commande::MarquerCategorie { chemin, .. } => Issue::MarquageAbandonne { chemin },
             _ => return,
         };
         self.remettre(issue);
@@ -4338,7 +4629,7 @@ impl Travail {
         let compte = self.compte;
         match commande {
             Commande::Arborescence => Some(match synchro::arborescence(&mut e.client, &e.magasin, compte) {
-                Ok(()) => Issue::Arborescence,
+                Ok(_) => Issue::Arborescence,
                 Err(err) => echec("dossier", format!("lecture des dossiers : {err}"), &err),
             }),
             Commande::OuvrirDossier(chemin) => {
@@ -4379,6 +4670,19 @@ impl Travail {
                     Err(err) => echec("tri", format!("drapeau de suivi : {err}"), &err),
                 })
             }
+            Commande::MarquerCategorie { chemin, uids, mot_cle, present } => Some(
+                match synchro::marquer_categorie(&mut e.client, &e.magasin, compte, &chemin, &uids, &mot_cle, present) {
+                    Ok(()) => Issue::Marque { discret: false },
+                    Err(err) => echec("tri", format!("catégorie : {err}"), &err),
+                },
+            ),
+            Commande::Catalogue { boite, changement } => Some(
+                match synchro::changer_catalogue(&mut e.client, &e.magasin, compte, &boite, &changement) {
+                    // Le catalogue rangé a pu changer : l'interface le relit.
+                    Ok(()) => Issue::Marque { discret: true },
+                    Err(err) => echec("tri", format!("catégories : {err}"), &err),
+                },
+            ),
             Commande::Confirmer { chemin, uid, identifiants } => Some(match self.confirmer(e, &chemin, uid, identifiants) {
                 Ok(()) => Issue::Marque { discret: false },
                 Err(message) => Issue::Echec { etape: "message", message, session_perdue: false },
@@ -4962,7 +5266,8 @@ impl Travail {
     /// première lecture n'est pas finie, rend ses résultats comme les autres.
     fn chercher_au_serveur(&self, e: &mut Etabli, chemin: &str, texte: &str) -> Result<Vec<u32>, Echec> {
         assurer_selection(&mut e.client, chemin)?;
-        let uids = e.client.chercher_texte(texte)?;
+        let (mots, categories) = criteres_recherche(&e.magasin, texte);
+        let uids = e.client.chercher(&mots, &categories)?;
         let id = e.magasin.dossier_id(self.compte, chemin)?;
         synchro::completer(&e.magasin, &mut e.client, id, &uids, RECHERCHE_MAX)?;
         Ok(uids)
@@ -5760,7 +6065,7 @@ fn json_messages(messages: &[MessageLocal]) -> String {
 
 fn json_message(m: &MessageLocal) -> String {
     format!(
-        r#"{{"uid":{},"h":{},"expediteur":{},"adresse":{},"destinataires":{},"sujet":{},"date":{},"taille":{},"lu":{},"repondu":{},"reponduTous":{},"transfere":{},"pieces":{},"suivi":{},"importance":{}}}"#,
+        r#"{{"uid":{},"h":{},"expediteur":{},"adresse":{},"destinataires":{},"sujet":{},"date":{},"taille":{},"lu":{},"repondu":{},"reponduTous":{},"transfere":{},"pieces":{},"suivi":{},"importance":{},"motsCles":{}}}"#,
         m.uid,
         m.horodatage,
         texte_json(&m.expediteur),
@@ -5775,7 +6080,8 @@ fn json_message(m: &MessageLocal) -> String {
         m.transfere,
         m.pieces,
         m.suivi,
-        m.importance
+        m.importance,
+        texte_json(&m.mots_cles)
     )
 }
 
@@ -5878,6 +6184,8 @@ mod tests {
                 Commande::Piece { uid, .. } => format!("piece {uid}"),
                 Commande::MarquerLu { .. } => "marquer".into(),
                 Commande::MarquerSuivi { .. } => "suivi".into(),
+                Commande::MarquerCategorie { .. } => "categorie".into(),
+                Commande::Catalogue { .. } => "catalogue".into(),
                 Commande::Confirmer { .. } => "confirmer".into(),
                 Commande::EnvoyerDifferes { .. } => "differes".into(),
                 Commande::Deplacer { .. } => "deplacer".into(),

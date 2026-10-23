@@ -136,6 +136,26 @@ ColumnLayout {
                 color: fenetre.importanceCourante > 0 ? fenetre.couleurAlerte : "#1a4480"
                 font.bold: true
             }
+            // Catégories du message (0.6.15), à leur nom : un clic cherche
+            // les messages de la même catégorie.
+            Flow {
+                Layout.fillWidth: true
+                Layout.topMargin: 3
+                Layout.bottomMargin: 2
+                spacing: 6
+                visible: fenetre.uidCourant > 0 && fenetre.categoriesAffichees.length > 0
+                Repeater {
+                    model: fenetre.categoriesAffichees
+                    PastilleCategorie {
+                        required property var modelData
+                        avecNom: true
+                        nom: modelData.nom
+                        couleur: modelData.couleur
+                        taillePolice: fenetre.tailleMessage * 0.85
+                        onClique: fenetre.chercherCategorie(modelData.nom)
+                    }
+                }
+            }
         }
     }
 

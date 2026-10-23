@@ -476,6 +476,27 @@ impl Client {
         Ok(())
     }
 
+    /// Valeur d'une métadonnée (`GETMETADATA`, RFC 5464) d'un dossier — `""`
+    /// pour le serveur. `None` : entrée absente.
+    pub fn lire_metadonnee(&mut self, dossier: &str, entree: &str) -> Resultat<Option<String>> {
+        let (texte, litteraux) = self.commande(&format!("GETMETADATA {} ({entree})", citer(dossier)))?;
+        Ok(protocole::analyser_metadata(&texte, &litteraux, entree))
+    }
+
+    /// Écrit une métadonnée (`SETMETADATA`) ; `None` l'efface. La valeur part
+    /// en littéral non synchronisé (LITERAL+) ; sans lui, entre guillemets,
+    /// où seul l'ASCII passe.
+    pub fn ecrire_metadonnee(&mut self, dossier: &str, entree: &str, valeur: Option<&str>) -> Resultat<()> {
+        let valeur = match valeur {
+            None => "NIL".to_string(),
+            Some(v) if self.sait("LITERAL+") => format!("{{{}+}}\r\n{v}", v.len()),
+            Some(v) if v.is_ascii() => citer(v),
+            Some(_) => return Err(Erreur::Refuse("le serveur ne sait pas garder ce texte".into())),
+        };
+        self.commande(&format!("SETMETADATA {} ({entree} {valeur})", citer(dossier)))?;
+        Ok(())
+    }
+
     /// Réserve un message du dossier sélectionné en le marquant `\Draft`, à
     /// condition que personne ne l'ait modifié depuis le `MODSEQ` lu
     /// (`UNCHANGEDSINCE`, RFC 7162 § 3.1.3). Rend faux si un autre client l'a
@@ -598,12 +619,31 @@ impl Client {
     /// Les mots partent en littéraux non synchronisés (LITERAL+) ; sans eux,
     /// seul un mot ASCII peut s'écrire entre guillemets.
     pub fn chercher_texte(&mut self, texte: &str) -> Resultat<Vec<u32>> {
+        self.chercher(texte, &[])
+    }
+
+    /// Comme `chercher_texte`, avec des catégories (0.6.15) : chaque élément
+    /// de `categories` est un critère — l'un de ses mots-clés (`KEYWORD`) —,
+    /// et les critères s'ajoutent aux mots. Un critère vide ne trouve rien.
+    pub fn chercher(&mut self, texte: &str, categories: &[Vec<String>]) -> Resultat<Vec<u32>> {
         let mots: Vec<&str> = texte.split_whitespace().collect();
-        if mots.is_empty() {
+        if mots.is_empty() && categories.is_empty() {
+            return Ok(Vec::new());
+        }
+        if categories.iter().any(|c| c.is_empty() || c.iter().any(|m| !protocole::mot_cle_valide(m))) {
             return Ok(Vec::new());
         }
         let litteraux = self.sait("LITERAL+");
         let mut criteres = String::new();
+        for critere in categories {
+            // « OR OR a b c » : l'un des mots-clés du critère.
+            for _ in 1..critere.len() {
+                criteres.push_str(" OR");
+            }
+            for mot_cle in critere {
+                criteres.push_str(&format!(" KEYWORD {mot_cle}"));
+            }
+        }
         for mot in mots {
             if litteraux {
                 criteres.push_str(&format!(" TEXT {{{}+}}\r\n{mot}", mot.len()));
@@ -1023,6 +1063,44 @@ mod tests {
             ]
         );
         assert_eq!(journal.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn categories_au_serveur() {
+        let entree = crate::categories::ENTREE;
+        let (mut client, journal) = session(
+            &format!("{DOVECOT} LITERAL+ METADATA"),
+            vec![
+                echange(
+                    &format!("GETMETADATA \"Shared/contact@x.fr/INBOX\" ({entree})"),
+                    &format!("* METADATA \"Shared/contact@x.fr/INBOX\" ({entree} {{13}}\r\n{{\"version\":1}})\r\n"),
+                    "OK fait",
+                ),
+                echange(&format!("GETMETADATA \"INBOX\" ({entree})"), &format!("* METADATA INBOX ({entree} NIL)\r\n"), "OK fait"),
+                echange(&format!("SETMETADATA \"INBOX\" ({entree} {{13 octets}}{{\"version\":1}})"), "", "OK fait"),
+                echange(&format!("SETMETADATA \"INBOX\" ({entree} NIL)"), "", "OK fait"),
+                echange(
+                    "UID SEARCH CHARSET UTF-8 OR OR KEYWORD devis KEYWORD $label1 KEYWORD x KEYWORD saisie TEXT {4 octets}mars",
+                    "* SEARCH 4 9\r\n",
+                    "OK fait",
+                ),
+                echange("UID STORE 4,9 +FLAGS.SILENT (devis)", "", "OK fait"),
+            ],
+        );
+        assert_eq!(client.lire_metadonnee("Shared/contact@x.fr/INBOX", entree).unwrap().as_deref(), Some(r#"{"version":1}"#));
+        assert_eq!(client.lire_metadonnee("INBOX", entree).unwrap(), None);
+        client.ecrire_metadonnee("INBOX", entree, Some(r#"{"version":1}"#)).unwrap();
+        client.ecrire_metadonnee("INBOX", entree, None).unwrap();
+        let criteres = vec![
+            vec!["devis".to_string(), "$label1".to_string(), "x".to_string()],
+            vec!["saisie".to_string()],
+        ];
+        assert_eq!(client.chercher("mars", &criteres).unwrap(), vec![4, 9]);
+        // Un nom inconnu, ou un mot-clé invalide, ne trouve rien sans rien demander.
+        assert!(client.chercher("mars", &[vec![]]).unwrap().is_empty());
+        assert!(client.chercher("", &[vec!["a b".to_string()]]).unwrap().is_empty());
+        client.marquer(&[4, 9], "devis", true).unwrap();
+        assert_eq!(journal.lock().unwrap().len(), 6);
     }
 
     #[test]

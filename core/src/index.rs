@@ -20,6 +20,7 @@ pub fn ligne_index(entete: &Entete) -> MessageLocal {
         repondu: entete.repondu(),
         transfere: entete.transfere(),
         repondu_tous: entete.repondu_tous(),
+        mots_cles: entete.mots_cles(),
         ..Default::default()
     };
 
