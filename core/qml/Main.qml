@@ -330,8 +330,11 @@ ApplicationWindow {
             ? Qt.tint(Qt.darker(palette.base, 1.07), Qt.rgba(accent.r, accent.g, accent.b, 0.10))
             : Qt.tint(palette.base, Qt.rgba(1, 1, 1, 0.08))
 
-    // Rédaction : identité et signature de chaque compte, en JSON
-    // (adresse → {nom, signature, nouveaux, reponses}) ; mise en forme par défaut.
+    // Rédaction : identité de chaque compte, en JSON (adresse → {nom,
+    // sigNouveaux, sigReponses}, plus sa signature d'avant la 0.6.18 en
+    // miroir — signature, html, nouveaux, reponses) ; bibliothèque des
+    // signatures nommées (0.6.18), en JSON ([{id, nom, signature, html}]) ;
+    // mise en forme par défaut.
     // Autres adresses d'envoi saisies pour chaque compte (0.6.7) — alias,
     // boîtes partagées que le serveur ne montre pas —, en JSON (adresse du
     // compte → [adresses]) ; chacune peut avoir son identité, comme les
@@ -340,6 +343,7 @@ ApplicationWindow {
         id: reglagesRedaction
         category: "redaction"
         property string identites: "{}"
+        property string signatures: "[]"
         property string adressesEnvoi: "{}"
         property bool miseEnForme: true
     }
@@ -4262,20 +4266,158 @@ ApplicationWindow {
 
     // ---- rédaction
 
-    /// Nom affiché et signature d'un compte, avec leurs valeurs par défaut.
+    /// Nom affiché et signatures d'une adresse : `nouvelle` pour les
+    /// nouveaux messages, `reponse` pour les réponses et les transferts —
+    /// chacune {signature, html}, vides s'il n'y en a pas ; `nouveaux` et
+    /// `reponses` disent s'il y en a une.
     function identite(adresse) {
-        var table = {}
-        try { table = JSON.parse(reglagesRedaction.identites) } catch (e) { table = {} }
-        var i = table[adresse] || {}
-        return { nom: i.nom || "", signature: i.signature || "", html: i.html || "",
-                 nouveaux: i.nouveaux !== false, reponses: i.reponses !== false }
+        var i = lireJson(reglagesRedaction.identites, {})[adresse] || {}
+        var sn = null, sr = null
+        if (identiteAncienne(i)) {
+            // Forme d'avant la 0.6.18 : une signature en propre, et deux cases.
+            var propre = { signature: i.signature || "", html: i.html || "" }
+            var pleine = propre.signature.length > 0 || propre.html.length > 0
+            sn = i.nouveaux !== false && pleine ? propre : null
+            sr = i.reponses !== false && pleine ? propre : null
+        } else {
+            var liste = signaturesNommees()
+            sn = signatureDe(liste, i.sigNouveaux)
+            sr = signatureDe(liste, i.sigReponses)
+        }
+        var vide = { signature: "", html: "" }
+        var n = sn ? { signature: sn.signature || "", html: sn.html || "" } : vide
+        var r = sr ? { signature: sr.signature || "", html: sr.html || "" } : vide
+        return { nom: i.nom || "", nouvelle: n, reponse: r, nouveaux: sn !== null, reponses: sr !== null,
+                 sigNouveaux: identiteAncienne(i) ? "" : (i.sigNouveaux || ""),
+                 sigReponses: identiteAncienne(i) ? "" : (i.sigReponses || ""),
+                 signature: (sn || sr || vide).signature || "", html: (sn || sr || vide).html || "" }
     }
 
+    /// Pose l'identité d'une adresse : {nom, sigNouveaux, sigReponses}, ou la
+    /// forme d'avant (une signature en propre), que la bibliothèque reprend.
     function poserIdentite(adresse, valeur) {
-        var table = {}
-        try { table = JSON.parse(reglagesRedaction.identites) } catch (e) { table = {} }
+        var table = lireJson(reglagesRedaction.identites, {})
         table[adresse] = valeur
-        reglagesRedaction.identites = JSON.stringify(table)
+        reglagesRedaction.identites = JSON.stringify(miroirsSignatures(table, signaturesNommees()))
+        if (identiteAncienne(valeur))
+            migrerSignatures()
+    }
+
+    // ---- signatures nommées (0.6.18) : une bibliothèque, et pour chaque
+    // adresse d'envoi celle des nouveaux messages et celle des réponses et
+    // transferts, comme dans Outlook.
+
+    function lireJson(texte, defaut) {
+        try {
+            var v = JSON.parse(texte)
+            return v === null || typeof v !== typeof defaut ? defaut : v
+        } catch (e) {
+            return defaut
+        }
+    }
+
+    /// Bibliothèque : [{id, nom, signature, html}], dans l'ordre de création.
+    function signaturesNommees() {
+        var l = lireJson(reglagesRedaction.signatures, [])
+        return Array.isArray(l) ? l : []
+    }
+
+    function signatureDe(liste, id) {
+        if (!id)
+            return null
+        for (var k = 0; k < liste.length; ++k)
+            if (liste[k].id === id)
+                return liste[k]
+        return null
+    }
+
+    /// Une identité d'avant la 0.6.18 : sa signature en propre, sans choix
+    /// dans la bibliothèque.
+    function identiteAncienne(i) {
+        return !!i && i.sigNouveaux === undefined && i.sigReponses === undefined
+    }
+
+    /// Identifiant libre dans la bibliothèque.
+    function nouvelIdSignature(liste) {
+        var n = 0
+        for (var k = 0; k < liste.length; ++k)
+            n = Math.max(n, parseInt(liste[k].id, 10) || 0)
+        return String(n + 1)
+    }
+
+    /// Nom libre dans la bibliothèque : `nom`, sinon « nom (2) »…
+    function nomLibreSignature(liste, nom) {
+        var pris = function(n) { return liste.some(function(s) { return s.nom === n }) }
+        var essai = nom, k = 2
+        while (pris(essai))
+            essai = nom + " (" + (k++) + ")"
+        return essai
+    }
+
+    /// Chaque identité garde aussi sa signature à l'ancienne — celle des
+    /// nouveaux messages, sinon celle des réponses — : une 0.6.17 relancée
+    /// sur ce profil signe encore. Une signature disparue de la bibliothèque
+    /// n'est plus choisie.
+    function miroirsSignatures(table, liste) {
+        for (var a in table) {
+            var i = table[a]
+            if (identiteAncienne(i))
+                continue
+            var sn = signatureDe(liste, i.sigNouveaux), sr = signatureDe(liste, i.sigReponses)
+            i.sigNouveaux = sn ? sn.id : ""
+            i.sigReponses = sr ? sr.id : ""
+            var s = sn || sr
+            i.signature = s ? s.signature || "" : ""
+            i.html = s ? s.html || "" : ""
+            i.nouveaux = sn !== null
+            i.reponses = sr !== null
+        }
+        return table
+    }
+
+    /// Range dans la bibliothèque les signatures d'avant la 0.6.18 : celle de
+    /// chaque adresse devient une signature nommée d'après elle — une seule
+    /// pour un même contenu —, choisie pour les usages que cochaient ses cases.
+    /// Au démarrage, et après une identité posée à l'ancienne (retour à une
+    /// 0.6.17 entre-temps, scénarios d'essai).
+    function migrerSignatures() {
+        var table = lireJson(reglagesRedaction.identites, {})
+        var liste = signaturesNommees()
+        var change = false
+        for (var adresse in table) {
+            var i = table[adresse]
+            if (!identiteAncienne(i))
+                continue
+            var texte = i.signature || "", html = i.html || ""
+            var id = ""
+            if (texte.length > 0 || html.length > 0) {
+                for (var k = 0; k < liste.length && id === ""; ++k)
+                    if ((liste[k].signature || "") === texte && (liste[k].html || "") === html)
+                        id = liste[k].id
+                if (id === "") {
+                    id = nouvelIdSignature(liste)
+                    liste.push({ id: id, nom: nomLibreSignature(liste, adresse), signature: texte, html: html,
+                                 origine: adresse })
+                }
+            }
+            i.sigNouveaux = i.nouveaux !== false ? id : ""
+            i.sigReponses = i.reponses !== false ? id : ""
+            change = true
+        }
+        if (!change)
+            return
+        reglagesRedaction.signatures = JSON.stringify(liste)
+        reglagesRedaction.identites = JSON.stringify(miroirsSignatures(table, liste))
+    }
+
+    /// Pose la bibliothèque et les identités modifiées ensemble (« Nom et
+    /// signature… ») : `identites`, adresse → {nom, sigNouveaux, sigReponses}.
+    function poserSignatures(liste, identites) {
+        var table = lireJson(reglagesRedaction.identites, {})
+        for (var a in identites)
+            table[a] = identites[a]
+        reglagesRedaction.signatures = JSON.stringify(liste)
+        reglagesRedaction.identites = JSON.stringify(miroirsSignatures(table, liste))
     }
 
     /// Vrai si l'adresse a son propre nom et sa propre signature.
@@ -5024,6 +5166,8 @@ ApplicationWindow {
                     tiroir.open()
             })
         }
+        // Signatures d'avant la 0.6.18 rangées dans la bibliothèque.
+        migrerSignatures()
         if (typeof modeControle !== "undefined" && modeControle)
             return
         if (!boite.ouvrirProfil(cheminProfil))
@@ -5434,6 +5578,13 @@ ApplicationWindow {
             if (essai.scenario === "badge" || essai.scenario === "badge-composition"
                     || essai.scenario === "badge-redaction")
                 scenarios.lancerScenarioBadge()
+            // Scénarios de la 0.6.18 : GIF animés, signatures nommées (pas « signature… » :
+            // ce préfixe lance le scénario de la signature importée).
+            if (essai.scenario === "gif-anime" || essai.scenario === "gif-anime-capture")
+                scenarios.lancerScenarioGifAnime()
+            if (essai.scenario === "bibliotheque-signatures" || essai.scenario === "bibliotheque-vue"
+                    || essai.scenario === "bibliotheque-menu")
+                scenarios.lancerScenarioSignatures()
             if (essai.scenario === "liste-categories" || essai.scenario === "menu-categories"
                     || essai.scenario === "gerer-categories")
                 scenarios.lancerScenarioCapturesCategories()

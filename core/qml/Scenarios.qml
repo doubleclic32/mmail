@@ -2076,6 +2076,11 @@ QtObject {
                 var image = (html.match(/<img[^>]*\.gif[^>]*>/) || [""])[0]
                 bilan("badge inséré dans la signature : " + image.replace(/src="[^"]*\//, "src=\"…/").replace(/[0-9-]+\.gif/, "….gif"),
                       image.indexOf("signatures/") > 0 && image.indexOf("width=\"" + b.largeur + "\"") > 0)
+                // 0.6.18 : il s'anime dans l'éditeur de la signature.
+                var anim = dlgIdentite.animations.etat()
+                bilan("éditeur de la signature : " + anim.length + " animation, "
+                      + (anim.length > 0 ? anim[0].images + " images, " + anim[0].largeur + "×" + anim[0].hauteur : ""),
+                      anim.length === 1 && anim[0].images === 38 && anim[0].largeur === b.largeur && anim[0].hauteur === b.largeur)
                 dlgIdentite.accept()
                 suivi.etape = 2
             } else if (suivi.etape === 2) {
@@ -2092,6 +2097,9 @@ QtObject {
                 var corps = suivi.redaction.htmlActuel()
                 bilan("rédaction : la signature porte le badge",
                       /<img[^>]*signatures\/[^"]*\.gif"[^>]*width="138"/.test(corps))
+                var animR = suivi.redaction.animations.etat()
+                bilan("rédaction : " + animR.length + " animation, joue " + (animR.length > 0 && animR[0].joue),
+                      animR.length === 1 && animR[0].joue)
                 tic.stop()
                 if (essai.scenario === "badge-redaction")
                     return
@@ -2099,5 +2107,190 @@ QtObject {
                 Qt.quit()
             }
         })
+    }
+
+    /// Scénario « gif-anime » (0.6.18, banc GIF=1) : un message porte un GIF
+    /// animé et un GIF fixe. Dans le volet de lecture, puis dans la fenêtre du
+    /// message, une animation — une seule — est posée sur le GIF animé, à la
+    /// place que le texte lui réserve, et elle tourne.
+    function lancerScenarioGifAnime() {
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var releve = Qt.createQmlObject('import QtQuick; Timer { interval: 100; repeat: true }', fenetre)
+        var suivi = { n: 0, echecs: 0, index: -1, images: [], animations: null }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        releve.triggered.connect(function() {
+            var e = suivi.animations ? suivi.animations.etat() : []
+            if (e.length > 0)
+                suivi.images.push(e[0].image)
+        })
+        var observer = function(animations) {
+            suivi.animations = animations
+            suivi.images = []
+            releve.start()
+        }
+        // Place de l'animation comparée à celle du caractère de l'image dans le
+        // texte, taille du GIF (60×40), images vues tourner.
+        var verifier = function(nom, zone, animations) {
+            releve.stop()
+            var e = animations.etat()
+            bilan(nom + " : " + e.length + " animation(s) pour un GIF animé et un fixe", e.length === 1)
+            if (e.length !== 1)
+                return
+            var a = e[0]
+            var p = zone.getText(0, zone.length).indexOf("\ufffc")
+            var r1 = zone.positionToRectangle(p), r2 = zone.positionToRectangle(p + 1)
+            var place = Math.abs(a.x - r1.x) < 0.5 && Math.abs(a.largeur - (r2.x - r1.x)) < 1
+                    && a.y >= r1.y - 0.5 && a.y + a.hauteur <= r1.y + r1.height + 0.5
+            bilan(nom + " : animation " + [a.x, a.y, a.largeur, a.hauteur].map(Math.round).join(",")
+                  + " | caractère " + [r1.x, r1.y, r2.x - r1.x, r1.height].map(Math.round).join(","),
+                  place && a.largeur === 60 && a.hauteur === 40)
+            var vues = {}
+            suivi.images.forEach(function(k) { vues[k] = true })
+            bilan(nom + " : " + a.images + " images, vues " + Object.keys(vues).sort().join("/") + ", joue " + a.joue,
+                  a.images === 2 && a.joue && Object.keys(vues).length === 2)
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                for (var i = 0; i < modeleMessages.count; ++i)
+                    if (modeleMessages.get(i).sujet === "GIF anime")
+                        suivi.index = i
+                if (suivi.index < 0) {
+                    bilan("message « GIF anime » absent (banc GIF=1 ?)", false)
+                    suivi.n = 15
+                    return
+                }
+                choisir(suivi.index, 0)
+            } else if (suivi.n === 9) {
+                observer(colonneLecture.animations)
+            } else if (suivi.n === 11) {
+                verifier("volet de lecture", colonneLecture.vueCorps, colonneLecture.animations)
+                ouvrirFenetreMessage(suivi.index)
+            } else if (suivi.n === 13) {
+                if (fenetresMessage.length === 0) {
+                    bilan("fenêtre du message non ouverte", false)
+                    suivi.n = 15
+                    return
+                }
+                observer(fenetresMessage[0].animations)
+            } else if (suivi.n === 15) {
+                if (fenetresMessage.length > 0)
+                    verifier("fenêtre du message", fenetresMessage[0].corps, fenetresMessage[0].animations)
+                if (essai.scenario === "gif-anime-capture") {
+                    tic.stop()
+                    return
+                }
+            } else if (suivi.n === 16) {
+                tic.stop()
+                console.log("scenario: gif-anime " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+        tic.start()
+    }
+
+    /// Scénario « bibliotheque-signatures » (0.6.18) : la bibliothèque de signatures. Une
+    /// identité posée à l'ancienne y est rangée ; « Nom et signature… » en
+    /// crée une autre, choisie pour les réponses, en duplique et en supprime ;
+    /// la rédaction prend l'une pour un nouveau message, l'autre pour une
+    /// réponse ; une signature supprimée n'est plus choisie ; « Annuler » ne
+    /// change rien ; chaque identité garde sa signature à l'ancienne.
+    function lancerScenarioSignatures() {
+        var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 500; repeat: true }', fenetre)
+        var essais = { n: 0 }
+        attente.triggered.connect(function() {
+            essais.n += 1
+            var c = comptesConnus[0]
+            if (c && listeComptes().length > 0 && listeComptes()[0].etat === "pret") {
+                attente.stop()
+                etapesScenarioSignatures(c)
+            } else if (essais.n > 60) {
+                attente.stop()
+                console.log("scenario: ECHEC bibliotheque-signatures : aucun compte prêt")
+                Qt.quit()
+            }
+        })
+        attente.start()
+    }
+
+    function etapesScenarioSignatures(c) {
+        var echecs = 0
+        var bilan = function(texte, bon) {
+            if (!bon)
+                echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var identiteDe = function(a) { return lireJson(reglagesRedaction.identites, {})[a] || {} }
+        var noms = function() { return signaturesNommees().map(function(s) { return s.nom }).join(" | ") }
+        poserIdentite(c.adresse, { nom: "Personne Essai", signature: "Sig à l'ancienne", html: "",
+                                   nouveaux: true, reponses: false })
+        var l = signaturesNommees(), i = identiteDe(c.adresse)
+        bilan("signature d'avant rangée : " + noms() + " | nouveaux « " + i.sigNouveaux + " », réponses « " + i.sigReponses + " »",
+              l.length === 1 && l[0].nom === c.adresse && i.sigNouveaux === l[0].id && i.sigReponses === ""
+              && i.signature === "Sig à l'ancienne" && i.nouveaux === true && i.reponses === false)
+
+        dlgIdentite.ouvrir(c.compte)
+        dlgIdentite.nouvelle(null)
+        dlgIdentite.essaiSignature("Commerciale", "Service commercial")
+        var idc = dlgIdentite.biblio[dlgIdentite.choisie].id
+        dlgIdentite.essaiChoix("sigReponses", idc)
+        dlgIdentite.nouvelle(dlgIdentite.biblio[dlgIdentite.choisie])
+        var avec = dlgIdentite.biblio.map(function(s) { return s.nom }).join(" | ")
+        dlgIdentite.supprimer()
+        bilan("dupliquer puis supprimer : " + avec + " → " + dlgIdentite.biblio.length + " signatures",
+              dlgIdentite.biblio.length === 2 && avec.indexOf("Commerciale (copie)") > 0)
+        dlgIdentite.accept()
+        l = signaturesNommees()
+        i = identiteDe(c.adresse)
+        bilan("bibliothèque : " + noms() + " | réponses → « " + i.sigReponses + " » | miroir « " + i.signature + " »",
+              l.length === 2 && l[1].nom === "Commerciale" && l[1].signature === "Service commercial"
+              && i.sigNouveaux === l[0].id && i.sigReponses === l[1].id && i.signature === "Sig à l'ancienne"
+              && i.reponses === true)
+        // Captures : la fenêtre ouverte sur la seconde signature, ou le menu
+        // « Signature » de la rédaction.
+        if (essai.scenario === "bibliotheque-vue") {
+            dlgIdentite.ouvrir(c.compte)
+            dlgIdentite.editer(1)
+            return
+        }
+
+        var r = ouvrirRedaction(c.compte)
+        r.pret()
+        if (essai.scenario === "bibliotheque-menu") {
+            r.proposerSignatures(r.boutonSignature)
+            return
+        }
+        var t1 = r.contenu().texte
+        r.remplir({ mode: "repondre", de: c.adresse, a: "client@exemple.org", objet: "RE : essai", texte: "\n> cité" })
+        var t2 = r.contenu().texte
+        bilan("rédaction : nouveau message avec l'ancienne " + (t1.indexOf("Sig à l'ancienne") >= 0)
+              + ", réponse avec « Commerciale » " + (t2.indexOf("Service commercial") >= 0 && t2.indexOf("Sig à l'ancienne") < 0),
+              t1.indexOf("Sig à l'ancienne") >= 0 && t2.indexOf("Service commercial") >= 0 && t2.indexOf("Sig à l'ancienne") < 0)
+        r.insererSignature(l[0])
+        bilan("« Signature » : l'autre insérée au curseur", r.contenu().texte.indexOf("Sig à l'ancienne") >= 0)
+        r.conteneur.fermerRedaction()
+
+        dlgIdentite.ouvrir(c.compte)
+        dlgIdentite.editer(1)
+        dlgIdentite.supprimer()
+        dlgIdentite.accept()
+        i = identiteDe(c.adresse)
+        bilan("signature des réponses supprimée : " + noms() + " | réponses « " + i.sigReponses + " »",
+              signaturesNommees().length === 1 && i.sigReponses === "" && i.reponses === false)
+
+        dlgIdentite.ouvrir(c.compte)
+        dlgIdentite.nouvelle(null)
+        dlgIdentite.essaiSignature("Jetée", "À ne pas garder")
+        dlgIdentite.reject()
+        bilan("« Annuler » : " + noms(), signaturesNommees().length === 1)
+        console.log("scenario: bibliotheque-signatures " + (echecs === 0 ? "OK" : "ECHEC (" + echecs + ")"))
+        Qt.quit()
     }
 }

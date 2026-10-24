@@ -51,9 +51,13 @@ Dialog {
     readonly property int largeur: badge.largeurAffichee()
     readonly property var visuelChoisi: choisi >= 0 && choisi < visuels.length ? visuels[choisi] : null
 
-    function ouvrir(a) {
+    /// `a` : clé de la composition et du dossier des images (une adresse, ou
+    /// « signature-<id> » depuis la 0.6.18) ; `repli` : clé d'une composition
+    /// d'avant, reprise si `a` n'en a pas encore.
+    function ouvrir(a, repli) {
         adresse = a
-        var c = lireCompositions()[a] || {}
+        var toutes = lireCompositions()
+        var c = toutes[a] || (repli ? toutes[repli] : null) || {}
         visuels = c.visuels || []
         forme = c.forme === "carre" ? "carre" : "rond"
         reglages = c.reglages || JSON.parse(badge.reglagesParDefaut())
