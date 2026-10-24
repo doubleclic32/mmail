@@ -1,6 +1,6 @@
 [package]
 name = "mmail_core"
-version = "0.6.17"
+version = "0.6.18"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
@@ -67,6 +67,9 @@ iana-time-zone = "0.1"
 # Sans les formats de fichier de tiny-skia : les images arrivent déjà décodées.
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 gif = "0.14"
+# Palette de chaque image du badge, calculée sur ses seuls pixels changés
+# (0.6.18). Déjà tirée par gif, même version.
+color_quant = "1.1"
 
 # Autorités de certification : celles du système sur le bureau, par le
 # vérificateur de plateforme. Sous Android, ce vérificateur exige un composant
