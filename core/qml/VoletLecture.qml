@@ -21,6 +21,7 @@ ColumnLayout {
     property alias auteurAffiche: auteurAffiche
     property alias cadreCorps: cadreCorps
     property alias vueCorps: vueCorps
+    property alias animations: animationsLecture
     property alias mefLecture: mefLecture
     visible: !fenetre.compact || fenetre.vue === 2
     SplitView.fillWidth: true
@@ -458,6 +459,12 @@ ColumnLayout {
             MiseEnForme {
                 id: mefLecture
                 document: vueCorps.textDocument
+            }
+            // Les GIF animés s'animent (0.6.18).
+            ImagesAnimees {
+                id: animationsLecture
+                zone: vueCorps
+                miseEnForme: mefLecture
             }
             onWidthChanged: minuterieImages.restart()
             Timer {

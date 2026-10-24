@@ -8,10 +8,16 @@
 
 #include <memory>
 
+#include <QtCore/QFileInfo>
+#include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
+#include <QtCore/QVariant>
+#include <QtGui/QAbstractTextDocumentLayout>
+#include <QtGui/QFontMetricsF>
+#include <QtGui/QTextLayout>
 #include <QtGui/QColor>
 #include <QtGui/QFont>
 #include <QtGui/QImageReader>
@@ -268,6 +274,57 @@ public:
     m_largeurBornee = largeurMax;
   }
 
+  /// GIF animés du document — plus d'une image —, pour que QML pose sur
+  /// chacun une AnimatedImage : le texte riche de Qt n'en dessine que la
+  /// première image (0.6.18). Pour chacun : `position` du caractère,
+  /// `source`, `largeur` et `hauteur` affichées (calculées comme Qt), et
+  /// `haut`, le décalage de l'image sous le haut de sa ligne. Seuls les noms
+  /// en « .gif » sont lus sur le disque, une fois par fichier.
+  Q_INVOKABLE QVariantList imagesAnimees()
+  {
+    QVariantList liste;
+    QTextDocument* doc = texte_();
+    if (!doc)
+      return liste;
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+      for (auto it = b.begin(); !it.atEnd(); ++it) {
+        const QTextFragment fragment = it.fragment();
+        if (!fragment.charFormat().isImageFormat())
+          continue;
+        const QTextImageFormat f = fragment.charFormat().toImageFormat();
+        const QString nom = f.name();
+        if (!nom.endsWith(QLatin1String(".gif"), Qt::CaseInsensitive))
+          continue;
+        const QSize naturelle = tailleAnimee(QUrl(nom).toLocalFile());
+        if (naturelle.isEmpty())
+          continue;
+        // Taille affichée : celle de QQuickTextImageHandler::intrinsicSize.
+        const bool l = f.hasProperty(QTextFormat::ImageWidth), h = f.hasProperty(QTextFormat::ImageHeight);
+        qreal largeur = qRound(f.width()), hauteur = qRound(f.height());
+        if (!l)
+          largeur = h ? qRound(hauteur * naturelle.width() / qreal(naturelle.height())) : naturelle.width();
+        if (!h)
+          hauteur = l ? qRound(largeur * naturelle.height() / qreal(naturelle.width())) : naturelle.height();
+        // Montée de l'image dans sa ligne : toute sa hauteur, ou centrée sur
+        // la hauteur d'x (QTextDocumentLayout::resizeInlineObject).
+        qreal montee = hauteur;
+        if (f.verticalAlignment() == QTextCharFormat::AlignMiddle)
+          montee = (hauteur + QFontMetricsF(f.font()).xHeight() / 2) / 2;
+        doc->documentLayout()->blockBoundingRect(b);
+        for (int i = 0; i < fragment.length(); ++i) {
+          const int position = fragment.position() + i;
+          const QTextLine ligne = b.layout() ? b.layout()->lineForTextPosition(position - b.position()) : QTextLine();
+          liste.append(QVariantMap{{QStringLiteral("position"), position},
+                                   {QStringLiteral("source"), nom},
+                                   {QStringLiteral("largeur"), largeur},
+                                   {QStringLiteral("hauteur"), hauteur},
+                                   {QStringLiteral("haut"), ligne.isValid() ? qMax<qreal>(0, ligne.ascent() - montee) : 0}});
+        }
+      }
+    }
+    return liste;
+  }
+
   /// Insère du texte brut (une signature) à la position donnée.
   Q_INVOKABLE void inserer(int position, const QString& texte)
   {
@@ -428,6 +485,25 @@ private:
   int m_largeurBornee = -1;
 
   QTextDocument* texte_() const { return m_document ? m_document->textDocument() : nullptr; }
+
+  /// Taille d'un GIF de plus d'une image, vide pour tout autre fichier ;
+  /// gardée par fichier, date et poids.
+  QSize tailleAnimee(const QString& chemin)
+  {
+    const QFileInfo info(chemin);
+    if (!info.isFile())
+      return QSize();
+    const QString cle = chemin + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|')
+                        + QString::number(info.lastModified().toMSecsSinceEpoch());
+    auto it = m_animees.constFind(cle);
+    if (it != m_animees.constEnd())
+      return *it;
+    QImageReader lecteur(chemin);
+    const QSize taille = lecteur.supportsAnimation() && lecteur.imageCount() > 1 ? lecteur.size() : QSize();
+    m_animees.insert(cle, taille);
+    return taille;
+  }
+  QHash<QString, QSize> m_animees;
 
   /// Bornes de la sélection, ou le curseur deux fois s'il n'y en a pas.
   int borneDebut() const { return m_debut != m_fin ? qMin(m_debut, m_fin) : m_curseur; }
