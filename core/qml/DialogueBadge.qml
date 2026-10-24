@@ -211,18 +211,20 @@ Dialog {
         }
     }
 
-    RowLayout {
+    // Deux colonnes posées par ancrage, pas par une rangée : la composition
+    // suit la largeur qu'on lui donne, et l'aperçu garde la sienne — une
+    // rangée négocierait avec la largeur naturelle des textes et s'y perdrait.
+    Item {
         anchors.fill: parent
-        spacing: 16
 
         // Composition : images, cadrage, forme, réglages.
         ScrollView {
             id: defilement
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            // Largeur donnée par la rangée, jamais tirée du contenu : son
-            // contenu suit la largeur disponible, la boucle se fermerait.
-            Layout.preferredWidth: 1
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.right: colonneApercu.left
+            anchors.rightMargin: 16
             contentWidth: availableWidth
             clip: true
             ColumnLayout {
@@ -318,7 +320,7 @@ Dialog {
                                 ToolTip.text: qsTr("Plus tard dans la boucle")
                             }
                             ToolButton {
-                                text: "✕"
+                                text: "×"
                                 onClicked: dlgBadge.retirer(ligneVisuel.index)
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("Retirer du badge")
@@ -451,8 +453,11 @@ Dialog {
 
         // Aperçu, à la taille où il paraîtra dans la signature.
         ColumnLayout {
-            Layout.preferredWidth: 230
-            Layout.fillHeight: true
+            id: colonneApercu
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 230
             spacing: 8
             Label {
                 text: qsTr("Aperçu")
