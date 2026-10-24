@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Noyau de MMail : protocole IMAP, index local, et les objets exposés à QML.
 pub mod agenda;
+pub mod badge;
 pub mod boite;
 pub mod cache;
 pub mod caldav;
@@ -20,6 +21,7 @@ pub mod mise_a_jour;
 pub mod microsoft;
 pub mod oauth;
 pub mod mise_en_page;
+pub mod pont_badge;
 pub mod pont_presse_papier;
 pub mod poste;
 pub mod presse_papier;
