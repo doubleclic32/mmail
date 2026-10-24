@@ -1977,4 +1977,127 @@ QtObject {
         })
         tic.start()
     }
+
+    /// Scénario « badge » (0.6.17) : le badge animé de la signature. Deux images
+    /// fabriquées sur place dans MMAIL_SORTIE — un logo rond sur fond
+    /// transparent, une « photo » en dégradé —, composées ; aperçu, insertion
+    /// dans la signature (GIF du dossier des signatures, affiché à sa largeur),
+    /// composition gardée pour l'adresse ; puis la signature dans une rédaction.
+    /// « badge-composition » et « badge-redaction » s'arrêtent sur la fenêtre
+    /// ouverte, pour une capture.
+    function lancerScenarioBadge() {
+        // Le compte d'abord : il n'est connu qu'une fois la session ouverte.
+        var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 500; repeat: true }', fenetre)
+        var essais = { n: 0 }
+        attente.triggered.connect(function() {
+            essais.n += 1
+            var c = comptesConnus[0]
+            if (c && listeComptes().length > 0 && listeComptes()[0].etat === "pret") {
+                attente.stop()
+                composerScenarioBadge(c)
+            } else if (essais.n > 60) {
+                attente.stop()
+                console.log("scenario: ECHEC badge : aucun compte prêt")
+                Qt.quit()
+            }
+        })
+        attente.start()
+    }
+
+    function composerScenarioBadge(a) {
+        var suivi = { n: 0, echecs: 0, etape: 0 }
+        var bilan = function(texte, bon) {
+            if (!bon)
+                suivi.echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        if (!identifiantsEssai.sortie) {
+            console.log("scenario: ECHEC badge : MMAIL_SORTIE absent")
+            Qt.quit()
+            return
+        }
+        var dossier = lanceur.chemin(identifiantsEssai.sortie)
+        var logo = Qt.createQmlObject('import QtQuick; Rectangle { width: 240; height: 240; color: "transparent";'
+                                      + ' Rectangle { anchors.centerIn: parent; width: 150; height: 150; radius: 75; color: "#21abe3";'
+                                      + ' Text { anchors.centerIn: parent; text: "MM"; color: "white"; font.pixelSize: 56; font.bold: true } } }',
+                                      fenetre.contentItem)
+        var photo = Qt.createQmlObject('import QtQuick; Rectangle { width: 320; height: 240;'
+                                       + ' gradient: Gradient { GradientStop { position: 0; color: "#e61e29" }'
+                                       + ' GradientStop { position: 1; color: "#0b0d2e" } }'
+                                       + ' Rectangle { x: 120; y: 50; width: 80; height: 80; radius: 40; color: "#f2c9a0" } }',
+                                       fenetre.contentItem)
+        var b = dlgIdentite.badge
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 500; repeat: true }', fenetre)
+        var composer = function() {
+            logo.destroy()
+            photo.destroy()
+            dlgIdentite.ouvrir(a.compte)
+            b.ouvrir(dlgIdentite.adresse())
+            b.ajouter(lanceur.adresse(dossier + "/badge-logo.png"))
+            b.ajouter(lanceur.adresse(dossier + "/badge-photo.png"))
+            b.modifier(1, "genre", "photo")
+            b.modifier(1, "zoom", 1.4)
+            bilan("badge composé : " + b.visuels.map(function(v) { return v.genre }).join(", ")
+                  + " | forme " + b.forme + " | lamelles " + b.reglages.lamelles,
+                  b.visuels.length === 2 && b.visuels[1].genre === "photo")
+            tic.start()
+        }
+        logo.grabToImage(function(r) {
+            r.saveToFile(dossier + "/badge-logo.png")
+            photo.grabToImage(function(r2) {
+                r2.saveToFile(dossier + "/badge-photo.png")
+                composer()
+            })
+        })
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            if (suivi.n > 120) {
+                tic.stop()
+                bilan("badge : délai dépassé à l'étape " + suivi.etape, false)
+                console.log("scenario: badge ECHEC (" + suivi.echecs + ")")
+                Qt.quit()
+                return
+            }
+            if (suivi.etape === 0) {
+                if (b.apercu.length === 0)
+                    return
+                // 2 images : 2 × (1 palier + 18 transitions).
+                bilan("aperçu prêt : " + b.bilan.split(",")[0], b.bilan.indexOf("38 images") === 0 && b.note === "")
+                suivi.etape = 1
+                if (essai.scenario === "badge-composition") {
+                    tic.stop()
+                    return
+                }
+                b.inserer()
+            } else if (suivi.etape === 1) {
+                if (b.visible)
+                    return
+                var html = dlgIdentite.valeurs().html
+                var image = (html.match(/<img[^>]*\.gif[^>]*>/) || [""])[0]
+                bilan("badge inséré dans la signature : " + image.replace(/src="[^"]*\//, "src=\"…/").replace(/[0-9-]+\.gif/, "….gif"),
+                      image.indexOf("signatures/") > 0 && image.indexOf("width=\"" + b.largeur + "\"") > 0)
+                dlgIdentite.accept()
+                suivi.etape = 2
+            } else if (suivi.etape === 2) {
+                b.ouvrir(a.adresse)
+                bilan("composition gardée pour l'adresse : " + b.visuels.length + " images, "
+                      + b.visuels.map(function(v) { return v.genre + " ×" + v.zoom }).join(", "),
+                      b.visuels.length === 2 && b.visuels[1].zoom === 1.4)
+                b.close()
+                var r = ouvrirRedaction(a.compte)
+                r.remplir({ a: identifiantsEssai.utilisateur2, objet: "Badge animé", mode: "nouveau" })
+                suivi.redaction = r
+                suivi.etape = 3
+            } else if (suivi.etape === 3) {
+                var corps = suivi.redaction.htmlActuel()
+                bilan("rédaction : la signature porte le badge",
+                      /<img[^>]*signatures\/[^"]*\.gif"[^>]*width="138"/.test(corps))
+                tic.stop()
+                if (essai.scenario === "badge-redaction")
+                    return
+                console.log("scenario: badge " + (suivi.echecs === 0 ? "OK" : "ECHEC (" + suivi.echecs + ")"))
+                Qt.quit()
+            }
+        })
+    }
 }

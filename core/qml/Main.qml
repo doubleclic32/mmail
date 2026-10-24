@@ -5429,6 +5429,11 @@ ApplicationWindow {
             // dialogue pour une capture.
             if (essai.scenario === "categories")
                 scenarios.lancerScenarioCategories()
+            // Scénarios de la 0.6.17 : badge animé de la signature ; fenêtre de
+            // composition et rédaction pour une capture.
+            if (essai.scenario === "badge" || essai.scenario === "badge-composition"
+                    || essai.scenario === "badge-redaction")
+                scenarios.lancerScenarioBadge()
             if (essai.scenario === "liste-categories" || essai.scenario === "menu-categories"
                     || essai.scenario === "gerer-categories")
                 scenarios.lancerScenarioCapturesCategories()

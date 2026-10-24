@@ -1,6 +1,6 @@
 [package]
 name = "mmail_core"
-version = "0.6.16"
+version = "0.6.17"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
@@ -60,6 +60,13 @@ chrono-tz = "0.10"
 # Nom IANA du fuseau du poste (« Europe/Paris »), pour écrire les heures d'un
 # événement : chrono sait le décalage local, pas son nom. Déjà tiré par chrono.
 iana-time-zone = "0.1"
+
+# Badge animé de la signature (0.6.17, option) : les images de l'animation se
+# dessinent en pur Rust — chemins, masques et opacité anticrénelés, sans
+# aller-retour par Qt ni dépendance système —, puis s'assemblent en GIF animé.
+# Sans les formats de fichier de tiny-skia : les images arrivent déjà décodées.
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+gif = "0.14"
 
 # Autorités de certification : celles du système sur le bureau, par le
 # vérificateur de plateforme. Sous Android, ce vérificateur exige un composant
