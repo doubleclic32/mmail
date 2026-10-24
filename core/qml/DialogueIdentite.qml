@@ -28,6 +28,8 @@ Dialog {
     property string chargee: ""
     // Avertissement de cette reprise : une information, pas une erreur.
     property string noteReprise: ""
+    // Fenêtre du badge animé (scénarios d'essai).
+    property alias badge: dlgBadge
     function ouvrir(compte) {
         var i = 0
         var liste = fenetre.expediteursConnus
@@ -146,6 +148,19 @@ Dialog {
                 focusPolicy: Qt.NoFocus
                 onClicked: choixImageSignature.open()
             }
+            // Option (0.6.17) : une image animée composée ici, insérée comme
+            // les autres ; la signature elle-même ne change pas. Pas en vue
+            // tactile : le sélecteur d'Android rend des adresses content:,
+            // que le noyau ne lit pas.
+            ToolButton {
+                text: qsTr("Badge animé…")
+                visible: !fenetre.tactile
+                focusPolicy: Qt.NoFocus
+                onClicked: dlgBadge.ouvrir(dlgIdentite.adresse())
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("Une image qui fait défiler en boucle le logo de la société, votre photo et d'autres logos, insérée dans la signature. Facultatif.")
+            }
             ToolButton {
                 text: qsTr("Importer une signature Outlook…")
                 focusPolicy: Qt.NoFocus
@@ -226,6 +241,13 @@ Dialog {
             } else {
                 dlgIdentite.note = boite.erreur
             }
+        }
+    }
+    DialogueBadge {
+        id: dlgBadge
+        onInsere: function(url) {
+            mefSignature.insererImage(url, dlgBadge.largeur)
+            dlgIdentite.note = ""
         }
     }
     Dialog {
