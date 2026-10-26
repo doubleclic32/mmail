@@ -2385,16 +2385,24 @@ ApplicationWindow {
     /// Correspondants nommés dans une ligne d'en-tête (« Nom <adresse>, … »,
     /// ou des adresses nues), sans doublon : `[{nom, adresse}]` (0.6.20).
     function correspondantsDe(texte) {
+        texte = texte || ""
+        // Une seule adresse entre chevrons (l'expéditeur) : tout ce qui la
+        // précède est le nom, virgule comprise (« Dupont, Jean <…> »).
+        var chevrons = texte.match(/<[^<>\s@]+@[^<>\s]+>/g) || []
+        if (chevrons.length === 1) {
+            var nom = texte.substring(0, texte.indexOf(chevrons[0])).trim().replace(/^"(.*)"$/, "$1").trim()
+            return [{ nom: nom, adresse: chevrons[0].slice(1, -1) }]
+        }
         var liste = [], vues = {}
-        var motif = /(?:"?([^"<>,;]*?)"?\s*)?<([^<>\s@]+@[^<>\s]+)>|([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g
+        var motif = /(?:"([^"]*)"\s*|([^"<>,;]*?)\s*)<([^<>\s@]+@[^<>\s]+)>|([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g
         var m
-        while ((m = motif.exec(texte || "")) !== null) {
-            var adresse = (m[2] || m[3] || "").trim()
+        while ((m = motif.exec(texte)) !== null) {
+            var adresse = (m[3] || m[4] || "").trim()
             var cle = adresse.toLowerCase()
             if (adresse.length === 0 || vues[cle])
                 continue
             vues[cle] = true
-            liste.push({ nom: (m[1] || "").trim(), adresse: adresse })
+            liste.push({ nom: (m[1] || m[2] || "").trim(), adresse: adresse })
         }
         return liste
     }
