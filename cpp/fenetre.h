@@ -25,6 +25,7 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <dwmapi.h>
 #include <propidl.h>
 #include <shobjidl.h>
 #endif
@@ -180,5 +181,49 @@ inline void poserListeRaccourcis() {
     CoUninitialize();
 }
 #endif
+
+// Matériau translucide de la fenêtre, dessiné par le compositeur de Windows
+// 11 : Mica prend le fond du bureau, Acrylique prend ce qui est derrière la
+// fenêtre. Rien à peindre côté application, donc aucun coût d'affichage ;
+// en contrepartie le matériau vaut pour la fenêtre entière et n'apparaît que
+// là où rien ne peint par-dessus — chez MMail, le bandeau de l'en-tête rendu
+// partiellement transparent, et les bords.
+//
+// Rend VRAI seulement si DWM relit la valeur qu'on vient de poser. Un appel
+// DwmSetWindowAttribute qui échoue est silencieux : sans relecture, on
+// croirait avoir posé le matériau sur un poste qui l'ignore. Faux sur
+// Windows 10, où l'attribut n'existe pas, et ailleurs que sous Windows.
+inline bool materiau(QQuickWindow* f, const QString& nom) {
+#ifdef Q_OS_WIN
+  if (!f)
+    return false;
+  // 1 = aucun, 2 = Mica, 3 = Acrylique, 4 = Mica par onglets.
+  int voulu = 0;
+  if (nom == QStringLiteral("mica"))
+    voulu = 2;
+  else if (nom == QStringLiteral("acrylique"))
+    voulu = 3;
+  if (voulu == 0)
+    return false;
+  const HWND poignee = reinterpret_cast<HWND>(f->winId());
+  if (!poignee)
+    return false;
+  // DWMWA_USE_IMMERSIVE_DARK_MODE : le cadre et la barre de titre suivent le
+  // bandeau sombre, sans quoi une barre claire surmonte une fenêtre nuit.
+  BOOL sombre = TRUE;
+  DwmSetWindowAttribute(poignee, 20, &sombre, sizeof(sombre));
+  // DWMWA_SYSTEMBACKDROP_TYPE, à partir de Windows 11 22621.
+  if (FAILED(DwmSetWindowAttribute(poignee, 38, &voulu, sizeof(voulu))))
+    return false;
+  int relu = 0;
+  if (FAILED(DwmGetWindowAttribute(poignee, 38, &relu, sizeof(relu))))
+    return false;
+  return relu == voulu;
+#else
+  Q_UNUSED(f)
+  Q_UNUSED(nom)
+  return false;
+#endif
+}
 
 }  // namespace fenetre
