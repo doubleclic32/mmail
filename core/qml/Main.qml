@@ -478,7 +478,11 @@ ApplicationWindow {
             texteAccent: "#0071e3", rubrique: "#6e6e73", alerte: "#d70015",
             titres: ["SF Pro Display", "SF Pro Text", "Inter Display", "Inter",
                      "Segoe UI Variable Display", "Segoe UI", "Noto Sans",
-                     "DejaVu Sans", "Arial"]
+                     "DejaVu Sans", "Arial"],
+            // Clés facultatives, lues par valeurOu() : aucune des quatre
+            // autres apparences ne les porte, donc aucune ne bouge.
+            survolBandeau: 0.18, survolBande: 0.14, filetBandeau: 1,
+            mouvement: true, materiau: "mica", opaciteBandeau: 0.8
         }
     })
     readonly property var nomsApparence: ["classique", "moderne", "systeme", "mmedia", "pomme"]
@@ -499,6 +503,12 @@ ApplicationWindow {
     readonly property color couleurRubrique: marque ? marque.rubrique : palette.highlight
     readonly property color couleurAlerte: marque ? marque.alerte : "#c42b1c"
     readonly property string policeTitres: marque ? premierePolice(marque.titres) : font.family
+    // Fond du bandeau. Sous 1, le matériau du système transparaît ; le
+    // détour par une propriété « color » convertit la chaîne de la table.
+    readonly property color couleurBandeau: marque ? marque.bandeau : "transparent"
+    readonly property color fondBandeau: marque === null ? "transparent"
+                                       : Qt.rgba(couleurBandeau.r, couleurBandeau.g,
+                                                 couleurBandeau.b, valeurOu("opaciteBandeau", 1.0))
     // Les titres en capitales étroites prennent un cran de plus ; la police de
     // repli, plus large, en reste à la taille des autres apparences.
     readonly property bool titresEtroits: marque !== null && policeTitres === marque.titres[0]
@@ -563,8 +573,23 @@ ApplicationWindow {
         return sombre && marque ? marque.texteBandeau : palette.windowText
     }
     function survolEntete(sombre) {
-        var e = encreEntete(sombre)
-        return Qt.rgba(e.r, e.g, e.b, sombre && marque ? 0.14 : 0.08)
+        // Hors apparence de marque : l'encre du style à 8 %, inchangé.
+        if (marque === null) {
+            var e = encreEntete(sombre)
+            return Qt.rgba(e.r, e.g, e.b, 0.08)
+        }
+        if (sombre)
+            return Qt.rgba(1, 1, 1, valeurOu("survolBandeau", 0.14))
+        // Sur la bande claire de la disposition « etages », un noir à 8 % se
+        // confond avec l'ombre du bandeau : à l'essai du 26/10, le survol ne
+        // se voyait pas. Une apparence peut demander l'accent à la place, qui
+        // se distingue à faible opacité ; sans la clé, rien ne change.
+        var teinte = valeurOu("survolBande", 0)
+        if (teinte <= 0) {
+            var n = encreEntete(sombre)
+            return Qt.rgba(n.r, n.g, n.b, 0.08)
+        }
+        return Qt.rgba(accent.r, accent.g, accent.b, teinte)
     }
 
     // Onglet : le texte seul ; la vue affichée en gras, soulignée.
@@ -870,6 +895,14 @@ ApplicationWindow {
         return Array.isArray(v) ? premierePolice(v) : v
     }
 
+    // Clé FACULTATIVE de l'apparence : sa valeur si elle y est, le défaut
+    // sinon. C'est ce qui permet d'ajouter un comportement sans toucher aux
+    // apparences qui ne le demandent pas — elles n'ont pas la clé, elles
+    // gardent le défaut, et le défaut est leur comportement d'avant.
+    function valeurOu(clef, defaut) {
+        return jeu && jeu[clef] !== undefined ? jeu[clef] : defaut
+    }
+
     // --------------------------------------------------------------- zoom
     //
     // Chaque colonne a son zoom : Ctrl + molette sur elle, ou Ctrl + / Ctrl − /
@@ -932,12 +965,15 @@ ApplicationWindow {
             visible: fenetre.marque !== null
             z: -1
             anchors.fill: parent
-            color: fenetre.marque ? fenetre.marque.bandeau : "transparent"
+            color: fenetre.fondBandeau
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                height: 3
+                // Une apparence peut demander un filet plus fin : 3 points
+                // portent la charte de MMEDIA, un cheveu convient à une
+                // chrome sobre. Sans la clé, la hauteur d'avant.
+                height: fenetre.valeurOu("filetBandeau", 3)
                 gradient: Gradient {
                     orientation: Gradient.Horizontal
                     GradientStop { position: 0.0; color: fenetre.accent }
@@ -5846,12 +5882,29 @@ ApplicationWindow {
         // style, texte mis en valeur en cyan foncé…
         if (marque === null || entete.background.visible || texteAccent.toString() !== "#0e6f9e")
             return "repères de l'apparence MMEDIA non appliqués"
+        // Les clés facultatives sont absentes de MMEDIA : ses valeurs d'avant
+        // doivent sortir des mêmes fonctions. C'est le contrôle qui compte —
+        // le reste n'ajoute qu'une apparence, celui-ci garde les autres.
+        if (survolEntete(true).a.toFixed(2) !== "0.14"
+                || survolEntete(false).a.toFixed(2) !== "0.08")
+            return "survol MMEDIA modifié : " + survolEntete(true).a +
+                   " / " + survolEntete(false).a
+        if (valeurOu("filetBandeau", 3) !== 3 || valeurOu("opaciteBandeau", 1.0) !== 1.0)
+            return "clés facultatives non nulles sous MMEDIA"
+        if (fondBandeau.a !== 1.0)
+            return "bandeau MMEDIA rendu translucide : " + fondBandeau.a
         choisirApparence("pomme")
         if (palette.window.toString() !== "#f5f5f7" || palette.highlight.toString() !== "#0071e3")
             return "apparence Pomme non appliquée : " + palette.window
         if (marque === null || texteAccent.toString() !== "#0071e3"
                 || couleurRubrique.toString() !== "#6e6e73")
             return "repères de l'apparence Pomme non appliqués"
+        if (survolEntete(true).a.toFixed(2) !== "0.18"
+                || survolEntete(false).a.toFixed(2) !== "0.14")
+            return "survol de l'apparence Pomme non appliqué : " +
+                   survolEntete(true).a + " / " + survolEntete(false).a
+        if (valeurOu("filetBandeau", 3) !== 1 || fondBandeau.a.toFixed(1) !== "0.8")
+            return "bandeau de l'apparence Pomme non appliqué : " + fondBandeau.a
         // … et rendus en la quittant : fond du style, couleur de sélection.
         choisirApparence("moderne")
         if (marque !== null || !entete.background.visible
