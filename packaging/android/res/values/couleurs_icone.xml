@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bleu du bord de l'icône, sous le premier plan de l'icône adaptative. -->
+    <color name="fond_icone">#0B225F</color>
+</resources>

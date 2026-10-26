@@ -60,6 +60,20 @@ for essai in 1 2 3; do
 done
 [ "$installe" = 1 ] || { echo "installation impossible" >&2; exit 1; }
 
+# Icône du lanceur (0.6.20) : la liste des applications, où MMail figure, part
+# avec les captures. Sans effet sur le résultat de l'essai.
+adb shell input keyevent KEYCODE_HOME || true
+sleep 3
+taille=$(adb shell wm size | tr -d '\r' | sed -n 's/.*: \([0-9]*\)x\([0-9]*\)$/\1 \2/p' | tail -n 1 || true)
+if [ -n "$taille" ]; then
+  set -- $taille
+  adb shell input swipe $(($1 / 2)) $(($2 * 85 / 100)) $(($1 / 2)) $(($2 / 5)) 400 || true
+  sleep 3
+  adb exec-out screencap -p > lanceur-applications.png || true
+  adb shell input keyevent KEYCODE_HOME || true
+  sleep 2
+fi
+
 composant=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$PAQUET" | tr -d '\r' | tail -n 1)
 echo "Activité : $composant"
 adb logcat -c

@@ -401,7 +401,10 @@ ApplicationWindow {
     // palette et la police de la fenêtre qui changent, le style des contrôles
     // restant Fusion, seul à honorer une palette partout (cf. cpp/main.cpp).
     // « systeme » ne pose aucune surcharge : la palette reste celle du bureau.
-    property string apparence: "moderne"
+    // Par défaut « mmedia » depuis la 0.6.20 (Manu, 26/10) ; un profil qui a
+    // déjà tourné garde la sienne : Qt.labs.settings écrit la valeur par
+    // défaut dans le profil dès le premier démarrage.
+    property string apparence: "mmedia"
     // Disposition de l'en-tête du bureau (0.6.14) : « barre », une seule
     // ligne, par défaut ; « etages », les onglets et les menus sur le
     // bandeau, les boutons et les interrupteurs sur une bande dessous, comme
@@ -1135,6 +1138,12 @@ ApplicationWindow {
                 visible: !fenetre.compact || fenetre.vue === 0
                 menu: menuComptes
             }
+            // Signature, filtres, carnet, corbeilles, sauvegarde (0.6.20).
+            MenuEntete {
+                text: qsTr("Réglages")
+                visible: !fenetre.compact || fenetre.vue === 0
+                menu: menuReglages
+            }
             MenuEntete {
                 text: qsTr("Affichage")
                 menu: menuAffichage
@@ -1280,7 +1289,7 @@ ApplicationWindow {
         onClicked: fenetre.rediger("nouveau")
     }
 
-    // Vue tactile : le menu ⋮ — « Comptes… » et « Affichage… » ouvrent leurs
+    // Vue tactile : le menu ⋮ — « Comptes… », « Réglages… » et « Affichage… » ouvrent leurs
     // menus à part (des sous-menus se choisissaient mal au doigt), puis ce que
     // la barre de bureau montre en boutons.
     Menu {
@@ -1304,6 +1313,12 @@ ApplicationWindow {
             text: qsTr("Comptes…")
             onTriggered: Qt.callLater(function() {
                 menuComptes.popup(boutonPlus, boutonPlus.width - Math.max(menuComptes.width, 200), boutonPlus.height)
+            })
+        }
+        MenuItem {
+            text: qsTr("Réglages…")
+            onTriggered: Qt.callLater(function() {
+                menuReglages.popup(boutonPlus, boutonPlus.width - Math.max(menuReglages.width, 200), boutonPlus.height)
             })
         }
         MenuItem {
@@ -2045,6 +2060,7 @@ ApplicationWindow {
     }
 
     MenuComptes { id: menuComptes }
+    MenuReglages { id: menuReglages }
 
     Menu {
         id: menuAide
@@ -2103,12 +2119,24 @@ ApplicationWindow {
         }
     }
 
-    // Clic droit sur l'objet ou l'expéditeur du message affiché.
+    // Clic droit sur l'objet ou l'expéditeur du message affiché ; dans la
+    // fenêtre du message, aussi sur les destinataires.
     Menu {
         id: menuEnTete
         property string texteChoisi: ""
+        // Texte entier de la ligne cliquée, et ses correspondants, chacun
+        // à ajouter aux contacts ou à voir dans le carnet (0.6.20).
+        property string ligne: ""
+        property var correspondants: []
         font.pointSize: fenetre.tailleColonne("message")
-        onAboutToShow: width = fenetre.largeurMenu(menuEnTete)
+        onAboutToShow: {
+            var liste = fenetre.correspondantsDe(ligne)
+            for (var i = 0; i < liste.length; ++i)
+                liste[i].fiche = boite.ficheDeAdresse(liste[i].adresse)
+            correspondants = liste
+            width = fenetre.largeurMenu(menuEnTete)
+        }
+        onClosed: ligne = ""
         MenuItem {
             text: qsTr("Copier")
             enabled: menuEnTete.texteChoisi.length > 0
@@ -2123,6 +2151,27 @@ ApplicationWindow {
             text: qsTr("Copier l'objet")
             enabled: colonneLecture.sujetAffiche.text.length > 0
             onTriggered: fenetre.copierTexte(colonneLecture.sujetAffiche.text, "message")
+        }
+        MenuSeparator {
+            visible: menuEnTete.correspondants.length > 0
+            height: visible ? implicitHeight : 0
+        }
+        Instantiator {
+            model: menuEnTete.correspondants
+            delegate: MenuItem {
+                required property var modelData
+                readonly property string qui: modelData.nom.length > 0 ? modelData.nom : modelData.adresse
+                text: modelData.fiche > 0 ? qsTr("Voir %1 dans le carnet d'adresses").arg(qui)
+                                          : qsTr("Ajouter %1 aux contacts…").arg(qui)
+                onTriggered: {
+                    if (modelData.fiche > 0)
+                        dlgCarnet.ouvrirSur(modelData.adresse)
+                    else
+                        dlgFiche.ouvrirNouveau(JSON.parse(boite.ficheCorrespondant(modelData.nom, modelData.adresse)))
+                }
+            }
+            onObjectAdded: function(indice, objet) { menuEnTete.insertItem(menuEnTete.count, objet) }
+            onObjectRemoved: function(indice, objet) { menuEnTete.removeItem(objet) }
         }
     }
 
@@ -2346,6 +2395,33 @@ ApplicationWindow {
     }
 
     DialogueCarnet { id: dlgCarnet }
+    DialogueFiche { id: dlgFiche }
+    DialogueNettoyage { id: dlgNettoyage }
+
+    /// Correspondants nommés dans une ligne d'en-tête (« Nom <adresse>, … »,
+    /// ou des adresses nues), sans doublon : `[{nom, adresse}]` (0.6.20).
+    function correspondantsDe(texte) {
+        texte = texte || ""
+        // Une seule adresse entre chevrons (l'expéditeur) : tout ce qui la
+        // précède est le nom, virgule comprise (« Dupont, Jean <…> »).
+        var chevrons = texte.match(/<[^<>\s@]+@[^<>\s]+>/g) || []
+        if (chevrons.length === 1) {
+            var nom = texte.substring(0, texte.indexOf(chevrons[0])).trim().replace(/^"(.*)"$/, "$1").trim()
+            return [{ nom: nom, adresse: chevrons[0].slice(1, -1) }]
+        }
+        var liste = [], vues = {}
+        var motif = /(?:"([^"]*)"\s*|([^"<>,;]*?)\s*)<([^<>\s@]+@[^<>\s]+)>|([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g
+        var m
+        while ((m = motif.exec(texte)) !== null) {
+            var adresse = (m[3] || m[4] || "").trim()
+            var cle = adresse.toLowerCase()
+            if (adresse.length === 0 || vues[cle])
+                continue
+            vues[cle] = true
+            liste.push({ nom: (m[1] || m[2] || "").trim(), adresse: adresse })
+        }
+        return liste
+    }
 
     // « Créer un filtre… » sur un message : un filtre sur son expéditeur, pour
     // son compte, à compléter dans le dialogue des filtres.
@@ -2943,6 +3019,7 @@ ApplicationWindow {
         return dlgCompte.visible || dlgConsentement.visible || dlgDeplacer.visible || dlgRetrait.visible
             || dlgAide.visible || dlgAPropos.visible || dlgLien.visible || dlgIdentite.visible
             || dlgNouveauDossier.visible || dlgCategorie.visible || dlgCategories.visible
+            || dlgFiche.visible || dlgNettoyage.visible
             // Sur téléphone, la rédaction couvre la fenêtre principale.
             || (compact && Object.keys(redactions).length > 0)
     }
@@ -5567,7 +5644,8 @@ ApplicationWindow {
             if (essai.scenario === "menu-champ")
                 scenarios.lancerScenarioMenuChamp()
             if (essai.scenario === "menu-affichage" || essai.scenario === "menu-message"
-                    || essai.scenario === "menu-saisie")
+                    || essai.scenario === "menu-saisie" || essai.scenario === "menu-comptes"
+                    || essai.scenario === "menu-reglages")
                 scenarios.lancerScenarioMenuOuvert()
             // Scénarios de la 0.6.15 : catégories de couleur ; liste, menu et
             // dialogue pour une capture.
@@ -5585,6 +5663,12 @@ ApplicationWindow {
             if (essai.scenario === "bibliotheque-signatures" || essai.scenario === "bibliotheque-vue"
                     || essai.scenario === "bibliotheque-menu")
                 scenarios.lancerScenarioSignatures()
+            // Scénario de la 0.6.20 : le carnet d'adresses modifiable.
+            if (essai.scenario === "carnet" || essai.scenario === "carnet-fiche" || essai.scenario === "carnet-nettoyage")
+                scenarios.lancerScenarioCarnet()
+            // Le corps d'un long message à tableau, défilé aller-retour (0.6.20).
+            if (essai.scenario === "corps-long")
+                scenarios.lancerScenarioCorpsLong()
             if (essai.scenario === "liste-categories" || essai.scenario === "menu-categories"
                     || essai.scenario === "gerer-categories")
                 scenarios.lancerScenarioCapturesCategories()

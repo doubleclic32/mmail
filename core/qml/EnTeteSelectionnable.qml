@@ -36,6 +36,7 @@ TextEdit {
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
         onTapped: {
             menuEnTete.texteChoisi = parent.selectedText
+            menuEnTete.ligne = parent.text
             menuEnTete.popup()
         }
     }

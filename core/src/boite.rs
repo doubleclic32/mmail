@@ -65,6 +65,8 @@ pub mod qobject {
         #[qproperty(i32, en_attente, cxx_name = "enAttente")]
         /// Vrai pendant une synchronisation des agendas.
         #[qproperty(bool, agenda_occupe, cxx_name = "agendaOccupe")]
+        /// Vrai pendant une écriture dans les carnets d'adresses (0.6.20).
+        #[qproperty(bool, contacts_occupe, cxx_name = "contactsOccupe")]
         /// Marquage « lu » d'un message affiché : 0 à l'affichage, N secondes
         /// après (`marquageLuDiffere`), -1 jamais — à la main seulement
         /// (0.6.9, demande de Gwenaëlle).
@@ -521,9 +523,70 @@ pub mod qobject {
 
         /// Contacts des carnets d'adresses (0.6.1, cf. `carddav`) dont le nom,
         /// l'organisation ou une adresse contient `filtre`, en JSON :
-        /// `[{nom, organisation, courriels, telephones, carnet, compte}]`.
+        /// `[{id, nom, organisation, courriels, telephones, carnet, compte,
+        /// modifiable, motif}]` — `motif` dit pourquoi la fiche ne se modifie
+        /// pas (0.6.20).
         #[qinvokable]
         fn carnet(&self, filtre: &QString) -> QString;
+
+        /// Carnets où créer un contact (0.6.20) : ceux d'une boîte connectée
+        /// dont le serveur accepte l'écriture, en JSON `[{id, nom, boite,
+        /// defaut}]` — `defaut` : le carnet personnel de la boîte ouverte.
+        #[qinvokable]
+        #[cxx_name = "carnetsModifiables"]
+        fn carnets_modifiables(&self) -> QString;
+
+        /// Formulaire d'un contact de l'index (0.6.20, cf. `fiche::Fiche`),
+        /// en JSON ; `{"relire": true}` si son texte n'est pas encore lu,
+        /// vide s'il n'existe plus.
+        #[qinvokable]
+        #[cxx_name = "ficheContact"]
+        fn fiche_contact(&self, id: i32) -> QString;
+
+        /// Formulaire prérempli d'un correspondant à ajouter aux contacts
+        /// (0.6.20), en JSON.
+        #[qinvokable]
+        #[cxx_name = "ficheCorrespondant"]
+        fn fiche_correspondant(&self, nom: &QString, adresse: &QString) -> QString;
+
+        /// Fiche de contact qui porte cette adresse de courriel, ou 0.
+        #[qinvokable]
+        #[cxx_name = "ficheDeAdresse"]
+        fn fiche_de_adresse(&self, adresse: &QString) -> i32;
+
+        /// Enregistre un contact sur le serveur (0.6.20) : `saisie`, le
+        /// formulaire rempli, et `origine`, tel qu'il a été montré (JSON) ;
+        /// seul ce qui les distingue est écrit. Issue : `contactsEcrits`.
+        #[qinvokable]
+        #[cxx_name = "enregistrerContact"]
+        fn enregistrer_contact(self: Pin<&mut Boite>, saisie: &QString, origine: &QString);
+
+        /// Après un conflit : la fiche du serveur, plus ce que la saisie avait
+        /// changé, en JSON `{fiche, origine, conflits, disparue}` ; `conflits`
+        /// nomme les rubriques changées des deux côtés.
+        #[qinvokable]
+        #[cxx_name = "reprendreContact"]
+        fn reprendre_contact(&self, saisie: &QString, origine: &QString) -> QString;
+
+        /// Supprime des fiches (liste d'identifiants en JSON), une copie
+        /// gardée sur le poste. Issue : `contactsEcrits`.
+        #[qinvokable]
+        #[cxx_name = "supprimerContacts"]
+        fn supprimer_contacts(self: Pin<&mut Boite>, ids: &QString);
+
+        /// Fiches vides et doublons des carnets (0.6.20), en JSON : par
+        /// carnet, `{carnet, nom, boite, modifiable, fiches, vides,
+        /// sansCoordonnee, doublons}`.
+        #[qinvokable]
+        #[cxx_name = "nettoyageCarnets"]
+        fn nettoyage_carnets(&self) -> QString;
+
+        /// Retire et fusionne selon `plan` (JSON `{retirer: [id], fusions:
+        /// [[garde, autre…]]}`), une copie des fiches d'avant gardée sur le
+        /// poste. Issue : `contactsEcrits`.
+        #[qinvokable]
+        #[cxx_name = "nettoyerCarnets"]
+        fn nettoyer_carnets(self: Pin<&mut Boite>, plan: &QString);
 
         /// Enregistre la liste des filtres. Rend faux, `erreur` posée, si un
         /// filtre est incomplet : rien n'est alors changé.
@@ -960,6 +1023,13 @@ pub mod qobject {
         #[cxx_name = "evenementEnregistre"]
         fn evenement_enregistre(self: Pin<&mut Boite>, ok: bool, message: &QString);
 
+        /// Écriture dans les carnets d'adresses terminée, index relu (0.6.20) :
+        /// `message` en rend compte ; `conflit` : une fiche avait changé
+        /// ailleurs, rien n'a été écrasé.
+        #[qsignal]
+        #[cxx_name = "contactsEcrits"]
+        fn contacts_ecrits(self: Pin<&mut Boite>, ok: bool, message: &QString, conflit: bool);
+
         /// Le message affiché porte une invitation, une réponse ou une
         /// annulation : de quoi en montrer le bandeau, en JSON (cf.
         /// `decrire_invitation`) ; vide sinon.
@@ -1386,6 +1456,7 @@ pub struct BoiteRust {
     /// demandé avant ne marque plus le message « lu » (0.6.7).
     marquages: HashMap<(i64, u32), u64>,
     agenda_occupe: bool,
+    contacts_occupe: bool,
     delai_lu: i32,
     revision_categories: i32,
     /// Empreinte des catalogues rangés à la dernière relecture : un
@@ -1473,6 +1544,7 @@ impl Default for BoiteRust {
             liste: None,
             marquages: HashMap::new(),
             agenda_occupe: false,
+            contacts_occupe: false,
             delai_lu: 0,
             revision_categories: 0,
             empreinte_catalogues: 0,
@@ -3322,22 +3394,414 @@ impl qobject::Boite {
             .as_ref()
             .and_then(|m| m.fiches_contacts(&filtre.to_string(), 500).ok())
             .unwrap_or_default();
-        let liste = |v: &[String]| format!("[{}]", v.iter().map(|t| texte_json(t)).collect::<Vec<_>>().join(","));
-        let lignes: Vec<String> = fiches
+        let lignes: Vec<serde_json::Value> = fiches
             .iter()
             .map(|f| {
-                format!(
-                    r#"{{"nom":{},"organisation":{},"courriels":{},"telephones":{},"carnet":{},"compte":{}}}"#,
-                    texte_json(&f.nom),
-                    texte_json(&f.organisation),
-                    liste(&f.courriels),
-                    liste(&f.telephones),
-                    texte_json(&f.carnet),
-                    texte_json(&f.compte)
-                )
+                let motif = self.motif_carnet(f.compte_id, f.ecriture);
+                serde_json::json!({
+                    "id": f.id,
+                    "nom": f.nom,
+                    "organisation": f.organisation,
+                    "courriels": f.courriels,
+                    "telephones": f.telephones,
+                    "carnet": f.carnet,
+                    "compte": f.compte,
+                    "modifiable": motif.is_empty(),
+                    "motif": motif,
+                })
             })
             .collect();
-        QString::from(&format!("[{}]", lignes.join(",")))
+        QString::from(&serde_json::Value::Array(lignes).to_string())
+    }
+
+    /// Pourquoi les fiches d'un carnet ne se modifient pas depuis MMail ;
+    /// vide si elles le peuvent.
+    fn motif_carnet(&self, compte: i64, ecriture: bool) -> String {
+        if !ecriture {
+            return "carnet en lecture seule sur le serveur".into();
+        }
+        match self.identites.get(&compte) {
+            None => "boîte non connectée".into(),
+            Some(id) if id.oauth.is_some() => "carnet en lecture seule".into(),
+            Some(_) if self.etats.get(&compte) == Some(&Etat::HorsLigne) => "boîte hors ligne".into(),
+            Some(_) => String::new(),
+        }
+    }
+
+    pub fn carnets_modifiables(&self) -> QString {
+        let carnets = self.magasin.as_ref().and_then(|m| m.carnets_locaux().ok()).unwrap_or_default();
+        let modifiables: Vec<&crate::magasin::CarnetLocal> =
+            carnets.iter().filter(|c| self.motif_carnet(c.compte, c.ecriture).is_empty()).collect();
+        // Par défaut : le carnet personnel (SOGo le nomme « personal ») de la
+        // boîte ouverte, puis un carnet de cette boîte, puis un personnel.
+        let ouverte = self.compte_courant as i64;
+        let personnel = |c: &&&crate::magasin::CarnetLocal| c.adresse.trim_end_matches('/').ends_with("/personal");
+        let defaut = modifiables
+            .iter()
+            .filter(|c| c.compte == ouverte)
+            .find(personnel)
+            .or_else(|| modifiables.iter().find(|c| c.compte == ouverte))
+            .or_else(|| modifiables.iter().find(personnel))
+            .or(modifiables.first())
+            .map(|c| c.id);
+        let liste: Vec<serde_json::Value> = modifiables
+            .iter()
+            .map(|c| serde_json::json!({ "id": c.id, "nom": c.nom, "boite": c.boite, "defaut": Some(c.id) == defaut }))
+            .collect();
+        QString::from(&serde_json::Value::Array(liste).to_string())
+    }
+
+    pub fn fiche_contact(&self, id: i32) -> QString {
+        let Some(index) = self.magasin.as_ref().and_then(|m| m.fiche_contact(id as i64).ok().flatten()) else {
+            return QString::from("");
+        };
+        match crate::fiche::lire(&index.vcard) {
+            Some(mut f) => {
+                f.id = index.id;
+                f.carnet = index.carnet;
+                f.etag = index.etag;
+                QString::from(&serde_json::to_string(&f).unwrap_or_default())
+            }
+            // Fiche rangée avant la 0.6.20, sans son texte : la prochaine
+            // synchronisation le relit.
+            None => QString::from(r#"{"relire":true}"#),
+        }
+    }
+
+    pub fn fiche_correspondant(&self, nom: &QString, adresse: &QString) -> QString {
+        let f = crate::fiche::depuis_adresse(&nom.to_string(), &adresse.to_string());
+        QString::from(&serde_json::to_string(&f).unwrap_or_default())
+    }
+
+    pub fn fiche_de_adresse(&self, adresse: &QString) -> i32 {
+        let adresse = adresse.to_string();
+        if adresse.trim().is_empty() {
+            return 0;
+        }
+        self.magasin.as_ref().and_then(|m| m.fiche_par_adresse(&adresse).ok().flatten()).unwrap_or(0) as i32
+    }
+
+    pub fn enregistrer_contact(mut self: Pin<&mut Self>, saisie: &QString, origine: &QString) {
+        let lire = |t: &QString| serde_json::from_str::<crate::fiche::Fiche>(&t.to_string());
+        let (saisie, origine) = match (lire(saisie), lire(origine)) {
+            (Ok(s), Ok(o)) => (s, o),
+            (Err(e), _) | (_, Err(e)) => {
+                self.as_mut().contacts_ecrits(false, &QString::from(&format!("formulaire illisible : {e}")), false);
+                return;
+            }
+        };
+        let Some(magasin) = self.magasin.as_ref() else { return };
+        let index = if saisie.id > 0 {
+            match magasin.fiche_contact(saisie.id).ok().flatten() {
+                Some(i) => Some(i),
+                None => {
+                    let message = "ce contact n'est plus dans le carnet : il a sans doute été supprimé ailleurs";
+                    self.as_mut().contacts_ecrits(false, &QString::from(message), true);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let carnet_id = index.as_ref().map_or(saisie.carnet, |i| i.carnet);
+        let Some(carnet) = magasin.carnets_locaux().unwrap_or_default().into_iter().find(|c| c.id == carnet_id) else {
+            self.as_mut().contacts_ecrits(false, &QString::from("carnet d'adresses introuvable"), false);
+            return;
+        };
+        let motif = self.motif_carnet(carnet.compte, carnet.ecriture);
+        if !motif.is_empty() {
+            self.as_mut().contacts_ecrits(false, &QString::from(&format!("enregistrement impossible : {motif}")), false);
+            return;
+        }
+        if let Some(i) = &index {
+            if i.vcard.is_empty() {
+                let message = "la fiche n'a pas encore été relue depuis la mise à jour de MMail : réessayez dans un instant";
+                self.as_mut().contacts_ecrits(false, &QString::from(message), false);
+                return;
+            }
+            // Une version plus récente est arrivée pendant la saisie : ce qui
+            // a changé ailleurs et que la saisie change aussi n'est pas écrasé
+            // sans le dire.
+            if i.etag != saisie.etag {
+                if let Some(courant) = crate::fiche::lire(&i.vcard) {
+                    if !crate::fiche::reprendre(&courant, &origine, &saisie).1.is_empty() {
+                        self.as_mut().contacts_ecrits(false, &QString::from(crate::carddav::CONFLIT), true);
+                        return;
+                    }
+                }
+            }
+        }
+        let compte = carnet.compte;
+        self.lancer_contacts(
+            vec![compte],
+            Box::new(move |_, identites| {
+                let id = identites.get(&compte).ok_or(("boîte non connectée".to_string(), false))?;
+                let dav = crate::caldav::Acces { utilisateur: &id.utilisateur, mot_de_passe: &id.mot_de_passe };
+                let nom = crate::fiche::nom_montre(&saisie);
+                match index {
+                    None => {
+                        let uid = crate::saisie::nouvel_uid();
+                        let vcard = crate::fiche::creer(&saisie, &uid, chrono::Utc::now()).map_err(|e| (e, false))?;
+                        let url = format!("{}/{uid}.vcf", carnet.adresse.trim_end_matches('/'));
+                        crate::carddav::deposer(&dav, &url, &vcard, None).map_err(erreur_contacts)?;
+                        Ok(format!("Contact « {nom} » ajouté au carnet « {} ».", carnet.nom))
+                    }
+                    Some(i) => {
+                        let vcard = crate::fiche::modifier(&i.vcard, &origine, &saisie, chrono::Utc::now()).map_err(|e| (e, false))?;
+                        let url = crate::caldav::adresse(&carnet.adresse, &i.href).ok_or(("adresse de la fiche invalide".to_string(), false))?;
+                        crate::carddav::deposer(&dav, &url, &vcard, Some(&i.etag)).map_err(erreur_contacts)?;
+                        Ok(format!("Contact « {nom} » enregistré."))
+                    }
+                }
+            }),
+        );
+    }
+
+    pub fn reprendre_contact(&self, saisie: &QString, origine: &QString) -> QString {
+        let lire = |t: &QString| serde_json::from_str::<crate::fiche::Fiche>(&t.to_string()).unwrap_or_default();
+        let (mut saisie, origine) = (lire(saisie), lire(origine));
+        let index = self.magasin.as_ref().and_then(|m| m.fiche_contact(saisie.id).ok().flatten());
+        let courant = index.as_ref().and_then(|i| {
+            crate::fiche::lire(&i.vcard).map(|mut f| {
+                f.id = i.id;
+                f.carnet = i.carnet;
+                f.etag = i.etag.clone();
+                f
+            })
+        });
+        let json = match courant {
+            Some(courant) => {
+                let (fiche, conflits) = crate::fiche::reprendre(&courant, &origine, &saisie);
+                serde_json::json!({ "fiche": fiche, "origine": courant, "conflits": conflits, "disparue": false })
+            }
+            // Supprimée ailleurs : enregistrer la recréera.
+            None => {
+                saisie.id = 0;
+                saisie.etag.clear();
+                for c in saisie.courriels.iter_mut().chain(saisie.telephones.iter_mut()) {
+                    c.cle = None;
+                }
+                serde_json::json!({ "fiche": saisie, "origine": crate::fiche::Fiche::default(), "conflits": [], "disparue": true })
+            }
+        };
+        QString::from(&json.to_string())
+    }
+
+    /// Les fiches désignées et leur carnet, si toutes se modifient ; sinon,
+    /// pourquoi.
+    fn fiches_modifiables(&self, ids: &[i64]) -> Result<Vec<(crate::magasin::FicheIndex, crate::magasin::CarnetLocal)>, String> {
+        let magasin = self.magasin.as_ref().ok_or("index local fermé")?;
+        let carnets = magasin.carnets_locaux().map_err(|e| e.to_string())?;
+        let mut sortie = Vec::new();
+        for id in ids {
+            let fiche = magasin.fiche_contact(*id).map_err(|e| e.to_string())?.ok_or("un contact n'est plus dans le carnet")?;
+            let carnet = carnets.iter().find(|c| c.id == fiche.carnet).ok_or("carnet d'adresses introuvable")?.clone();
+            let motif = self.motif_carnet(carnet.compte, carnet.ecriture);
+            if !motif.is_empty() {
+                return Err(format!("carnet « {} » : {motif}", carnet.nom));
+            }
+            sortie.push((fiche, carnet));
+        }
+        Ok(sortie)
+    }
+
+    pub fn supprimer_contacts(mut self: Pin<&mut Self>, ids: &QString) {
+        let ids: Vec<i64> = serde_json::from_str(&ids.to_string()).unwrap_or_default();
+        let fiches = match self.fiches_modifiables(&ids) {
+            Ok(f) if !f.is_empty() => f,
+            Ok(_) => return,
+            Err(e) => {
+                self.as_mut().contacts_ecrits(false, &QString::from(&format!("suppression impossible : {e}")), false);
+                return;
+            }
+        };
+        let copie = match copie_des_fiches(&self.profil, fiches.iter().map(|(f, _)| f)) {
+            Ok(c) => c,
+            Err(e) => {
+                self.as_mut().contacts_ecrits(false, &QString::from(&format!("copie des fiches impossible, rien n'est supprimé : {e}")), false);
+                return;
+            }
+        };
+        let comptes: Vec<i64> = fiches.iter().map(|(_, c)| c.compte).collect::<HashSet<_>>().into_iter().collect();
+        self.lancer_contacts(
+            comptes,
+            Box::new(move |_, identites| {
+                let mut faits = 0;
+                let mut echecs = Vec::new();
+                let mut conflit = false;
+                for (fiche, carnet) in &fiches {
+                    match retirer_fiche(identites, fiche, carnet) {
+                        Ok(()) => faits += 1,
+                        Err((m, c)) => {
+                            conflit |= c;
+                            echecs.push(m);
+                        }
+                    }
+                }
+                bilan_contacts(&format!("{faits} contact(s) supprimé(s)."), &copie, echecs, conflit)
+            }),
+        );
+    }
+
+    pub fn nettoyage_carnets(&self) -> QString {
+        let Some(magasin) = self.magasin.as_ref() else { return QString::from("[]") };
+        let mut sortie = Vec::new();
+        for carnet in magasin.carnets_locaux().unwrap_or_default().into_iter().filter(|c| c.ecriture) {
+            let index = magasin.fiches_du_carnet(carnet.id).unwrap_or_default();
+            let lues: Vec<(i64, crate::fiche::Fiche, &str)> =
+                index.iter().filter_map(|i| crate::fiche::lire(&i.vcard).map(|f| (i.id, f, i.vcard.as_str()))).collect();
+            let decrire = |id: i64, f: &crate::fiche::Fiche| serde_json::json!({ "id": id, "resume": crate::fiche::resume(f) });
+            let vides: Vec<_> = lues.iter().filter(|(_, f, _)| crate::fiche::est_vide(f)).map(|(i, f, _)| decrire(*i, f)).collect();
+            let sans: Vec<_> = lues.iter().filter(|(_, f, _)| crate::fiche::sans_coordonnee(f)).map(|(i, f, _)| decrire(*i, f)).collect();
+            let paires: Vec<(i64, crate::fiche::Fiche)> = lues.iter().map(|(i, f, _)| (*i, f.clone())).collect();
+            let mut doublons = Vec::new();
+            for groupe in crate::fiche::doublons(&paires) {
+                let membres: Vec<&(i64, crate::fiche::Fiche, &str)> =
+                    groupe.iter().filter_map(|id| lues.iter().find(|(i, _, _)| i == id)).collect();
+                let vcards: Vec<&str> = membres.iter().map(|(_, _, v)| *v).collect();
+                let resultat = crate::fiche::fusionner(&vcards, chrono::Utc::now())
+                    .ok()
+                    .and_then(|v| crate::fiche::lire(&v))
+                    .map(|f| {
+                        format!("{} ({} adresse(s), {} numéro(s))", crate::fiche::resume(&f), f.courriels.len(), f.telephones.len())
+                    })
+                    .unwrap_or_default();
+                doublons.push(serde_json::json!({
+                    "garde": decrire(membres[0].0, &membres[0].1),
+                    "autres": membres[1..].iter().map(|(i, f, _)| decrire(*i, f)).collect::<Vec<_>>(),
+                    "resultat": resultat,
+                }));
+            }
+            let motif = self.motif_carnet(carnet.compte, carnet.ecriture);
+            sortie.push(serde_json::json!({
+                "carnet": carnet.id,
+                "nom": carnet.nom,
+                "boite": carnet.boite,
+                "modifiable": motif.is_empty(),
+                "motif": motif,
+                "fiches": index.len(),
+                "nonLues": index.len() - lues.len(),
+                "vides": vides,
+                "sansCoordonnee": sans,
+                "doublons": doublons,
+            }));
+        }
+        QString::from(&serde_json::Value::Array(sortie).to_string())
+    }
+
+    pub fn nettoyer_carnets(mut self: Pin<&mut Self>, plan: &QString) {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct Plan {
+            retirer: Vec<i64>,
+            fusions: Vec<Vec<i64>>,
+        }
+        let plan: Plan = serde_json::from_str(&plan.to_string()).unwrap_or_default();
+        let fusions: Vec<Vec<i64>> = plan.fusions.into_iter().filter(|g| g.len() > 1).collect();
+        // Une fiche d'un groupe fusionné ne se retire pas à part.
+        let dans_fusions: HashSet<i64> = fusions.iter().flatten().copied().collect();
+        let retirer: Vec<i64> = plan.retirer.into_iter().filter(|i| !dans_fusions.contains(i)).collect();
+        let tous: Vec<i64> = retirer.iter().chain(dans_fusions.iter()).copied().collect();
+        let fiches = match self.fiches_modifiables(&tous) {
+            Ok(f) if !f.is_empty() => f,
+            Ok(_) => return,
+            Err(e) => {
+                self.as_mut().contacts_ecrits(false, &QString::from(&format!("nettoyage impossible : {e}")), false);
+                return;
+            }
+        };
+        let copie = match copie_des_fiches(&self.profil, fiches.iter().map(|(f, _)| f)) {
+            Ok(c) => c,
+            Err(e) => {
+                self.as_mut().contacts_ecrits(false, &QString::from(&format!("copie des fiches impossible, rien n'est changé : {e}")), false);
+                return;
+            }
+        };
+        let comptes: Vec<i64> = fiches.iter().map(|(_, c)| c.compte).collect::<HashSet<_>>().into_iter().collect();
+        let par_id: HashMap<i64, (crate::magasin::FicheIndex, crate::magasin::CarnetLocal)> =
+            fiches.into_iter().map(|(f, c)| (f.id, (f, c))).collect();
+        self.lancer_contacts(
+            comptes,
+            Box::new(move |_, identites| {
+                let (mut retirees, mut fusionnees) = (0, 0);
+                let mut echecs = Vec::new();
+                let mut conflit = false;
+                let mut noter = |(m, c): (String, bool)| {
+                    conflit |= c;
+                    echecs.push(m);
+                };
+                for groupe in &fusions {
+                    let membres: Vec<&(crate::magasin::FicheIndex, crate::magasin::CarnetLocal)> =
+                        groupe.iter().filter_map(|id| par_id.get(id)).collect();
+                    let (garde, carnet) = membres[0];
+                    let vcards: Vec<&str> = membres.iter().map(|(f, _)| f.vcard.as_str()).collect();
+                    // La fiche gardée d'abord : les autres ne partent qu'une
+                    // fois leur contenu repris.
+                    let ecrite = crate::fiche::fusionner(&vcards, chrono::Utc::now())
+                        .map_err(|e| (e, false))
+                        .and_then(|vcard| deposer_fiche(identites, garde, carnet, &vcard));
+                    if let Err(e) = ecrite {
+                        noter(e);
+                        continue;
+                    }
+                    fusionnees += 1;
+                    for (fiche, carnet) in &membres[1..] {
+                        match retirer_fiche(identites, fiche, carnet) {
+                            Ok(()) => retirees += 1,
+                            Err(e) => noter(e),
+                        }
+                    }
+                }
+                for id in &retirer {
+                    let (fiche, carnet) = &par_id[id];
+                    match retirer_fiche(identites, fiche, carnet) {
+                        Ok(()) => retirees += 1,
+                        Err(e) => noter(e),
+                    }
+                }
+                bilan_contacts(&format!("{fusionnees} fiche(s) fusionnée(s), {retirees} fiche(s) retirée(s)."), &copie, echecs, conflit)
+            }),
+        );
+    }
+
+    /// Écrit dans les carnets depuis un fil à part, avec les identifiants des
+    /// boîtes en jeu ; relit ensuite leurs carnets — réussite ou conflit — et
+    /// rend compte par `contactsEcrits`.
+    fn lancer_contacts(mut self: Pin<&mut Self>, comptes: Vec<i64>, travail: TravailContacts) {
+        if self.contacts_occupe {
+            self.as_mut().contacts_ecrits(false, &QString::from("une écriture dans les carnets est déjà en cours"), false);
+            return;
+        }
+        let identites: HashMap<i64, Identifiants> =
+            comptes.iter().filter_map(|c| self.identites.get(c).map(|i| (*c, i.clone()))).collect();
+        let profil = self.profil.clone();
+        let fil = self.qt_thread();
+        self.as_mut().set_contacts_occupe(true);
+        let lance = thread::Builder::new().name("mmail-contacts".into()).spawn(move || {
+            let issue = match Magasin::ouvrir(&profil) {
+                Ok(magasin) => {
+                    let issue = travail(&magasin, &identites);
+                    for (compte, id) in &identites {
+                        let acces = crate::caldav::Acces { utilisateur: &id.utilisateur, mot_de_passe: &id.mot_de_passe };
+                        let _ = crate::carddav::synchroniser(&magasin, *compte, &id.hote, &acces, maintenant(), false);
+                    }
+                    issue
+                }
+                Err(e) => Err((format!("index local : {e}"), false)),
+            };
+            let _ = fil.queue(move |mut boite: Pin<&mut qobject::Boite>| {
+                boite.as_mut().set_contacts_occupe(false);
+                let (ok, message, conflit) = match issue {
+                    Ok(m) => (true, m, false),
+                    Err((m, c)) => (false, m, c),
+                };
+                boite.as_mut().contacts_ecrits(ok, &QString::from(&message), conflit);
+            });
+        });
+        if lance.is_err() {
+            self.as_mut().set_contacts_occupe(false);
+            self.as_mut().contacts_ecrits(false, &QString::from("impossible de lancer l'écriture"), false);
+        }
     }
 
     pub fn filtres(&self) -> QString {
@@ -4319,6 +4783,78 @@ fn atelier(profil: &str) -> PathBuf {
 
 /// Dossier de travail des pièces jointes ouvertes, à côté de l'index. Vidé à
 /// chaque ouverture du profil.
+/// Travail d'une écriture dans les carnets (cf. `lancer_contacts`) : rend le
+/// compte rendu, ou le motif de l'échec et s'il vient d'un conflit.
+type TravailContacts = Box<dyn FnOnce(&Magasin, &HashMap<i64, Identifiants>) -> Result<String, (String, bool)> + Send>;
+
+/// Une erreur d'écriture dans un carnet, et si c'est un conflit.
+fn erreur_contacts(e: Erreur) -> (String, bool) {
+    let conflit = matches!(&e, Erreur::Refuse(m) if m == crate::carddav::CONFLIT);
+    (e.to_string(), conflit)
+}
+
+fn acces_contacts(identites: &HashMap<i64, Identifiants>, compte: i64) -> Result<crate::caldav::Acces<'_>, (String, bool)> {
+    let id = identites.get(&compte).ok_or(("boîte non connectée".to_string(), false))?;
+    Ok(crate::caldav::Acces { utilisateur: &id.utilisateur, mot_de_passe: &id.mot_de_passe })
+}
+
+fn adresse_fiche(fiche: &crate::magasin::FicheIndex, carnet: &crate::magasin::CarnetLocal) -> Result<String, (String, bool)> {
+    crate::caldav::adresse(&carnet.adresse, &fiche.href).ok_or(("adresse de la fiche invalide".to_string(), false))
+}
+
+fn retirer_fiche(
+    identites: &HashMap<i64, Identifiants>,
+    fiche: &crate::magasin::FicheIndex,
+    carnet: &crate::magasin::CarnetLocal,
+) -> Result<(), (String, bool)> {
+    let dav = acces_contacts(identites, carnet.compte)?;
+    crate::carddav::retirer(&dav, &carnet.adresse, &adresse_fiche(fiche, carnet)?, &fiche.etag).map_err(erreur_contacts)
+}
+
+fn deposer_fiche(
+    identites: &HashMap<i64, Identifiants>,
+    fiche: &crate::magasin::FicheIndex,
+    carnet: &crate::magasin::CarnetLocal,
+    vcard: &str,
+) -> Result<(), (String, bool)> {
+    let dav = acces_contacts(identites, carnet.compte)?;
+    crate::carddav::deposer(&dav, &adresse_fiche(fiche, carnet)?, vcard, Some(&fiche.etag)).map(|_| ()).map_err(erreur_contacts)
+}
+
+/// Compte rendu d'une suppression ou d'un nettoyage : ce qui est fait, où est
+/// la copie des fiches d'avant, et les échecs.
+fn bilan_contacts(fait: &str, copie: &str, echecs: Vec<String>, conflit: bool) -> Result<String, (String, bool)> {
+    let mut message = format!("{fait} Copie des fiches d'avant : {copie}");
+    if echecs.is_empty() {
+        return Ok(message);
+    }
+    message.push_str(&format!("\n{} échec(s) : {}", echecs.len(), echecs.join(" ; ")));
+    Err((message, conflit))
+}
+
+/// Copie sur le poste des fiches qu'une suppression ou une fusion va changer,
+/// une vCard à la suite de l'autre, dans `contacts-retires` à côté de
+/// l'index : de quoi les réimporter (webmail, autre logiciel). Rend son
+/// chemin.
+fn copie_des_fiches<'a>(profil: &str, fiches: impl Iterator<Item = &'a crate::magasin::FicheIndex>) -> Result<String, String> {
+    let dossier = Path::new(profil).parent().map(|p| p.join("contacts-retires")).unwrap_or_else(|| PathBuf::from("contacts-retires"));
+    std::fs::create_dir_all(&dossier).map_err(|e| e.to_string())?;
+    let horodatage = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    let mut chemin = dossier.join(format!("{horodatage}.vcf"));
+    let mut n = 1;
+    while chemin.exists() {
+        n += 1;
+        chemin = dossier.join(format!("{horodatage}-{n}.vcf"));
+    }
+    let mut texte = String::new();
+    for f in fiches {
+        texte.push_str(f.vcard.trim_end());
+        texte.push_str("\r\n");
+    }
+    std::fs::write(&chemin, texte).map_err(|e| e.to_string())?;
+    Ok(chemin.display().to_string())
+}
+
 fn dossier_pieces(profil: &str) -> PathBuf {
     Path::new(profil)
         .parent()

@@ -221,7 +221,11 @@ impl Dav for Faux {
 
     /// PUT et DELETE sur les objets, ETag vérifiés comme le fait SOGo : au PUT
     /// seulement.
-    fn ecrire(&self, methode: &str, url: &str, corps: &str, si_etag: Option<&str>) -> Resultat<Reponse> {
+    fn ecrire(&self, methode: &str, url: &str, _type: &str, corps: &str, condition: Condition) -> Resultat<Reponse> {
+        let si_etag = match condition {
+            Condition::SiEtag(e) => Some(e),
+            _ => None,
+        };
         let chemin = chemin(url).to_string();
         self.journal.borrow_mut().push(format!("{methode} {chemin} {}", si_etag.unwrap_or("-")));
         if let Some(statut) = self.statut {

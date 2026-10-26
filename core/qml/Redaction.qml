@@ -142,7 +142,7 @@ Page {
             return
         }
         if (s.signature.length === 0) {
-            signaler(qsTr("Aucune signature pour ce compte : menu « Comptes », « Nom et signature… »."), true)
+            signaler(qsTr("Aucune signature pour ce compte : menu « Réglages », « Nom et signature… »."), true)
             return
         }
         mef.inserer(corpsRedaction.cursorPosition, s.signature)
@@ -897,6 +897,9 @@ Page {
                     miseEnForme: mef
                     fond: fenetre.palette.base
                 }
+                // Même blanc que la lecture sur une longue réponse qui cite un
+                // message à tableau (cf. cpp/rendu_complet.h).
+                RenduComplet { zone: corpsRedaction }
                 Keys.onPressed: function(ev) {
                     if (ev.matches(StandardKey.Paste) && redac.collerImage())
                         ev.accepted = true

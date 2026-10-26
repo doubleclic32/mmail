@@ -776,7 +776,7 @@ QtObject {
                       ["dlgNouveauDossier", dlgNouveauDossier], ["dlgConsentement", dlgConsentement],
                       ["dlgOuvrirAvec", dlgOuvrirAvec], ["dlgLogiciels", dlgLogiciels], ["dlgReprise", dlgReprise],
                       ["dlgLien", dlgLien], ["dlgViderDossier", dlgViderDossier], ["popupRappels", popupRappels],
-                      ["menuComptes", menuComptes], ["menuAffichage", menuAffichage], ["menuPiece", menuPiece],
+                      ["menuComptes", menuComptes], ["menuReglages", menuReglages], ["menuAffichage", menuAffichage], ["menuPiece", menuPiece],
                       ["menuMessage", menuMessage], ["menuDossier", menuDossier], ["menuCompte", menuCompte]]
         var i = 0
         var t = Qt.createQmlObject("import QtQuick; Timer { interval: 400; repeat: true }", fenetre)
@@ -814,7 +814,7 @@ QtObject {
             var chemin = lanceur.chemin(identifiantsEssai.sortie + "/tactile-" + nom + ".png")
             racine.grabToImage(function(r) { r.saveToFile(chemin) })
             console.log("scenario: tactile", nom, "| vue", vue, "| tiroir", tiroir.opened,
-                        "| menu", menuPlus.opened || menuComptes.opened, "| titre", boite.dossierCourant,
+                        "| menu", menuPlus.opened || menuComptes.opened || menuReglages.opened, "| titre", boite.dossierCourant,
                         "| barre", entete.height)
         }
         var etapes = [
@@ -825,7 +825,9 @@ QtObject {
             function() { saisir("menu") },
             function() { menuPlus.close(); menuComptes.popup(boutonPlus, boutonPlus.width - 260, boutonPlus.height) },
             function() { saisir("comptes") },
-            function() { menuComptes.close(); bandeauGlissement.texte = qsTr("Message mis à la corbeille."); bandeauGlissement.open() },
+            function() { menuComptes.close(); menuReglages.popup(boutonPlus, boutonPlus.width - 260, boutonPlus.height) },
+            function() { saisir("reglages") },
+            function() { menuReglages.close(); bandeauGlissement.texte = qsTr("Message mis à la corbeille."); bandeauGlissement.open() },
             function() { saisir("annuler") },
             function() { bandeauGlissement.close(); choisir(0, 0) },
             function() { saisir("message") },
@@ -1794,6 +1796,20 @@ QtObject {
                 menuAffichage.itemAt(1).triggered()
                 return
             }
+            // 0.6.20 : « Comptes » et « Réglages », ouverts pour une capture ;
+            // leurs entrées sur la console.
+            if (essai.scenario === "menu-comptes" || essai.scenario === "menu-reglages") {
+                var m = essai.scenario === "menu-comptes" ? menuComptes : menuReglages
+                m.popup(Math.max(0, fenetre.width - 520), entete.height)
+                var entrees = []
+                for (var i = 0; i < m.count; ++i) {
+                    var e = m.itemAt(i)
+                    if (e && e.height > 0 && (e.text || (e.subMenu && e.subMenu.title)))
+                        entrees.push((e.text || e.subMenu.title) + (e.enabled ? "" : " (grisé)"))
+                }
+                console.log("scenario: " + m.title + " : " + entrees.join(" | "))
+                return
+            }
             if (essai.scenario === "menu-saisie") {
                 var champ = colonneListe.champRecherche
                 var h = menuDuChamp(champ)
@@ -2241,6 +2257,72 @@ QtObject {
         tic.start()
     }
 
+    /// Scénario « corps-long » (0.6.20) : un long message HTML à tableau (banc
+    /// LONG=1), descendu jusqu'en bas par pas de 40 px puis remonté. À chaque
+    /// pas, le corps visible est capturé dans MMAIL_SORTIE
+    /// (corps-<rang>-<sens>-<position>.png) : il restait blanc en remontant
+    /// (cf. cpp/rendu_complet.h). Les captures blanches se comptent hors de MMail.
+    function lancerScenarioCorpsLong() {
+        if (!identifiantsEssai.sortie) {
+            console.log("scenario: ECHEC corps-long : MMAIL_SORTIE absent")
+            Qt.quit()
+            return
+        }
+        var tic = Qt.createQmlObject('import QtQuick; Timer { interval: 1000; repeat: true }', fenetre)
+        var suivi = { n: 0, index: -1, pas: [], rang: 0 }
+        var cadre = colonneLecture.cadreCorps.contentItem
+        var suivant = function() {
+            if (suivi.rang >= suivi.pas.length) {
+                console.log("scenario: corps-long " + suivi.pas.length + " captures")
+                Qt.quit()
+                return
+            }
+            var p = suivi.pas[suivi.rang]
+            cadre.contentY = p.y
+            // Une image rendue avant la capture : le défilement a eu lieu.
+            Qt.callLater(function() {
+                var chemin = lanceur.chemin(identifiantsEssai.sortie + "/corps-" + ("00" + suivi.rang).slice(-3)
+                                            + "-" + p.sens + "-" + Math.round(p.y) + ".png")
+                colonneLecture.cadreCorps.grabToImage(function(r) {
+                    r.saveToFile(chemin)
+                    suivi.rang += 1
+                    suivant()
+                })
+            })
+        }
+        tic.triggered.connect(function() {
+            suivi.n += 1
+            var c = comptesConnus[0]
+            if (suivi.n === 4) {
+                ouvrirDossier(c.compte, "INBOX")
+            } else if (suivi.n === 7) {
+                for (var i = 0; i < modeleMessages.count; ++i)
+                    if (modeleMessages.get(i).sujet === "Corps long")
+                        suivi.index = i
+                if (suivi.index < 0) {
+                    tic.stop()
+                    console.log("scenario: ECHEC message « Corps long » absent (banc LONG=1 ?)")
+                    Qt.quit()
+                    return
+                }
+                choisir(suivi.index, 0)
+            } else if (suivi.n === 10) {
+                tic.stop()
+                var course = cadre.contentHeight - cadre.height
+                console.log("scenario: corps-long " + colonneLecture.vueCorps.text.length + " caractères, course "
+                            + Math.round(course) + " px")
+                var ys = []
+                for (var y = 0; y < course; y += 40)
+                    ys.push(y)
+                ys.push(course)
+                ys.forEach(function(y) { suivi.pas.push({ sens: "bas", y: y }) })
+                ys.slice().reverse().forEach(function(y) { suivi.pas.push({ sens: "haut", y: y }) })
+                suivant()
+            }
+        })
+        tic.start()
+    }
+
     /// Scénario « bibliotheque-signatures » (0.6.18) : la bibliothèque de signatures. Une
     /// identité posée à l'ancienne y est rangée ; « Nom et signature… » en
     /// crée une autre, choisie pour les réponses, en duplique et en supprime ;
@@ -2337,5 +2419,215 @@ QtObject {
         bilan("« Annuler » : " + noms(), signaturesNommees().length === 1)
         console.log("scenario: bibliotheque-signatures " + (echecs === 0 ? "OK" : "ECHEC (" + echecs + ")"))
         Qt.quit()
+    }
+
+    /// Scénario « carnet » (0.6.20) : le carnet d'adresses modifiable, contre
+    /// le Radicale du banc (CARNET=1) — carnets et droits, création,
+    /// modification, conflit avec une écriture faite ailleurs entre-temps
+    /// (le banc change la fiche sur le disque du serveur à l'annonce
+    /// « modification sur le serveur »), correspondant ajouté depuis l'en-tête,
+    /// suppression, carnet en lecture seule, fiches vides et doublons.
+    function lancerScenarioCarnet() {
+        var echecs = 0
+        var bilan = function(texte, bon) {
+            if (!bon)
+                echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var etapes = []
+        var suite = function() {
+            var e = etapes.shift()
+            if (e)
+                plusTard(300, e)
+        }
+        // Prochaine réponse du noyau à une écriture dans les carnets.
+        var attenteEcriture = null
+        boite.contactsEcrits.connect(function(ok, message, conflit) {
+            var a = attenteEcriture
+            attenteEcriture = null
+            if (a)
+                plusTard(200, function() { a(ok, message.replace(/: \/.*contacts-retires\/[0-9-]+\.vcf/, ": <copie>"), conflit) })
+        })
+        var attenteSynchro = null
+        boite.agendasSynchronises.connect(function(change, erreurs) {
+            var a = attenteSynchro
+            attenteSynchro = null
+            if (a)
+                a(change, erreurs)
+        })
+        var trouver = function(texte) { return JSON.parse(boite.carnet(texte)) }
+        var fiche = function(id) { return JSON.parse(boite.ficheContact(id) || "{}") }
+        var id = 0
+
+        etapes.push(function() {
+            attenteSynchro = function(change, erreurs) {
+                var carnets = JSON.parse(boite.carnetsModifiables())
+                bilan("carnets modifiables : " + carnets.map(function(c) { return c.nom + (c.defaut ? " (défaut)" : "") }).join(", ")
+                      + " | erreurs de un@ « " + erreurs.split("\n").filter(function(e) { return e.indexOf("un@") === 0 }).join(" ; ") + " »",
+                      carnets.length === 1 && carnets[0].nom === "Personnel" && carnets[0].defaut)
+                var tous = trouver("")
+                var ro = trouver("protegee")
+                bilan("fiches lues : " + tous.length + " | « Fiche Protegee » modifiable " + (ro.length && ro[0].modifiable)
+                      + " (" + (ro.length ? ro[0].motif : "") + ")",
+                      tous.length === 7 && ro.length === 1 && !ro[0].modifiable && ro[0].motif === "carnet en lecture seule sur le serveur")
+                // « carnet-fiche », « carnet-nettoyage » : le dialogue ouvert,
+                // pour une capture.
+                if (essai.scenario === "carnet-fiche") {
+                    var f = JSON.parse(boite.ficheContact(trouver("doublon")[0].id))
+                    dlgFiche.ouvrirFiche(f.id)
+                    return
+                }
+                if (essai.scenario === "carnet-nettoyage") {
+                    dlgNettoyage.ouvrir()
+                    return
+                }
+                suite()
+            }
+            boite.synchroniserAgendas(true)
+        })
+        // Création, le nom affiché suivant prénom et nom.
+        etapes.push(function() {
+            dlgFiche.ouvrirNouveau({})
+            dlgFiche.essaiSaisir("prenom", "Marie")
+            dlgFiche.essaiSaisir("nom", "Dupont")
+            dlgFiche.essaiSaisir("organisation", "Transports, Martin; Accueil")
+            dlgFiche.essaiSaisir("fonction", "Secrétaire")
+            dlgFiche.essaiAjouter("courriels", "travail", "marie@martin.test")
+            dlgFiche.essaiAjouter("telephones", "portable", "06 12 34 56 78")
+            var s = dlgFiche.saisie()
+            bilan("formulaire : nom affiché « " + s.nomAffiche + " » | " + s.courriels.length + " adresse(s), "
+                  + s.telephones.length + " numéro(s) | carnet " + dlgFiche.carnets[0].nom,
+                  s.nomAffiche === "Marie Dupont" && s.courriels.length === 1 && s.telephones.length === 1 && s.carnet > 0)
+            attenteEcriture = function(ok, message) {
+                var f = trouver("dupont")
+                bilan("création : " + ok + " « " + message + " » | dialogue ouvert " + dlgFiche.visible + " | trouvée "
+                      + f.length + (f.length ? " « " + f[0].nom + " » " + f[0].organisation + " " + f[0].courriels.join(",") + " "
+                                    + f[0].telephones.join(",") : ""),
+                      ok && !dlgFiche.visible && f.length === 1 && f[0].organisation === "Transports, Martin; Accueil"
+                      && f[0].telephones[0] === "06 12 34 56 78")
+                id = f.length ? f[0].id : 0
+                suite()
+            }
+            dlgFiche.valider()
+        })
+        // Modification pendant qu'ailleurs on change la même fiche : rien
+        // n'est écrasé ; la fiche du serveur revient avec la saisie.
+        etapes.push(function() {
+            dlgFiche.ouvrirFiche(id)
+            var s = dlgFiche.saisie()
+            bilan("fiche ouverte : « " + s.nomAffiche + " » " + s.fonction + " | " + s.courriels.map(function(c) { return c.genre + " " + c.valeur + " #" + c.cle }).join(","),
+                  dlgFiche.visible && s.nomAffiche === "Marie Dupont" && s.fonction === "Secrétaire" && s.courriels[0].cle === 0)
+            console.log("scenario: modification sur le serveur")
+            plusTard(2500, function() {
+                dlgFiche.essaiSaisir("fonction", "Comptable")
+                dlgFiche.essaiSaisir("organisation", "Martin SAS")
+                dlgFiche.essaiAjouter("telephones", "fax", "05 53 00 00 00")
+                attenteEcriture = function(ok, message, conflit) {
+                    var s = dlgFiche.saisie()
+                    bilan("conflit : " + ok + " " + conflit + " | dialogue ouvert " + dlgFiche.visible + " | motif « " + dlgFiche.motif
+                          + " » | note du serveur « " + s.note + " » | fonction " + s.fonction + " | organisation " + s.organisation,
+                          !ok && conflit && dlgFiche.visible && dlgFiche.motif.indexOf("fonction") > 0 && s.note === "ajout serveur"
+                          && s.fonction === "Comptable" && s.organisation === "Martin SAS" && s.telephones.length === 2)
+                    attenteEcriture = function(ok, message) {
+                        var f = fiche(id)
+                        bilan("réenregistrée : " + ok + " | " + f.fonction + " | " + f.organisation + " | note « " + f.note + " » | "
+                              + f.telephones.map(function(t) { return t.genre + " " + t.valeur }).join(", "),
+                              ok && !dlgFiche.visible && f.fonction === "Comptable" && f.organisation === "Martin SAS"
+                              && f.note === "ajout serveur" && f.telephones.length === 2)
+                        suite()
+                    }
+                    dlgFiche.valider()
+                }
+                dlgFiche.valider()
+            })
+        })
+        // Un correspondant ajouté depuis l'en-tête du message.
+        etapes.push(function() {
+            ouvrirDossier(comptesConnus[0].compte, "INBOX")
+            plusTard(2500, function() {
+                choisir(0, 0)
+                plusTard(800, function() {
+                    var c = correspondantsDe(colonneLecture.auteurAffiche.text)
+                    var avant = c.length ? boite.ficheDeAdresse(c[0].adresse) : -1
+                    bilan("en-tête « " + colonneLecture.auteurAffiche.text.split("  ·  ")[0] + " » : " + JSON.stringify(c) + " | fiche " + avant,
+                          c.length === 1 && c[0].adresse === "essai@essai.test" && avant === 0)
+                    menuEnTete.ligne = colonneLecture.auteurAffiche.text
+                    menuEnTete.popup()
+                    var libelle = menuEnTete.count > 0 ? menuEnTete.itemAt(menuEnTete.count - 1).text : ""
+                    menuEnTete.close()
+                    bilan("menu : « " + libelle + " »", libelle === "Ajouter Essai MMail aux contacts…")
+                    dlgFiche.ouvrirNouveau(JSON.parse(boite.ficheCorrespondant(c[0].nom, c[0].adresse)))
+                    var s = dlgFiche.saisie()
+                    bilan("prérempli : prénom « " + s.prenom + " », nom « " + s.nom + " », " + s.courriels[0].valeur,
+                          s.prenom === "Essai" && s.nom === "MMail" && s.courriels[0].valeur === "essai@essai.test")
+                    attenteEcriture = function(ok, message) {
+                        var apres = boite.ficheDeAdresse("essai@essai.test")
+                        menuEnTete.ligne = colonneLecture.auteurAffiche.text
+                        menuEnTete.popup()
+                        var libelle = menuEnTete.itemAt(menuEnTete.count - 1).text
+                        menuEnTete.close()
+                        bilan("ajouté : " + ok + " | fiche " + (apres > 0) + " | menu : « " + libelle + " »",
+                              ok && apres > 0 && libelle === "Voir Essai MMail dans le carnet d'adresses")
+                        id = apres
+                        suite()
+                    }
+                    dlgFiche.valider()
+                })
+            })
+        })
+        // Suppression, copie gardée ; carnet en lecture seule : refus.
+        etapes.push(function() {
+            dlgFiche.ouvrirFiche(id)
+            attenteEcriture = function(ok, message) {
+                bilan("suppression : " + ok + " « " + message + " » | fiche " + boite.ficheDeAdresse("essai@essai.test"),
+                      ok && !dlgFiche.visible && message.indexOf("<copie>") > 0 && boite.ficheDeAdresse("essai@essai.test") === 0)
+                attenteEcriture = function(ok, message) {
+                    bilan("lecture seule : " + ok + " « " + message + " »", !ok && message.indexOf("lecture seule") > 0)
+                    suite()
+                }
+                boite.supprimerContacts(JSON.stringify([trouver("protegee")[0].id]))
+            }
+            dlgFiche.supprimer()
+        })
+        // Fiches vides et doublons.
+        etapes.push(function() {
+            dlgNettoyage.ouvrir()
+            var p = dlgNettoyage.plan()
+            var resume = dlgNettoyage.lignes.filter(function(l) { return l.genre === "titre" }).map(function(l) { return l.texte })
+            bilan("nettoyage : " + resume.join(" | ") + " | coché : " + p.retirer.length + " à retirer, "
+                  + p.fusions.map(function(g) { return g.length }).join("+") + " à fusionner",
+                  p.retirer.length === 2 && p.fusions.length === 1 && p.fusions[0].length === 3 && resume.length === 3)
+            attenteEcriture = function(ok, message) {
+                var d = trouver("doublon")
+                var reste = dlgNettoyage.lignes.filter(function(l) { return l.genre === "choix" }).length
+                bilan("nettoyé : " + ok + " « " + message + " » | doublon : " + d.length + " fiche, " + (d.length ? d[0].courriels.length : 0)
+                      + " adresses, " + (d.length ? d[0].telephones.length : 0) + " numéros | reste à voir " + reste
+                      + " | fiches " + trouver("").length,
+                      ok && d.length === 1 && d[0].courriels.length === 2 && d[0].telephones.length === 2 && reste === 1
+                      && trouver("").length === 4)
+                dlgNettoyage.close()
+                suite()
+            }
+            dlgNettoyage.appliquer(p)
+        })
+        etapes.push(function() {
+            console.log("scenario: carnet " + (echecs === 0 ? "OK" : "ECHEC (" + echecs + ")"))
+            Qt.quit()
+        })
+
+        var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 500; repeat: true }', fenetre)
+        var essais = { n: 0 }
+        attente.triggered.connect(function() {
+            essais.n += 1
+            if (listeComptes().length > 0 && listeComptes()[0].etat === "pret") {
+                attente.stop()
+                suite()
+            } else if (essais.n > 60) {
+                attente.stop()
+                console.log("scenario: ECHEC carnet : aucun compte prêt")
+                Qt.quit()
+            }
+        })
+        attente.start()
     }
 }

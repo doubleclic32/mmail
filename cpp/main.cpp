@@ -52,6 +52,7 @@ extern const std::size_t nombreTraductionsQt;
 #include "notifieur.h"
 #include "presse_papier.h"
 #include "mise_en_forme.h"
+#include "rendu_complet.h"
 
 #ifdef Q_OS_WIN
 #  include <windows.h>  // GetCommandLineW / CommandLineToArgvW
@@ -393,6 +394,8 @@ int main(int argc, char* argv[])
   qmlRegisterType<Installeur>("fr.mmedia.mmail.natif", 1, 0, "Installeur");
   // Mise en forme du message en cours de rédaction (gras, listes, liens…).
   qmlRegisterType<MiseEnForme>("fr.mmedia.mmail.natif", 1, 0, "MiseEnForme");
+  // Long texte riche dessiné en entier (cf. cpp/rendu_complet.h).
+  qmlRegisterType<RenduComplet>("fr.mmedia.mmail.natif", 1, 0, "RenduComplet");
 
   QQmlApplicationEngine engine;
   // En contrôle de fabrication, l'interface ne touche ni au coffre ni au réseau

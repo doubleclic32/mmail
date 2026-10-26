@@ -498,6 +498,7 @@ ApplicationWindow {
                     zone: vueCorps
                     miseEnForme: mef
                 }
+                RenduComplet { zone: vueCorps }
                 onWidthChanged: minuterieImagesFenetre.restart()
                 Timer {
                     id: minuterieImagesFenetre

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MMail — noyau Rust (core/), interface Qt 6 / QML, coffre des mots de passe natif.
 cmake_minimum_required(VERSION 3.24)
-project(mmail VERSION 0.6.19 LANGUAGES CXX)
+project(mmail VERSION 0.6.20 LANGUAGES CXX)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -129,7 +129,7 @@ endif()
 # Le .h figure dans les sources pour qu'AUTOMOC le traite : sans cela, la classe
 # QObject qu'il declare n'a pas de metaobjet et l'edition de liens echoue.
 set(MMAIL_SOURCES cpp/main.cpp cpp/coffre.h cpp/fenetre.h cpp/installeur.h cpp/lanceur.h cpp/pastille.h cpp/notifieur.h cpp/impression.h cpp/presse_papier.h
-                  cpp/mise_en_forme.h)
+                  cpp/mise_en_forme.h cpp/rendu_complet.h)
 if(WIN32)
   # Icône et informations de version de l'exécutable (cf. build/mmail.rc.in).
   configure_file(build/mmail.rc.in ${CMAKE_CURRENT_BINARY_DIR}/mmail.rc @ONLY)
@@ -219,7 +219,9 @@ set_target_properties(mmail PROPERTIES
   MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
   QT_ANDROID_PACKAGE_NAME fr.mmedia.mmail
   QT_ANDROID_APP_NAME MMail
-  QT_ANDROID_VERSION_NAME ${PROJECT_VERSION})
+  QT_ANDROID_VERSION_NAME ${PROJECT_VERSION}
+  # Manifeste et icône du lanceur (cf. packaging/android/AndroidManifest.xml).
+  QT_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packaging/android)
 
 if(NOT ANDROID)
   qt_import_qml_plugins(mmail)

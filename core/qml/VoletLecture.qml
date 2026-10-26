@@ -466,6 +466,9 @@ ColumnLayout {
                 zone: vueCorps
                 miseEnForme: mefLecture
             }
+            // Un long message à tableau restait blanc après un défilement
+            // aller-retour (0.6.20, cf. cpp/rendu_complet.h).
+            RenduComplet { zone: vueCorps }
             onWidthChanged: minuterieImages.restart()
             Timer {
                 id: minuterieImages

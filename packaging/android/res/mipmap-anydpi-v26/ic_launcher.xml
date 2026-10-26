@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icône adaptative (Android 8 et plus) : le lanceur découpe le calque de premier
+     plan selon sa forme (cercle, carré arrondi…). Le fond n'apparaît pas : le
+     premier plan, opaque, le recouvre en entier. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/fond_icone" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
