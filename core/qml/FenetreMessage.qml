@@ -33,6 +33,9 @@ ApplicationWindow {
     title: sujet
 
     // Le message, tel que la liste le montrait à l'ouverture.
+    // Animations des GIF du corps (scénarios d'essai).
+    property alias animations: animationsFenetre
+    property alias corps: vueCorps
     property int compte: 0
     property string chemin: ""
     property int uid: 0
@@ -489,6 +492,11 @@ ApplicationWindow {
                 MiseEnForme {
                     id: mef
                     document: vueCorps.textDocument
+                }
+                ImagesAnimees {
+                    id: animationsFenetre
+                    zone: vueCorps
+                    miseEnForme: mef
                 }
                 onWidthChanged: minuterieImagesFenetre.restart()
                 Timer {

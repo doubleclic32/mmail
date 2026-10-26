@@ -436,27 +436,110 @@ pub fn images(sources: &[Pixmap], forme: Forme, r: &Reglages) -> Vec<(Pixmap, u1
     sortie
 }
 
-/// Assemble les images en GIF animé, en boucle, fond transparent effacé d'une
-/// image à l'autre. `vitesse` : quantification des couleurs, de 1 (meilleure
-/// palette) à 30 (plus rapide).
+/// Pixels d'une image, non prémultipliés ; transparence tout ou rien, comme
+/// le GIF : un pixel à peine couvert (bord anticrénelé) compte pour opaque.
+fn pixels_gif(image: &Pixmap) -> Vec<[u8; 4]> {
+    image
+        .pixels()
+        .iter()
+        .map(|p| {
+            let c = p.demultiply();
+            if c.alpha() == 0 { [0, 0, 0, 0] } else { [c.red(), c.green(), c.blue(), 255] }
+        })
+        .collect()
+}
+
+/// Rectangle (gauche, haut, largeur, hauteur) qui contient les pixels marqués.
+fn rectangle(marques: &[bool], cote: usize) -> Option<(usize, usize, usize, usize)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (cote, cote, 0, 0);
+    for (i, _) in marques.iter().enumerate().filter(|(_, m)| **m) {
+        let (x, y) = (i % cote, i / cote);
+        x0 = x0.min(x);
+        x1 = x1.max(x);
+        y0 = y0.min(y);
+        y1 = y1.max(y);
+    }
+    (x0 <= x1).then(|| (x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+}
+
+/// Assemble les images en GIF animé, en boucle. Chaque image ne porte que les
+/// pixels qui changent depuis la précédente, dans le plus petit rectangle qui
+/// les contient, le reste transparent — l'image d'avant reste en place (0.6.18 :
+/// le badge de deux photos passait de 940 Ko à moins de la moitié). Un pixel
+/// qui doit redevenir transparent — le bord d'une lamelle qui glisse — fait
+/// effacer la zone de l'image d'avant, qui est alors redessinée. La palette de
+/// chaque image est calculée sur ses seuls pixels dessinés. `vitesse` :
+/// quantification des couleurs, de 1 (meilleure palette) à 30 (plus rapide).
 pub fn assembler(images: &[(Pixmap, u16)], vitesse: i32) -> Result<Vec<u8>, String> {
-    let cote = COTE as u16;
+    let cote = COTE as usize;
+    let cibles: Vec<Vec<[u8; 4]>> = images.iter().map(|(im, _)| pixels_gif(im)).collect();
+    let n = cibles.len();
+    // À effacer avant l'image k : opaque dans l'image d'avant, transparent dans
+    // celle-ci. L'image 0 suit la dernière, à chaque tour de la boucle.
+    let a_effacer = |k: usize| -> Vec<bool> {
+        let (avant, ici) = (&cibles[(k + n - 1) % n], &cibles[k]);
+        avant.iter().zip(ici).map(|(a, b)| a[3] != 0 && b[3] == 0).collect()
+    };
     let mut sortie = Vec::new();
     {
-        let mut gif = gif::Encoder::new(&mut sortie, cote, cote, &[]).map_err(|e| format!("GIF : {e}"))?;
+        let mut gif = gif::Encoder::new(&mut sortie, COTE as u16, COTE as u16, &[]).map_err(|e| format!("GIF : {e}"))?;
         gif.set_repeat(gif::Repeat::Infinite).map_err(|e| format!("GIF : {e}"))?;
-        for (image, delai) in images {
-            let mut rgba = Vec::with_capacity(image.data().len());
-            for p in image.pixels() {
-                let c = p.demultiply();
-                rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        // Zone effacée après l'image précédente : tout, avant la première.
+        let mut efface = vec![true; cote * cote];
+        for (k, cible) in cibles.iter().enumerate() {
+            let avant = &cibles[(k + n - 1) % n];
+            let dessines: Vec<bool> = (0..cote * cote)
+                .map(|i| cible[i][3] != 0 && (efface[i] || (k > 0 && cible[i] != avant[i])))
+                .collect();
+            let suivant = a_effacer((k + 1) % n);
+            let efface_apres = suivant.iter().any(|e| *e);
+            let zone: Vec<bool> = dessines.iter().zip(&suivant).map(|(d, s)| *d || *s).collect();
+            let (x, y, l, h) = rectangle(&zone, cote).unwrap_or((0, 0, 1, 1));
+            // Palette des seuls pixels dessinés : 255 couleurs, la 256e est la
+            // transparence.
+            let couleurs: Vec<u8> = (0..cote * cote).filter(|i| dessines[*i]).flat_map(|i| cible[i]).collect();
+            let distinctes: std::collections::BTreeSet<[u8; 4]> = couleurs.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+            let (palette, indice): (Vec<u8>, Box<dyn Fn(&[u8; 4]) -> u8>) = if distinctes.len() <= 255 {
+                let liste: Vec<[u8; 4]> = distinctes.into_iter().collect();
+                let palette = liste.iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
+                (palette, Box::new(move |c: &[u8; 4]| liste.binary_search(c).map(|i| i as u8).unwrap_or(0)))
+            } else {
+                let nq = color_quant::NeuQuant::new(vitesse.clamp(1, 30), 255, &couleurs);
+                (nq.color_map_rgb(), Box::new(move |c: &[u8; 4]| nq.index_of(c) as u8))
+            };
+            let transparent = (palette.len() / 3) as u8;
+            let mut tampon = Vec::with_capacity(l * h);
+            for yy in y..y + h {
+                for xx in x..x + l {
+                    let i = yy * cote + xx;
+                    tampon.push(if dessines[i] { indice(&cible[i]) } else { transparent });
+                }
             }
-            let mut trame = gif::Frame::from_rgba_speed(cote, cote, &mut rgba, vitesse.clamp(1, 30));
-            trame.delay = *delai;
-            // Efface en transparent d'une image à l'autre : sans cela, les bords
-            // du badge rond se superposent et bavent.
-            trame.dispose = gif::DisposalMethod::Background;
+            let mut palette = palette;
+            palette.extend_from_slice(&[0, 0, 0]);
+            let trame = gif::Frame {
+                left: x as u16,
+                top: y as u16,
+                width: l as u16,
+                height: h as u16,
+                buffer: std::borrow::Cow::Owned(tampon),
+                palette: Some(palette),
+                transparent: Some(transparent),
+                delay: images[k].1,
+                // Effacer derrière soi seulement quand l'image suivante a des
+                // pixels à rendre transparents ; sinon, garder.
+                dispose: if efface_apres { gif::DisposalMethod::Background } else { gif::DisposalMethod::Keep },
+                ..gif::Frame::default()
+            };
             gif.write_frame(&trame).map_err(|e| format!("GIF : {e}"))?;
+            efface = vec![false; cote * cote];
+            if efface_apres {
+                for yy in y..y + h {
+                    for xx in x..x + l {
+                        efface[yy * cote + xx] = true;
+                    }
+                }
+            }
         }
     }
     Ok(sortie)
@@ -691,6 +774,136 @@ mod tests {
         assert!(fabriquer(&trop, lire, 10).unwrap_err().contains("21"));
         let absente = Composition { visuels: vec![Choix { url: "file:///nulle.png".into(), ..Choix::default() }], ..composition };
         assert!(fabriquer(&absente, lire, 10).unwrap_err().contains("introuvable"));
+    }
+
+    /// L'assemblage d'avant la 0.6.18 : chaque image entière, palette propre,
+    /// effacée d'une image à l'autre. Référence de la mesure du poids.
+    fn assembler_plein(images: &[(Pixmap, u16)], vitesse: i32) -> Vec<u8> {
+        let cote = COTE as u16;
+        let mut sortie = Vec::new();
+        {
+            let mut gif = gif::Encoder::new(&mut sortie, cote, cote, &[]).unwrap();
+            gif.set_repeat(gif::Repeat::Infinite).unwrap();
+            for (image, delai) in images {
+                let mut rgba: Vec<u8> = image.pixels().iter().flat_map(|p| {
+                    let c = p.demultiply();
+                    [c.red(), c.green(), c.blue(), c.alpha()]
+                }).collect();
+                let mut trame = gif::Frame::from_rgba_speed(cote, cote, &mut rgba, vitesse);
+                trame.delay = *delai;
+                trame.dispose = gif::DisposalMethod::Background;
+                gif.write_frame(&trame).unwrap();
+            }
+        }
+        sortie
+    }
+
+    /// Rejoue un GIF comme un navigateur — rectangle de chaque image, index
+    /// transparent, effacement — et rend chaque image affichée, en RGBA, sur
+    /// `tours` tours de boucle sans repartir d'un écran vide (le cas le moins
+    /// favorable : un lecteur qui garde l'écran d'un tour à l'autre).
+    fn rejouer(gif: &[u8], tours: usize) -> Vec<Vec<[u8; 4]>> {
+        let mut ecran = Vec::new();
+        let mut vues = Vec::new();
+        let mut a_effacer: Option<(usize, usize, usize, usize)> = None;
+        for _ in 0..tours {
+            let mut options = gif::DecodeOptions::new();
+            options.set_color_output(gif::ColorOutput::Indexed);
+            let mut d = options.read_info(gif).unwrap();
+            let l = d.width() as usize;
+            ecran.resize(l * d.height() as usize, [0u8; 4]);
+            let globale = d.global_palette().map(|p| p.to_vec());
+            while let Some(t) = d.read_next_frame().unwrap() {
+                if let Some((x, y, w, h)) = a_effacer.take() {
+                    for yy in y..y + h {
+                        for xx in x..x + w {
+                            ecran[yy * l + xx] = [0, 0, 0, 0];
+                        }
+                    }
+                }
+                let palette = t.palette.clone().or_else(|| globale.clone()).unwrap();
+                let (x, y, w, h) = (t.left as usize, t.top as usize, t.width as usize, t.height as usize);
+                for yy in 0..h {
+                    for xx in 0..w {
+                        let i = t.buffer[yy * w + xx];
+                        if Some(i) != t.transparent {
+                            let c = &palette[i as usize * 3..i as usize * 3 + 3];
+                            ecran[(y + yy) * l + x + xx] = [c[0], c[1], c[2], 255];
+                        }
+                    }
+                }
+                vues.push(ecran.clone());
+                if t.dispose == gif::DisposalMethod::Background {
+                    a_effacer = Some((x, y, w, h));
+                }
+            }
+        }
+        vues
+    }
+
+    #[test]
+    fn assemblage_differentiel_fidele() {
+        // Deux photos et un logo : chaque image rejouée a la transparence exacte
+        // de la sienne et des couleurs proches, et le GIF est bien plus léger
+        // que l'assemblage d'avant.
+        let mut photo = uni(300, 220, [0, 0, 0, 255]);
+        for (i, p) in photo.rgba.chunks_exact_mut(4).enumerate() {
+            let (x, y) = ((i % 300) as u32, (i / 300) as u32);
+            let bruit = (alea(x * 7919 + y * 104729) * 60.0) as u32;
+            p[0] = ((x * 255 / 299 + bruit) % 256) as u8;
+            p[1] = ((y * 255 / 219 + bruit / 2) % 256) as u8;
+            p[2] = (((x + 2 * y) / 3 + bruit) % 256) as u8;
+        }
+        let sources = [
+            composer(&photo, Cadrage::Photo { zoom: 1.0, dx: 0.0, dy: 0.0 }, Forme::Rond).unwrap(),
+            composer(&disque(300, 120.0, [33, 171, 227, 255]), Cadrage::Logo, Forme::Rond).unwrap(),
+            composer(&photo, Cadrage::Photo { zoom: 1.6, dx: -30.0, dy: 12.0 }, Forme::Rond).unwrap(),
+        ];
+        for r in [Reglages::default(), Reglages { fentes: 4.0, ..Reglages::default() }] {
+            let liste = images(&sources, Forme::Rond, &r);
+            let gif = assembler(&liste, 10).unwrap();
+            let plein = assembler_plein(&liste, 10);
+            let vues = rejouer(&gif, 2);
+            assert_eq!(vues.len(), 2 * liste.len());
+            for (k, (vue, (im, _))) in vues.iter().zip(liste.iter().chain(&liste)).enumerate() {
+                let cible = pixels_gif(im);
+                let mut ecart = 0u64;
+                for (a, b) in vue.iter().zip(&cible) {
+                    assert_eq!(a[3], b[3], "image {k} : transparence");
+                    ecart += (0..3).map(|c| u64::from(a[c].abs_diff(b[c]))).sum::<u64>();
+                }
+                let moyen = ecart as f64 / (cible.len() * 3) as f64;
+                assert!(moyen < 4.0, "image {k} : écart moyen {moyen:.2}");
+            }
+            eprintln!("fentes {} : {} images, {} octets (avant : {})", r.fentes, liste.len(), gif.len(), plein.len());
+            assert!(gif.len() * 10 < plein.len() * 8, "{} contre {}", gif.len(), plein.len());
+        }
+    }
+
+    /// Mesure du poids, à la demande (`cargo test -- --ignored mesure`) :
+    /// `MMAIL_BADGE_MESURE` = `fichier.rgba:largeur:hauteur:genre`, séparés
+    /// par des virgules, RGBA brut.
+    #[test]
+    #[ignore]
+    fn mesure_du_poids() {
+        let Ok(liste) = std::env::var("MMAIL_BADGE_MESURE") else { return };
+        let mut sources = Vec::new();
+        for e in liste.split(',') {
+            let p: Vec<&str> = e.split(':').collect();
+            let v = Visuel { largeur: p[1].parse().unwrap(), hauteur: p[2].parse().unwrap(), rgba: std::fs::read(p[0]).unwrap() };
+            let cadrage = if p[3] == "photo" { Cadrage::Photo { zoom: 1.0, dx: 0.0, dy: 0.0 } } else { Cadrage::Logo };
+            sources.push(composer(&v, cadrage, Forme::Rond).unwrap());
+        }
+        for etapes in [18, 14, 12, 10] {
+            let r = Reglages { etapes, ..Reglages::default() };
+            let im = images(&sources, Forme::Rond, &r);
+            let t0 = std::time::Instant::now();
+            let nouveau = assembler(&im, 10).unwrap();
+            let duree = t0.elapsed();
+            let plein = assembler_plein(&im, 10);
+            eprintln!("étapes {etapes:2} : {} images, avant {} o, après {} o ({:.0} %), {:?}",
+                im.len(), plein.len(), nouveau.len(), 100.0 * nouveau.len() as f64 / plein.len() as f64, duree);
+        }
     }
 
     #[test]

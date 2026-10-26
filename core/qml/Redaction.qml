@@ -40,6 +40,8 @@ Page {
     // Lus par les scénarios d'essai (cf. Scenarios.qml, « majuscule »).
     readonly property alias corps: corpsRedaction
     readonly property alias mefCorps: mef
+    readonly property alias animations: animationsRedaction
+    readonly property alias boutonSignature: boutonSignature
     property string brouillonChemin: ""
     // Rédaction gardée sur le poste (noyau, garde.rs) : son
     // identifiant et le dernier état écrit ; empreinte du contenu au
@@ -102,14 +104,14 @@ Page {
 
     function pret() {
         chargement = true
-        var i = identiteChoisie()
-        if (i.nouveaux && i.html.length > 0) {
+        var s = identiteChoisie().nouvelle
+        if (s.html.length > 0) {
             // Signature avec images : elle exige la mise en forme.
             miseEnForme = true
             mef.poserTexte("\n\n")
-            mef.insererHtml(2, i.html)
+            mef.insererHtml(2, s.html)
         } else {
-            mef.poserTexte(i.nouveaux && i.signature.length > 0 ? "\n\n" + i.signature : "")
+            mef.poserTexte(s.signature.length > 0 ? "\n\n" + s.signature : "")
         }
         corpsRedaction.cursorPosition = 0
         chargement = false
@@ -127,18 +129,38 @@ Page {
         return mef.html()
     }
 
-    function insererSignature() {
-        var i = identiteChoisie()
-        if (i.html.length > 0) {
+    /// Insère une signature au curseur : `s` ({signature, html}), sinon celle
+    /// de l'adresse choisie — des nouveaux messages, à défaut des réponses.
+    function insererSignature(s) {
+        if (!s) {
+            var i = identiteChoisie()
+            s = i.nouveaux ? i.nouvelle : i.reponse
+        }
+        if (s.html.length > 0) {
             miseEnForme = true
-            mef.insererHtml(corpsRedaction.cursorPosition, i.html)
+            mef.insererHtml(corpsRedaction.cursorPosition, s.html)
             return
         }
-        if (i.signature.length === 0) {
+        if (s.signature.length === 0) {
             signaler(qsTr("Aucune signature pour ce compte : menu « Comptes », « Nom et signature… »."), true)
             return
         }
-        mef.inserer(corpsRedaction.cursorPosition, i.signature)
+        mef.inserer(corpsRedaction.cursorPosition, s.signature)
+    }
+
+    /// « Signature » : une seule signature, elle s'insère ; plusieurs (0.6.18),
+    /// le menu les propose, celle de l'adresse choisie en tête.
+    function proposerSignatures(bouton) {
+        var liste = fenetre.signaturesNommees()
+        if (liste.length <= 1) {
+            insererSignature()
+            return
+        }
+        var i = identiteChoisie()
+        var tete = i.nouveaux ? i.sigNouveaux : i.sigReponses
+        liste = liste.slice().sort(function(a, b) { return (b.id === tete) - (a.id === tete) })
+        menuSignatures.liste = liste
+        menuSignatures.popup(bouton, 0, bouton.height)
     }
 
     /// Mise en forme coupée : le texte est ramené au brut, puces et
@@ -160,6 +182,16 @@ Page {
         noteErreur = erreur
     }
 
+    /// Signature d'une rédaction pré-remplie : aucune pour un brouillon repris,
+    /// celle des nouveaux messages pour un nouveau message (lien mailto:…),
+    /// celle des réponses et transferts sinon.
+    function signatureDeRemplissage(mode) {
+        var i = identiteChoisie()
+        if (mode === "brouillon")
+            return { signature: "", html: "" }
+        return mode === "nouveau" ? i.nouvelle : i.reponse
+    }
+
     /// Pré-remplit la rédaction (réponse, transfert, brouillon repris).
     function remplir(p) {
         chargement = true
@@ -174,23 +206,20 @@ Page {
             mef.poserHtml(p.html)
             // Réponse ou transfert d'un message HTML : la signature entre les
             // deux lignes vides et le texte cité, comme en texte brut.
-            var iH = identiteChoisie()
-            if (p.mode !== "brouillon" && iH.reponses) {
-                if (iH.html.length > 0)
-                    mef.insererHtml(2, iH.html + "<p><br></p><p><br></p>")
-                else if (iH.signature.length > 0)
-                    mef.inserer(2, iH.signature + "\n\n")
-            }
+            var sH = signatureDeRemplissage(p.mode)
+            if (sH.html.length > 0)
+                mef.insererHtml(2, sH.html + "<p><br></p><p><br></p>")
+            else if (sH.signature.length > 0)
+                mef.inserer(2, sH.signature + "\n\n")
         } else {
-            var i = identiteChoisie()
-            var avecSignature = p.mode !== "brouillon" && i.reponses
-            if (avecSignature && i.html.length > 0) {
+            var s = signatureDeRemplissage(p.mode)
+            if (s.html.length > 0) {
                 // La signature entre les deux lignes vides et le texte cité.
                 miseEnForme = true
                 mef.poserTexte("\n\n" + (p.texte || ""))
-                mef.insererHtml(2, i.html)
+                mef.insererHtml(2, s.html)
             } else {
-                var signature = avecSignature && i.signature.length > 0 ? "\n\n" + i.signature : ""
+                var signature = s.signature.length > 0 ? "\n\n" + s.signature : ""
                 mef.poserTexte(signature + (p.texte || ""))
             }
         }
@@ -763,9 +792,25 @@ Page {
             }
             Item { Layout.fillWidth: true }
             ToolButton {
+                id: boutonSignature
                 text: qsTr("Signature")
                 focusPolicy: Qt.NoFocus
-                onClicked: redac.insererSignature()
+                onClicked: redac.proposerSignatures(boutonSignature)
+            }
+            Menu {
+                id: menuSignatures
+                property var liste: []
+                Instantiator {
+                    model: menuSignatures.liste
+                    delegate: MenuItem {
+                        required property var modelData
+                        text: modelData.nom
+                        onTriggered: redac.insererSignature({ signature: modelData.signature || "",
+                                                              html: modelData.html || "" })
+                    }
+                    onObjectAdded: function(i, o) { menuSignatures.insertItem(i, o) }
+                    onObjectRemoved: function(i, o) { menuSignatures.removeItem(o) }
+                }
             }
         }
 
@@ -845,6 +890,13 @@ Page {
                 placeholderText: qsTr("Votre message")
                 background: Rectangle { color: fenetre.palette.base }
                 onTextChanged: if (!redac.chargement) redac.modifie = true
+                // Le badge animé de la signature s'anime pendant la rédaction (0.6.18).
+                ImagesAnimees {
+                    id: animationsRedaction
+                    zone: corpsRedaction
+                    miseEnForme: mef
+                    fond: fenetre.palette.base
+                }
                 Keys.onPressed: function(ev) {
                     if (ev.matches(StandardKey.Paste) && redac.collerImage())
                         ev.accepted = true
