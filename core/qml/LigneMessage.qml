@@ -124,6 +124,23 @@ SwipeDelegate {
         color: fenetre.marque && model.lu ? fenetre.couleurRubrique : fenetre.accent
     }
 
+    // Survol de la ligne : rien ne le signalait, seules les icônes de
+    // drapeau et de corbeille apparaissaient. Teinte basse volontairement —
+    // sur une liste longue, un survol marqué fatigue. Sans la clé
+    // « survolLigne », le rectangle reste transparent et rien ne change.
+    Rectangle {
+        z: -1
+        anchors.fill: parent
+        color: !ligne.highlighted && ligne.hovered && fenetre.valeurOu("survolLigne", 0) > 0
+               ? Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b,
+                         fenetre.valeurOu("survolLigne", 0))
+               : "transparent"
+        Behavior on color {
+            enabled: fenetre.anime
+            ColorAnimation { duration: 120 }
+        }
+    }
+
     // Des lignes plus aérées, séparées d'un trait (retour de Fabienne,
     // 29/09 : les messages se distinguaient mal les uns des autres).
     topPadding: 7
