@@ -181,6 +181,24 @@ static QString dossierProfil(bool* impose = nullptr)
   return base;
 }
 
+/// Réglage d'accessibilité du poste : « Effets d'animation » sous Windows
+/// (Paramètres, Accessibilité, Effets visuels). C'est l'équivalent du
+/// « prefers-reduced-motion » du web, et l'interface doit l'honorer : une
+/// animation qu'on ne peut pas couper est une animation de trop. Vrai partout
+/// ailleurs, ni macOS ni les bureaux Linux ne l'exposant par une voie que Qt
+/// relaie.
+static bool animationsClientes()
+{
+#ifdef Q_OS_WIN
+  BOOL actives = TRUE;
+  if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &actives, 0))
+    return true;
+  return actives != FALSE;
+#else
+  return true;
+#endif
+}
+
 #ifdef Q_OS_WIN
 /// Vrai si `sid` est l'utilisateur, SYSTEM ou le groupe des Administrateurs.
 static bool sidAdmis(PSID sid, PSID utilisateur)
@@ -401,6 +419,13 @@ int main(int argc, char* argv[])
   // En contrôle de fabrication, l'interface ne touche ni au coffre ni au réseau
   // de sa propre initiative.
   engine.rootContext()->setContextProperty(QStringLiteral("modeControle"), smoke);
+  // Réglage d'accessibilité du poste, que l'interface doit honorer avant toute
+  // transition (cf. « anime » dans Main.qml). MMAIL_ANIMATIONS force la valeur
+  // pour les essais : sans elle, le cas « le système refuse » ne se joue pas.
+  engine.rootContext()->setContextProperty(QStringLiteral("animationsSysteme"),
+                                           qgetenv("MMAIL_ANIMATIONS").isEmpty()
+                                             ? animationsClientes()
+                                             : qgetenv("MMAIL_ANIMATIONS") != "0");
   // Avis de nouvelle version : coupé pour la machine (« AvisVersion » à 0) sur
   // un parc dont l'administrateur déploie lui-même les mises à jour.
   engine.rootContext()->setContextProperty(
