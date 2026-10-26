@@ -129,7 +129,11 @@ SwipeDelegate {
     // sur une liste longue, un survol marqué fatigue. Sans la clé
     // « survolLigne », le rectangle reste transparent et rien ne change.
     Rectangle {
-        z: -1
+        // -0,5 et non -1 : le fond du délégué est posé à -1 par le style et
+        // il est OPAQUE sous Fusion, il recouvrait donc ce rectangle. Le
+        // dépôt le savait déjà, cf. la rubrique Favoris de
+        // LigneArborescence.qml, au même -0,5 et pour la même raison.
+        z: -0.25
         anchors.fill: parent
         color: !ligne.highlighted && ligne.hovered && fenetre.valeurOu("survolLigne", 0) > 0
                ? Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b,
@@ -137,7 +141,7 @@ SwipeDelegate {
                : "transparent"
         Behavior on color {
             enabled: fenetre.anime
-            ColorAnimation { duration: 120 }
+            ColorAnimation { duration: fenetre.dureeTeinte }
         }
     }
 
@@ -224,8 +228,13 @@ SwipeDelegate {
             Label {
                 text: model.sujet
                 font.bold: !model.lu
+                // Sous la teinte de survol, l'accent #0071e3 tombe à 4,27:1,
+                // sous le seuil AA : l'objet non lu reprend alors l'encre du
+                // texte. Son gras et le bandeau de non-lus continuent de
+                // porter l'état, rien n'est perdu.
                 color: ligne.highlighted ? fenetre.palette.highlightedText
-                     : model.lu ? fenetre.palette.windowText : fenetre.texteAccent
+                     : model.lu || (ligne.hovered && fenetre.valeurOu("survolLigne", 0) > 0)
+                       ? fenetre.palette.windowText : fenetre.texteAccent
                 elide: Text.ElideRight
                 Layout.fillWidth: true
             }
