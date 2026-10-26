@@ -142,7 +142,7 @@ Page {
             return
         }
         if (s.signature.length === 0) {
-            signaler(qsTr("Aucune signature pour ce compte : menu « Comptes », « Nom et signature… »."), true)
+            signaler(qsTr("Aucune signature pour ce compte : menu « Réglages », « Nom et signature… »."), true)
             return
         }
         mef.inserer(corpsRedaction.cursorPosition, s.signature)

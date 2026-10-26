@@ -316,7 +316,8 @@ Dialog {
             onTextEdited: ligne.modele.setProperty(ligne.index, "valeur", text)
         }
         ToolButton {
-            text: "✕"
+            text: "×"
+            font.pixelSize: 18
             Accessible.name: qsTr("Retirer")
             ToolTip.visible: hovered
             ToolTip.delay: 600
@@ -436,6 +437,7 @@ Dialog {
                 Layout.fillWidth: true
                 placeholderText: qsTr("Rue")
                 wrapMode: TextEdit.Wrap
+                background: Rectangle { color: fenetre.palette.base; border.color: fenetre.palette.mid }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -468,6 +470,7 @@ Dialog {
                 Layout.fillWidth: true
                 Layout.minimumHeight: 60
                 wrapMode: TextEdit.Wrap
+                background: Rectangle { color: fenetre.palette.base; border.color: fenetre.palette.mid }
             }
             Label {
                 Layout.fillWidth: true

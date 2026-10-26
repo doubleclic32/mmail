@@ -401,7 +401,10 @@ ApplicationWindow {
     // palette et la police de la fenêtre qui changent, le style des contrôles
     // restant Fusion, seul à honorer une palette partout (cf. cpp/main.cpp).
     // « systeme » ne pose aucune surcharge : la palette reste celle du bureau.
-    property string apparence: "moderne"
+    // Par défaut « mmedia » depuis la 0.6.20 (Manu, 26/10) ; un profil qui a
+    // déjà tourné garde la sienne : Qt.labs.settings écrit la valeur par
+    // défaut dans le profil dès le premier démarrage.
+    property string apparence: "mmedia"
     // Disposition de l'en-tête du bureau (0.6.14) : « barre », une seule
     // ligne, par défaut ; « etages », les onglets et les menus sur le
     // bandeau, les boutons et les interrupteurs sur une bande dessous, comme
@@ -1135,6 +1138,12 @@ ApplicationWindow {
                 visible: !fenetre.compact || fenetre.vue === 0
                 menu: menuComptes
             }
+            // Signature, filtres, carnet, corbeilles, sauvegarde (0.6.20).
+            MenuEntete {
+                text: qsTr("Réglages")
+                visible: !fenetre.compact || fenetre.vue === 0
+                menu: menuReglages
+            }
             MenuEntete {
                 text: qsTr("Affichage")
                 menu: menuAffichage
@@ -1280,7 +1289,7 @@ ApplicationWindow {
         onClicked: fenetre.rediger("nouveau")
     }
 
-    // Vue tactile : le menu ⋮ — « Comptes… » et « Affichage… » ouvrent leurs
+    // Vue tactile : le menu ⋮ — « Comptes… », « Réglages… » et « Affichage… » ouvrent leurs
     // menus à part (des sous-menus se choisissaient mal au doigt), puis ce que
     // la barre de bureau montre en boutons.
     Menu {
@@ -1304,6 +1313,12 @@ ApplicationWindow {
             text: qsTr("Comptes…")
             onTriggered: Qt.callLater(function() {
                 menuComptes.popup(boutonPlus, boutonPlus.width - Math.max(menuComptes.width, 200), boutonPlus.height)
+            })
+        }
+        MenuItem {
+            text: qsTr("Réglages…")
+            onTriggered: Qt.callLater(function() {
+                menuReglages.popup(boutonPlus, boutonPlus.width - Math.max(menuReglages.width, 200), boutonPlus.height)
             })
         }
         MenuItem {
@@ -2045,6 +2060,7 @@ ApplicationWindow {
     }
 
     MenuComptes { id: menuComptes }
+    MenuReglages { id: menuReglages }
 
     Menu {
         id: menuAide
@@ -5628,7 +5644,8 @@ ApplicationWindow {
             if (essai.scenario === "menu-champ")
                 scenarios.lancerScenarioMenuChamp()
             if (essai.scenario === "menu-affichage" || essai.scenario === "menu-message"
-                    || essai.scenario === "menu-saisie")
+                    || essai.scenario === "menu-saisie" || essai.scenario === "menu-comptes"
+                    || essai.scenario === "menu-reglages")
                 scenarios.lancerScenarioMenuOuvert()
             // Scénarios de la 0.6.15 : catégories de couleur ; liste, menu et
             // dialogue pour une capture.
@@ -5647,7 +5664,7 @@ ApplicationWindow {
                     || essai.scenario === "bibliotheque-menu")
                 scenarios.lancerScenarioSignatures()
             // Scénario de la 0.6.20 : le carnet d'adresses modifiable.
-            if (essai.scenario === "carnet")
+            if (essai.scenario === "carnet" || essai.scenario === "carnet-fiche" || essai.scenario === "carnet-nettoyage")
                 scenarios.lancerScenarioCarnet()
             if (essai.scenario === "liste-categories" || essai.scenario === "menu-categories"
                     || essai.scenario === "gerer-categories")

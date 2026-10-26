@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Menu « Comptes » de la barre de menus.
+// Menu « Comptes » de la barre de menus : la gestion des comptes seule —
+// ajouter, modifier, retirer. Le reste (signature, filtres, carnet,
+// corbeilles, sauvegarde) est dans « Réglages » (MenuReglages.qml) depuis la
+// 0.6.20, à la demande de Manu (26/10).
 //
 // Sorti de Main.qml tel quel (0.5.16, découpage) : les noms employés sans
 // être déclarés ici (fenetre, boite, reglages…) sont ceux de Main.qml,
@@ -59,21 +62,6 @@ Menu {
             height: visible ? implicitHeight : 0
         }
     }
-    MenuItem {
-        text: qsTr("Carnet d'adresses…")
-        enabled: fenetre.comptesConnus.length > 0
-        onTriggered: dlgCarnet.open()
-    }
-    MenuItem {
-        text: qsTr("Filtres du courrier…")
-        enabled: fenetre.comptesConnus.length > 0
-        onTriggered: dlgFiltres.ouvrir(null)
-    }
-    MenuItem {
-        text: qsTr("Nom et signature…")
-        enabled: fenetre.comptesConnus.length > 0
-        onTriggered: dlgIdentite.ouvrir(boite.compteCourant)
-    }
     MenuSeparator {}
     // Le retrait est aussi au clic droit sur le compte ; il est repris ici
     // pour qu'on le trouve sans le connaître.
@@ -97,24 +85,5 @@ Menu {
             visible: fenetre.comptesConnus.length === 0
             height: visible ? implicitHeight : 0
         }
-    }
-    MenuSeparator {}
-    MenuItem {
-        text: qsTr("Vider les corbeilles et indésirables…")
-        enabled: fenetre.comptesConnus.length > 0
-        onTriggered: dlgViderCorbeilles.open()
-    }
-    MenuSeparator {}
-    MenuItem {
-        text: reglagesSauvegarde.date > 0
-              ? qsTr("Sauvegarder la configuration (dernière : %1)").arg(fenetre.dateLongue(reglagesSauvegarde.date))
-              : qsTr("Sauvegarder la configuration")
-        enabled: fenetre.comptesConnus.length > 0
-        onTriggered: fenetre.sauvegarderConfiguration(true)
-    }
-    MenuItem {
-        text: qsTr("Restaurer une configuration sauvegardée…")
-        enabled: fenetre.comptesConnus.length > 0 && !fenetre.rechercheSauvegarde
-        onTriggered: fenetre.chercherSauvegardes(true)
     }
 }

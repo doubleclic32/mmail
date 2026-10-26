@@ -776,7 +776,7 @@ QtObject {
                       ["dlgNouveauDossier", dlgNouveauDossier], ["dlgConsentement", dlgConsentement],
                       ["dlgOuvrirAvec", dlgOuvrirAvec], ["dlgLogiciels", dlgLogiciels], ["dlgReprise", dlgReprise],
                       ["dlgLien", dlgLien], ["dlgViderDossier", dlgViderDossier], ["popupRappels", popupRappels],
-                      ["menuComptes", menuComptes], ["menuAffichage", menuAffichage], ["menuPiece", menuPiece],
+                      ["menuComptes", menuComptes], ["menuReglages", menuReglages], ["menuAffichage", menuAffichage], ["menuPiece", menuPiece],
                       ["menuMessage", menuMessage], ["menuDossier", menuDossier], ["menuCompte", menuCompte]]
         var i = 0
         var t = Qt.createQmlObject("import QtQuick; Timer { interval: 400; repeat: true }", fenetre)
@@ -814,7 +814,7 @@ QtObject {
             var chemin = lanceur.chemin(identifiantsEssai.sortie + "/tactile-" + nom + ".png")
             racine.grabToImage(function(r) { r.saveToFile(chemin) })
             console.log("scenario: tactile", nom, "| vue", vue, "| tiroir", tiroir.opened,
-                        "| menu", menuPlus.opened || menuComptes.opened, "| titre", boite.dossierCourant,
+                        "| menu", menuPlus.opened || menuComptes.opened || menuReglages.opened, "| titre", boite.dossierCourant,
                         "| barre", entete.height)
         }
         var etapes = [
@@ -825,7 +825,9 @@ QtObject {
             function() { saisir("menu") },
             function() { menuPlus.close(); menuComptes.popup(boutonPlus, boutonPlus.width - 260, boutonPlus.height) },
             function() { saisir("comptes") },
-            function() { menuComptes.close(); bandeauGlissement.texte = qsTr("Message mis à la corbeille."); bandeauGlissement.open() },
+            function() { menuComptes.close(); menuReglages.popup(boutonPlus, boutonPlus.width - 260, boutonPlus.height) },
+            function() { saisir("reglages") },
+            function() { menuReglages.close(); bandeauGlissement.texte = qsTr("Message mis à la corbeille."); bandeauGlissement.open() },
             function() { saisir("annuler") },
             function() { bandeauGlissement.close(); choisir(0, 0) },
             function() { saisir("message") },
@@ -1794,6 +1796,20 @@ QtObject {
                 menuAffichage.itemAt(1).triggered()
                 return
             }
+            // 0.6.20 : « Comptes » et « Réglages », ouverts pour une capture ;
+            // leurs entrées sur la console.
+            if (essai.scenario === "menu-comptes" || essai.scenario === "menu-reglages") {
+                var m = essai.scenario === "menu-comptes" ? menuComptes : menuReglages
+                m.popup(Math.max(0, fenetre.width - 520), entete.height)
+                var entrees = []
+                for (var i = 0; i < m.count; ++i) {
+                    var e = m.itemAt(i)
+                    if (e && e.height > 0 && (e.text || (e.subMenu && e.subMenu.title)))
+                        entrees.push((e.text || e.subMenu.title) + (e.enabled ? "" : " (grisé)"))
+                }
+                console.log("scenario: " + m.title + " : " + entrees.join(" | "))
+                return
+            }
             if (essai.scenario === "menu-saisie") {
                 var champ = colonneListe.champRecherche
                 var h = menuDuChamp(champ)
@@ -2388,6 +2404,17 @@ QtObject {
                 bilan("fiches lues : " + tous.length + " | « Fiche Protegee » modifiable " + (ro.length && ro[0].modifiable)
                       + " (" + (ro.length ? ro[0].motif : "") + ")",
                       tous.length === 7 && ro.length === 1 && !ro[0].modifiable && ro[0].motif === "carnet en lecture seule sur le serveur")
+                // « carnet-fiche », « carnet-nettoyage » : le dialogue ouvert,
+                // pour une capture.
+                if (essai.scenario === "carnet-fiche") {
+                    var f = JSON.parse(boite.ficheContact(trouver("doublon")[0].id))
+                    dlgFiche.ouvrirFiche(f.id)
+                    return
+                }
+                if (essai.scenario === "carnet-nettoyage") {
+                    dlgNettoyage.ouvrir()
+                    return
+                }
                 suite()
             }
             boite.synchroniserAgendas(true)
