@@ -1,9 +1,45 @@
 # Apparence « Pomme » : matériau et mouvement
 
-Plan de travail pour l'apparence `pomme`, ajoutée par la branche `theme-pomme`.
-L'apparence livrée ne porte que des couleurs et des polices. Ce document décrit
-ce qui manque pour qu'elle ressemble vraiment à ce qu'elle imite : un survol
-qu'on voit, du mouvement sur le bandeau, et la matière translucide de Windows 11.
+Ce document a servi de plan, puis de compte rendu. **Tout ce qu'il décrit est
+écrit et fabriqué** sur la branche `theme-pomme` ; ce qui n'a pas été fait est
+dit tel quel, à la fin.
+
+L'apparence `pomme` reprend l'habillage d'un site connu : fonds gris très
+clairs, surfaces blanches, bleu système en sélection et en accent, bandeau
+anthracite. Un thème seul n'y suffisait pas, d'où les trois chantiers
+ci-dessous : un survol qu'on voit, du mouvement sur le bandeau, et la matière
+translucide de Windows 11.
+
+## État, au 26/10/2026
+
+| Chantier | État | Commit |
+|---|---|---|
+| Apparence `pomme` | fait | `Apparence « Pomme » : la charte…` |
+| Clés facultatives et survol visible | fait | `Apparence : clés facultatives…` |
+| Garde de mouvement | fait | `Mouvement : le garde…` |
+| Transitions | fait | `Mouvement : les transitions…` |
+| Matériau Windows 11 | fait | `Matériau translucide…` |
+| Correctifs de relecture | fait | deux commits, cf. `docs/revues/` |
+
+Fabrication : les travaux `windows`, `linux` et les deux `android` sont au vert,
+`--smoke` compris, donc le scénario intégré et ses assertions nouvelles. Le
+travail `macos` a été annulé par GitHub, sans aucune étape enregistrée, sur
+trois exécutions successives d'un dépôt dérivé ; rien dans le code ne le
+provoque.
+
+Mesuré sur un poste Windows 11 build 26300, par les pixels d'une capture :
+
+```
+bandeau (zone vide)   #161616  alpha=204     (204/255 = 0,8 : l'opacité demandée)
+fond de la fenetre    #ffffff  alpha=255
+alphas les plus frequents : 255 (956860 px), 204 (44076 px), 0 (11078 px)
+```
+
+Les pixels à alpha nul prouvent que la fenêtre porte une vraie transparence,
+donc que la liaison du style sur `color` a bien été retirée et que le chemin du
+matériau est engagé. **Ce qu'aucune mesure d'ici ne prouve** : qu'un compositeur
+peigne effectivement Mica derrière. Une capture de fenêtre ne contient pas ce
+qui est composé sous elle, et l'API DWM ne le dit pas non plus (cf. chantier 3).
 
 Les anchors de ligne renvoient à `core/qml/Main.qml` au commit
 `Apparence « Pomme » : « Inter Display » pour les titres`.
@@ -202,6 +238,48 @@ plancher, et `MultiEffect` n'existe qu'à partir de 6.5 : l'utiliser obligerait
 soit à relever le plancher, soit à écrire deux chemins. Pour un gain faible à
 côté du matériau du système, et un coût d'affichage réel sur une liste longue,
 ça ne vaut pas la dette. À reconsidérer si le plancher monte un jour.
+
+## Ce qui a changé après relecture
+
+Trois relectures croisées, lentilles disjointes, rendus entiers dans
+`docs/revues/`. Elles ont trouvé sept défauts, dont deux que l'auteur de ce
+lot n'aurait pas vus seul :
+
+- **Une régression sur MMEDIA.** `survolEntete()` réécrite rendait du blanc sur
+  le bandeau sombre, là où l'expression d'origine rend autre chose :
+  `encreEntete(true)` rend `marque.texteBandeau`, qui est une **chaîne JS**
+  puisque `marque` est la table (un `var`), donc `.r/.g/.b` y sont indéfinis.
+  L'expression d'origine est maintenant reproduite telle quelle, particularité
+  comprise. **Ce n'est pas à un patch d'apparence de corriger ça**, mais c'est
+  signalé ici : le survol du bandeau MMEDIA n'est probablement pas la couleur
+  que son auteur croit poser.
+- **Le survol de ligne était invisible**, posé à `z: -1`, sous le fond du
+  délégué, opaque dans le style Fusion. Le dépôt documentait déjà le piège,
+  dans le commentaire de la rubrique Favoris de `LigneArborescence.qml`.
+
+Et deux gardes qui ne gardaient rien, prouvés par mutation : une assertion qui
+comparait la valeur par défaut que le test se passait à lui-même, et une autre
+qui ne regardait que l'opacité d'une couleur dont c'est la teinte qui avait
+changé.
+
+## Dette signalée, NON corrigée
+
+Elle précède ce lot et touche les quatre apparences existantes. La corriger
+dépasserait un patch d'apparence, et c'est au propriétaire du code d'en
+décider.
+
+- **Aucun indicateur de focus clavier** sur les boutons de l'en-tête ni sur les
+  boutons d'action : zéro occurrence de `visualFocus` dans `core/qml`, alors
+  que `AbstractButton` a `Qt::StrongFocus` et que Tab les atteint (WCAG 2.4.7).
+- **Drapeau et corbeille d'une ligne n'apparaissent qu'au survol**, donc hors
+  de portée au clavier ; les infobulles ne viennent pas au focus non plus.
+- **`texteAccent` sur le fond de fenêtre** : `#0071e3` sur `#f5f5f7` fait
+  4,31:1, sous le seuil AA, pour la barre d'état et le lien survolé.
+- **Le matériau est lu une seule fois au démarrage** : changer d'apparence en
+  cours de session ne le pose ni ne le retire avant le relancement.
+- **`animationsClientes()` est lu une seule fois** : un changement du réglage
+  d'animation du poste n'est suivi qu'au relancement, faute d'écoute de
+  `WM_SETTINGCHANGE`.
 
 ## Ordre des commits
 
