@@ -21,6 +21,7 @@
 #include <QtCore/QUrl>
 #include <QtCore/QVariant>
 #include <QtCore/QVariantMap>
+#include <QtGui/QColor>
 #include <QtGui/QFont>
 #include <QtGui/QGuiApplication>
 #ifdef MMAIL_IMPRESSION
@@ -34,6 +35,7 @@
 #include <QtNetwork/QLocalSocket>
 #include <QtQml/QQmlApplicationEngine>
 #include <QtQml/QQmlContext>
+#include <QtQml/QQmlProperty>
 #include <QtQuickControls2/QQuickStyle>
 #include <QtQuick/QQuickWindow>
 #include <QtQml/qqml.h>
@@ -563,8 +565,14 @@ int main(int argc, char* argv[])
   if (!engine.rootObjects().isEmpty()) {
     if (auto* principale = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
       const QString voulu = principale->property("materiauVoulu").toString();
-      if (!voulu.isEmpty() && fenetre::materiau(principale, voulu))
-        principale->setColor(Qt::transparent);
+      if (!voulu.isEmpty() && fenetre::materiau(principale, voulu)) {
+        // QQmlProperty et non setColor() : le style lie « color » à
+        // palette.window dans son ApplicationWindow, et setColor() écrit la
+        // propriété C++ sans retirer la liaison — à la prochaine évaluation
+        // de la palette, un changement d'apparence par exemple, le style
+        // réécrirait une couleur opaque et recouvrirait le matériau.
+        QQmlProperty::write(principale, QStringLiteral("color"), QColor(Qt::transparent));
+      }
     }
   }
   // Position de la fenêtre retenue d'une session à l'autre — sauf pour les

@@ -197,26 +197,48 @@ inline bool materiau(QQuickWindow* f, const QString& nom) {
 #ifdef Q_OS_WIN
   if (!f)
     return false;
-  // 1 = aucun, 2 = Mica, 3 = Acrylique, 4 = Mica par onglets.
   int voulu = 0;
   if (nom == QStringLiteral("mica"))
-    voulu = 2;
+    voulu = DWMSBT_MAINWINDOW;
   else if (nom == QStringLiteral("acrylique"))
-    voulu = 3;
+    voulu = DWMSBT_TRANSIENTWINDOW;
   if (voulu == 0)
+    return false;
+  // Transparence coupée dans les réglages, ou contraste élevé : DWM retient
+  // l'attribut et peint une couleur plate. La relecture ci-dessous le
+  // validerait quand même, et la fenêtre deviendrait transparente sur du
+  // vide. Ces deux cas se lisent AVANT de rien poser.
+  const QSettings perso(
+    QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+    QSettings::NativeFormat);
+  if (perso.value(QStringLiteral("EnableTransparency"), 1).toInt() == 0)
+    return false;
+  HIGHCONTRASTW contraste {sizeof(HIGHCONTRASTW), 0, nullptr};
+  if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contraste), &contraste, 0)
+      && (contraste.dwFlags & HCF_HIGHCONTRASTON))
     return false;
   const HWND poignee = reinterpret_cast<HWND>(f->winId());
   if (!poignee)
     return false;
-  // DWMWA_USE_IMMERSIVE_DARK_MODE : le cadre et la barre de titre suivent le
-  // bandeau sombre, sans quoi une barre claire surmonte une fenêtre nuit.
+  // Le cadre et la barre de titre suivent le bandeau sombre, sans quoi une
+  // barre claire surmonte une fenêtre nuit. Qt réécrit cet attribut sur un
+  // changement de palette, selon le thème du bureau et non selon le bandeau :
+  // sous un thème clair, le cadre repasse clair. Admis.
   BOOL sombre = TRUE;
-  DwmSetWindowAttribute(poignee, 20, &sombre, sizeof(sombre));
-  // DWMWA_SYSTEMBACKDROP_TYPE, à partir de Windows 11 22621.
-  if (FAILED(DwmSetWindowAttribute(poignee, 38, &voulu, sizeof(voulu))))
+  DwmSetWindowAttribute(poignee, DWMWA_USE_IMMERSIVE_DARK_MODE, &sombre, sizeof(sombre));
+  // DWMWA_REDIRECTIONBITMAP_ALPHA (39), SDK 10.0.26100 : sans lui, sur les
+  // builds récents, « the alpha is ignored and the redirection bitmap is
+  // treated as fully opaque » — le bitmap de redirection recouvre le
+  // matériau et un fond transparent sort NOIR. Échec admis : l'attribut
+  // n'existe pas sur un OS plus ancien, qui n'a pas le défaut.
+  BOOL alpha = TRUE;
+  DwmSetWindowAttribute(poignee, 39, &alpha, sizeof(alpha));
+  if (FAILED(DwmSetWindowAttribute(poignee, DWMWA_SYSTEMBACKDROP_TYPE, &voulu, sizeof(voulu))))
     return false;
+  // La relecture dit que l'OS a ACCEPTÉ l'attribut, pas que le compositeur
+  // peint. Rien, dans l'API, ne le dit : la seule preuve est une capture.
   int relu = 0;
-  if (FAILED(DwmGetWindowAttribute(poignee, 38, &relu, sizeof(relu))))
+  if (FAILED(DwmGetWindowAttribute(poignee, DWMWA_SYSTEMBACKDROP_TYPE, &relu, sizeof(relu))))
     return false;
   return relu == voulu;
 #else
