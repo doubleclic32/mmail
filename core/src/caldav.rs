@@ -238,15 +238,35 @@ pub struct Acces<'a> {
     pub mot_de_passe: &'a str,
 }
 
+/// Condition posée à une écriture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Condition<'a> {
+    Aucune,
+    /// L'objet n'a pas changé depuis cet ETag (`If-Match`).
+    SiEtag(&'a str),
+    /// L'objet n'existe pas encore (`If-None-Match: *`) : une création
+    /// n'écrase rien (fiches de contact, 0.6.20).
+    SiAbsent,
+}
+
+impl<'a> Condition<'a> {
+    pub fn de_etag(etag: Option<&'a str>) -> Self {
+        etag.map_or(Condition::Aucune, Condition::SiEtag)
+    }
+}
+
+/// Type des objets iCalendar déposés.
+pub const TYPE_ICAL: &str = "text/calendar; charset=utf-8";
+
 /// Ce qui porte les requêtes WebDAV : le serveur de la boîte, ou un faux
 /// serveur dans les tests.
 pub trait Dav {
     /// Envoie une requête et rend la réponse, quel qu'en soit le statut.
     fn envoyer(&self, methode: &str, url: &str, profondeur: &str, corps: &str) -> Resultat<Reponse>;
 
-    /// Dépose (PUT) ou retire (DELETE) un objet iCalendar, sous condition
-    /// d'ETag (`If-Match`) s'il est donné.
-    fn ecrire(&self, methode: &str, url: &str, corps: &str, si_etag: Option<&str>) -> Resultat<Reponse>;
+    /// Dépose (PUT) ou retire (DELETE) un objet — événement iCalendar ou
+    /// fiche vCard, selon `type_contenu` —, sous `condition`.
+    fn ecrire(&self, methode: &str, url: &str, type_contenu: &str, corps: &str, condition: Condition) -> Resultat<Reponse>;
 }
 
 impl Dav for Acces<'_> {
@@ -267,14 +287,13 @@ impl Dav for Acces<'_> {
         })
     }
 
-    fn ecrire(&self, methode: &str, url: &str, corps: &str, si_etag: Option<&str>) -> Resultat<Reponse> {
+    fn ecrire(&self, methode: &str, url: &str, type_contenu: &str, corps: &str, condition: Condition) -> Resultat<Reponse> {
         let jeton = crate::smtp::base64(format!("{}:{}", self.utilisateur, self.mot_de_passe).as_bytes());
-        let mut entetes = vec![
-            ("Authorization", format!("Basic {jeton}")),
-            ("Content-Type", "text/calendar; charset=utf-8".to_string()),
-        ];
-        if let Some(etag) = si_etag {
-            entetes.push(("If-Match", etag.to_string()));
+        let mut entetes = vec![("Authorization", format!("Basic {jeton}")), ("Content-Type", type_contenu.to_string())];
+        match condition {
+            Condition::Aucune => {}
+            Condition::SiEtag(etag) => entetes.push(("If-Match", etag.to_string())),
+            Condition::SiAbsent => entetes.push(("If-None-Match", "*".to_string())),
         }
         http::envoyer(&Demande { methode, url, accepte: "*/*", entetes: &entetes, corps: corps.as_bytes(), taille_max: TAILLE_MAX })
     }
@@ -493,7 +512,7 @@ fn issue_ecriture(reponse: &Reponse) -> Resultat<()> {
 /// objet changé entre-temps sur le serveur n'est pas écrasé. Rend l'ETag du
 /// dépôt, si le serveur le donne.
 pub fn deposer(dav: &impl Dav, url: &str, ical: &str, etag: Option<&str>) -> Resultat<Option<String>> {
-    let reponse = dav.ecrire("PUT", url, ical, etag)?;
+    let reponse = dav.ecrire("PUT", url, TYPE_ICAL, ical, Condition::de_etag(etag))?;
     issue_ecriture(&reponse)?;
     Ok(reponse.entete("etag").map(str::to_string))
 }
@@ -515,7 +534,7 @@ pub fn retirer(dav: &impl Dav, collection: &str, url: &str, etag: Option<&str>) 
             _ => issue_ecriture(&reponse)?,
         }
     }
-    let reponse = dav.ecrire("DELETE", url, "", etag)?;
+    let reponse = dav.ecrire("DELETE", url, TYPE_ICAL, "", Condition::de_etag(etag))?;
     if matches!(reponse.statut, 404 | 410) {
         return Ok(());
     }

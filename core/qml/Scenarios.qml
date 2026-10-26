@@ -2293,4 +2293,203 @@ QtObject {
         console.log("scenario: bibliotheque-signatures " + (echecs === 0 ? "OK" : "ECHEC (" + echecs + ")"))
         Qt.quit()
     }
+
+    /// Scénario « carnet » (0.6.20) : le carnet d'adresses modifiable, contre
+    /// le Radicale du banc (CARNET=1) — carnets et droits, création,
+    /// modification, conflit avec une écriture faite ailleurs entre-temps
+    /// (le banc change la fiche sur le disque du serveur à l'annonce
+    /// « modification sur le serveur »), correspondant ajouté depuis l'en-tête,
+    /// suppression, carnet en lecture seule, fiches vides et doublons.
+    function lancerScenarioCarnet() {
+        var echecs = 0
+        var bilan = function(texte, bon) {
+            if (!bon)
+                echecs += 1
+            console.log("scenario: " + (bon ? "OK " : "ECHEC ") + texte)
+        }
+        var etapes = []
+        var suite = function() {
+            var e = etapes.shift()
+            if (e)
+                plusTard(300, e)
+        }
+        // Prochaine réponse du noyau à une écriture dans les carnets.
+        var attenteEcriture = null
+        boite.contactsEcrits.connect(function(ok, message, conflit) {
+            var a = attenteEcriture
+            attenteEcriture = null
+            if (a)
+                plusTard(200, function() { a(ok, message.replace(/: \/.*contacts-retires\/[0-9-]+\.vcf/, ": <copie>"), conflit) })
+        })
+        var attenteSynchro = null
+        boite.agendasSynchronises.connect(function(change, erreurs) {
+            var a = attenteSynchro
+            attenteSynchro = null
+            if (a)
+                a(change, erreurs)
+        })
+        var trouver = function(texte) { return JSON.parse(boite.carnet(texte)) }
+        var fiche = function(id) { return JSON.parse(boite.ficheContact(id) || "{}") }
+        var id = 0
+
+        etapes.push(function() {
+            attenteSynchro = function(change, erreurs) {
+                var carnets = JSON.parse(boite.carnetsModifiables())
+                bilan("carnets modifiables : " + carnets.map(function(c) { return c.nom + (c.defaut ? " (défaut)" : "") }).join(", ")
+                      + " | erreurs de un@ « " + erreurs.split("\n").filter(function(e) { return e.indexOf("un@") === 0 }).join(" ; ") + " »",
+                      carnets.length === 1 && carnets[0].nom === "Personnel" && carnets[0].defaut)
+                var tous = trouver("")
+                var ro = trouver("protegee")
+                bilan("fiches lues : " + tous.length + " | « Fiche Protegee » modifiable " + (ro.length && ro[0].modifiable)
+                      + " (" + (ro.length ? ro[0].motif : "") + ")",
+                      tous.length === 7 && ro.length === 1 && !ro[0].modifiable && ro[0].motif === "carnet en lecture seule sur le serveur")
+                suite()
+            }
+            boite.synchroniserAgendas(true)
+        })
+        // Création, le nom affiché suivant prénom et nom.
+        etapes.push(function() {
+            dlgFiche.ouvrirNouveau({})
+            dlgFiche.essaiSaisir("prenom", "Marie")
+            dlgFiche.essaiSaisir("nom", "Dupont")
+            dlgFiche.essaiSaisir("organisation", "Transports, Martin; Accueil")
+            dlgFiche.essaiSaisir("fonction", "Secrétaire")
+            dlgFiche.essaiAjouter("courriels", "travail", "marie@martin.test")
+            dlgFiche.essaiAjouter("telephones", "portable", "06 12 34 56 78")
+            var s = dlgFiche.saisie()
+            bilan("formulaire : nom affiché « " + s.nomAffiche + " » | " + s.courriels.length + " adresse(s), "
+                  + s.telephones.length + " numéro(s) | carnet " + dlgFiche.carnets[0].nom,
+                  s.nomAffiche === "Marie Dupont" && s.courriels.length === 1 && s.telephones.length === 1 && s.carnet > 0)
+            attenteEcriture = function(ok, message) {
+                var f = trouver("dupont")
+                bilan("création : " + ok + " « " + message + " » | dialogue ouvert " + dlgFiche.visible + " | trouvée "
+                      + f.length + (f.length ? " « " + f[0].nom + " » " + f[0].organisation + " " + f[0].courriels.join(",") + " "
+                                    + f[0].telephones.join(",") : ""),
+                      ok && !dlgFiche.visible && f.length === 1 && f[0].organisation === "Transports, Martin; Accueil"
+                      && f[0].telephones[0] === "06 12 34 56 78")
+                id = f.length ? f[0].id : 0
+                suite()
+            }
+            dlgFiche.valider()
+        })
+        // Modification pendant qu'ailleurs on change la même fiche : rien
+        // n'est écrasé ; la fiche du serveur revient avec la saisie.
+        etapes.push(function() {
+            dlgFiche.ouvrirFiche(id)
+            var s = dlgFiche.saisie()
+            bilan("fiche ouverte : « " + s.nomAffiche + " » " + s.fonction + " | " + s.courriels.map(function(c) { return c.genre + " " + c.valeur + " #" + c.cle }).join(","),
+                  dlgFiche.visible && s.nomAffiche === "Marie Dupont" && s.fonction === "Secrétaire" && s.courriels[0].cle === 0)
+            console.log("scenario: modification sur le serveur")
+            plusTard(2500, function() {
+                dlgFiche.essaiSaisir("fonction", "Comptable")
+                dlgFiche.essaiSaisir("organisation", "Martin SAS")
+                dlgFiche.essaiAjouter("telephones", "fax", "05 53 00 00 00")
+                attenteEcriture = function(ok, message, conflit) {
+                    var s = dlgFiche.saisie()
+                    bilan("conflit : " + ok + " " + conflit + " | dialogue ouvert " + dlgFiche.visible + " | motif « " + dlgFiche.motif
+                          + " » | note du serveur « " + s.note + " » | fonction " + s.fonction + " | organisation " + s.organisation,
+                          !ok && conflit && dlgFiche.visible && dlgFiche.motif.indexOf("fonction") > 0 && s.note === "ajout serveur"
+                          && s.fonction === "Comptable" && s.organisation === "Martin SAS" && s.telephones.length === 2)
+                    attenteEcriture = function(ok, message) {
+                        var f = fiche(id)
+                        bilan("réenregistrée : " + ok + " | " + f.fonction + " | " + f.organisation + " | note « " + f.note + " » | "
+                              + f.telephones.map(function(t) { return t.genre + " " + t.valeur }).join(", "),
+                              ok && !dlgFiche.visible && f.fonction === "Comptable" && f.organisation === "Martin SAS"
+                              && f.note === "ajout serveur" && f.telephones.length === 2)
+                        suite()
+                    }
+                    dlgFiche.valider()
+                }
+                dlgFiche.valider()
+            })
+        })
+        // Un correspondant ajouté depuis l'en-tête du message.
+        etapes.push(function() {
+            ouvrirDossier(comptesConnus[0].compte, "INBOX")
+            plusTard(2500, function() {
+                choisir(0, 0)
+                plusTard(800, function() {
+                    var c = correspondantsDe(colonneLecture.auteurAffiche.text)
+                    var avant = c.length ? boite.ficheDeAdresse(c[0].adresse) : -1
+                    bilan("en-tête « " + colonneLecture.auteurAffiche.text.split("  ·  ")[0] + " » : " + JSON.stringify(c) + " | fiche " + avant,
+                          c.length === 1 && c[0].adresse === "essai@essai.test" && avant === 0)
+                    menuEnTete.ligne = colonneLecture.auteurAffiche.text
+                    menuEnTete.popup()
+                    var libelle = menuEnTete.count > 0 ? menuEnTete.itemAt(menuEnTete.count - 1).text : ""
+                    menuEnTete.close()
+                    bilan("menu : « " + libelle + " »", libelle === "Ajouter Essai MMail aux contacts…")
+                    dlgFiche.ouvrirNouveau(JSON.parse(boite.ficheCorrespondant(c[0].nom, c[0].adresse)))
+                    var s = dlgFiche.saisie()
+                    bilan("prérempli : prénom « " + s.prenom + " », nom « " + s.nom + " », " + s.courriels[0].valeur,
+                          s.prenom === "Essai" && s.nom === "MMail" && s.courriels[0].valeur === "essai@essai.test")
+                    attenteEcriture = function(ok, message) {
+                        var apres = boite.ficheDeAdresse("essai@essai.test")
+                        menuEnTete.ligne = colonneLecture.auteurAffiche.text
+                        menuEnTete.popup()
+                        var libelle = menuEnTete.itemAt(menuEnTete.count - 1).text
+                        menuEnTete.close()
+                        bilan("ajouté : " + ok + " | fiche " + (apres > 0) + " | menu : « " + libelle + " »",
+                              ok && apres > 0 && libelle === "Voir Essai MMail dans le carnet d'adresses")
+                        id = apres
+                        suite()
+                    }
+                    dlgFiche.valider()
+                })
+            })
+        })
+        // Suppression, copie gardée ; carnet en lecture seule : refus.
+        etapes.push(function() {
+            dlgFiche.ouvrirFiche(id)
+            attenteEcriture = function(ok, message) {
+                bilan("suppression : " + ok + " « " + message + " » | fiche " + boite.ficheDeAdresse("essai@essai.test"),
+                      ok && !dlgFiche.visible && message.indexOf("<copie>") > 0 && boite.ficheDeAdresse("essai@essai.test") === 0)
+                attenteEcriture = function(ok, message) {
+                    bilan("lecture seule : " + ok + " « " + message + " »", !ok && message.indexOf("lecture seule") > 0)
+                    suite()
+                }
+                boite.supprimerContacts(JSON.stringify([trouver("protegee")[0].id]))
+            }
+            dlgFiche.supprimer()
+        })
+        // Fiches vides et doublons.
+        etapes.push(function() {
+            dlgNettoyage.ouvrir()
+            var p = dlgNettoyage.plan()
+            var resume = dlgNettoyage.lignes.filter(function(l) { return l.genre === "titre" }).map(function(l) { return l.texte })
+            bilan("nettoyage : " + resume.join(" | ") + " | coché : " + p.retirer.length + " à retirer, "
+                  + p.fusions.map(function(g) { return g.length }).join("+") + " à fusionner",
+                  p.retirer.length === 2 && p.fusions.length === 1 && p.fusions[0].length === 3 && resume.length === 3)
+            attenteEcriture = function(ok, message) {
+                var d = trouver("doublon")
+                var reste = dlgNettoyage.lignes.filter(function(l) { return l.genre === "choix" }).length
+                bilan("nettoyé : " + ok + " « " + message + " » | doublon : " + d.length + " fiche, " + (d.length ? d[0].courriels.length : 0)
+                      + " adresses, " + (d.length ? d[0].telephones.length : 0) + " numéros | reste à voir " + reste
+                      + " | fiches " + trouver("").length,
+                      ok && d.length === 1 && d[0].courriels.length === 2 && d[0].telephones.length === 2 && reste === 1
+                      && trouver("").length === 4)
+                dlgNettoyage.close()
+                suite()
+            }
+            dlgNettoyage.appliquer(p)
+        })
+        etapes.push(function() {
+            console.log("scenario: carnet " + (echecs === 0 ? "OK" : "ECHEC (" + echecs + ")"))
+            Qt.quit()
+        })
+
+        var attente = Qt.createQmlObject('import QtQuick; Timer { interval: 500; repeat: true }', fenetre)
+        var essais = { n: 0 }
+        attente.triggered.connect(function() {
+            essais.n += 1
+            if (listeComptes().length > 0 && listeComptes()[0].etat === "pret") {
+                attente.stop()
+                suite()
+            } else if (essais.n > 60) {
+                attente.stop()
+                console.log("scenario: ECHEC carnet : aucun compte prêt")
+                Qt.quit()
+            }
+        })
+        attente.start()
+    }
 }

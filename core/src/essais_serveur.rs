@@ -22,7 +22,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::deplacement;
-use crate::imap::Client;
+use crate::imap::{Client, Erreur};
 use crate::magasin::{Etape, Magasin, Operation};
 use crate::protocole::secondes_date_interne;
 use crate::synchro;
@@ -809,6 +809,86 @@ ORG:MMEDIA\r\nEMAIL;TYPE=work:epreuve-{maintenant}@exemple.fr\r\nTEL;TYPE=cell:0
     let bilan = synchro();
     assert!(bilan.retires >= 1, "{bilan:?}");
     assert!(magasin.fiches_contacts(&format!("epreuve-{maintenant}"), 5).unwrap().is_empty());
+}
+
+/// Écriture par MMail (0.6.20) : création sans écrasement, modification qui
+/// garde ce que MMail ne montre pas — SOGo réécrit-il la fiche ? —, conflit
+/// d'ETag, retrait. La fiche d'essai est retirée en fin de parcours.
+#[test]
+#[ignore = "exige un serveur CardDAV et un compte"]
+fn carnet_ecrit_par_mmail() {
+    use crate::caldav::Acces;
+    use crate::{carddav, fiche};
+    let hote = variable("MMAIL_HOTE");
+    let (utilisateur, mot_de_passe) = (variable("MMAIL_UTILISATEUR"), variable("MMAIL_MOTDEPASSE"));
+    let maintenant = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let magasin = Magasin::en_memoire().unwrap();
+    let compte = magasin.compte(&utilisateur, &hote, 993, &utilisateur).unwrap();
+    let acces = Acces { utilisateur: &utilisateur, mot_de_passe: &mot_de_passe };
+    let synchro = || carddav::synchroniser(&magasin, compte, &hote, &acces, maintenant, false).expect("synchronisation");
+    synchro();
+    let carnets = magasin.carnets_locaux().unwrap();
+    for c in &carnets {
+        println!("carnet « {} » {} écriture {}", c.nom, c.adresse, c.ecriture);
+    }
+    let carnet = carnets.iter().find(|c| c.adresse.ends_with("/personal/")).expect("carnet personnel").clone();
+    assert!(carnet.ecriture);
+    // La liste globale (GAL) de SOGo est un annuaire : en lecture.
+    assert!(carnets.iter().filter(|c| c.nom.starts_with("GAL")).all(|c| !c.ecriture));
+
+    // Création par MMail. SOGo ignore If-None-Match (2026-10-26) : un second
+    // dépôt au même identifiant remplacerait la fiche — l'identifiant d'une
+    // fiche neuve est aléatoire.
+    let uid = format!("mmail-epreuve-ecriture-{maintenant}");
+    let url = format!("{}{uid}.vcf", carnet.adresse);
+    let saisie = fiche::Fiche {
+        prenom: "Épreuve".into(),
+        nom: format!("Écriture {maintenant}"),
+        organisation: "MMEDIA; essai, carnet".into(),
+        courriels: vec![fiche::Coordonnee { genre: "travail".into(), valeur: format!("ecriture-{maintenant}@exemple.fr"), cle: None }],
+        note: "ligne 1\nligne 2".into(),
+        ..Default::default()
+    };
+    let vcard = fiche::creer(&saisie, &uid, chrono::Utc::now()).unwrap();
+    let etag = carddav::deposer(&acces, &url, &vcard, None).expect("création");
+    println!("création : ETag rendu {etag:?}");
+    println!("même identifiant : {:?}", carddav::deposer(&acces, &url, &vcard, None));
+
+    // Une fiche comme un téléphone en écrit, déposée telle quelle ; MMail la
+    // modifie ; ce qu'il ne montre pas doit rester.
+    let riche = format!(
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:Épreuve Riche {maintenant}\r\nN:Riche;Épreuve;;;\r\n\
+item1.EMAIL;TYPE=work:riche-{maintenant}@exemple.fr\r\nitem1.X-ABLabel:_$!<Work>!$_\r\nTEL;TYPE=cell:06 00 00 00 00\r\n\
+CATEGORIES:Clients,Essai\r\nX-PROPRE-MMAIL:garde-moi\r\nBDAY:1970-01-01\r\n\
+PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\r\n\
+END:VCARD\r\n"
+    );
+    assert!(matches!(requete_dav("PUT", &url, "text/vcard; charset=utf-8", &riche), 201 | 204));
+    synchro();
+    let index = magasin.fiche_contact(magasin.fiche_par_adresse(&format!("riche-{maintenant}@exemple.fr")).unwrap().expect("fiche lue")).unwrap().unwrap();
+    println!("fiche telle que SOGo la rend :\n{}", index.vcard);
+    let origine = fiche::lire(&index.vcard).unwrap();
+    let mut changee = origine.clone();
+    changee.organisation = "Exemple SA".into();
+    changee.telephones.push(fiche::Coordonnee { genre: "fax".into(), valeur: "05 53 00 00 00".into(), cle: None });
+    let v2 = fiche::modifier(&index.vcard, &origine, &changee, chrono::Utc::now()).unwrap();
+    carddav::deposer(&acces, &url, &v2, Some(&index.etag)).expect("modification");
+    // L'ETag lu avant la modification ne vaut plus.
+    let conflit = carddav::deposer(&acces, &url, &v2, Some(&index.etag));
+    assert!(matches!(&conflit, Err(Erreur::Refuse(m)) if m == carddav::CONFLIT), "{conflit:?}");
+    assert!(carddav::retirer(&acces, &carnet.adresse, &url, &index.etag).is_err(), "retrait d'une version dépassée");
+    synchro();
+    let apres = magasin.fiche_contact(index.id).unwrap().unwrap();
+    println!("après modification par MMail :\n{}", apres.vcard);
+    // SOGo écrit noms de propriétés et groupes en capitales (ITEM1.X-ABLABEL) :
+    // la comparaison n'en tient pas compte.
+    let texte = apres.vcard.to_uppercase();
+    for garde in ["X-PROPRE-MMAIL:GARDE-MOI", "CATEGORIES:CLIENTS,ESSAI", "BDAY:1970-01-01", "ITEM1.X-ABLABEL", "PHOTO", "ORG:EXEMPLE SA", "05 53 00 00 00"] {
+        assert!(texte.contains(garde), "{garde} perdu");
+    }
+    carddav::retirer(&acces, &carnet.adresse, &url, &apres.etag).expect("retrait");
+    assert!(synchro().retires >= 1);
+    assert!(magasin.fiche_contact(index.id).unwrap().is_none());
 }
 
 fn requete_dav(methode: &str, url: &str, type_contenu: &str, corps: &str) -> u16 {

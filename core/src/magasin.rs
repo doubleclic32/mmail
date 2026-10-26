@@ -23,12 +23,41 @@ pub type Resultat<T> = Result<T, Erreur>;
 /// Un contact des carnets d'adresses, pour l'interface.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FicheLocale {
+    pub id: i64,
     pub nom: String,
     pub organisation: String,
     pub courriels: Vec<String>,
     pub telephones: Vec<String>,
     pub carnet: String,
     pub compte: String,
+    pub carnet_id: i64,
+    pub compte_id: i64,
+    /// Le serveur accepte l'écriture dans son carnet.
+    pub ecriture: bool,
+}
+
+/// Un carnet d'adresses de l'index (0.6.20).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CarnetLocal {
+    pub id: i64,
+    pub compte: i64,
+    /// Adresse complète de la collection CardDAV.
+    pub adresse: String,
+    pub nom: String,
+    pub ecriture: bool,
+    /// Adresse de la boîte.
+    pub boite: String,
+}
+
+/// Une fiche de contact telle que l'index la garde (0.6.20) : de quoi la
+/// réécrire.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FicheIndex {
+    pub id: i64,
+    pub carnet: i64,
+    pub href: String,
+    pub etag: String,
+    pub vcard: String,
 }
 
 /// Lignes écrites par transaction : le verrou d'écriture de SQLite est unique,
@@ -43,7 +72,7 @@ pub const AUTH_MICROSOFT: &str = "microsoft";
 pub const AUTH_GOOGLE: &str = "google";
 
 /// Version du schéma, portée par `PRAGMA user_version`.
-const VERSION_SCHEMA: i32 = 18;
+const VERSION_SCHEMA: i32 = 19;
 
 #[derive(Debug)]
 pub struct Erreur(pub String);
@@ -627,6 +656,15 @@ impl Magasin {
                  );
                  UPDATE folders SET highestmodseq = 0;",
             )?;
+        }
+        // Version 19 : le texte de chaque fiche de contact et le droit
+        // d'écrire dans chaque carnet (0.6.20, cf. `fiche`). Étiquettes et
+        // ETag oubliés : chaque carnet est relu en entier à la synchronisation
+        // suivante, texte compris.
+        if version < 19 {
+            self.ajouter_colonne("fiches", "vcard", "TEXT NOT NULL DEFAULT ''")?;
+            self.ajouter_colonne("carnets", "ecriture", "INTEGER NOT NULL DEFAULT 1")?;
+            self.base.execute_batch("UPDATE carnets SET ctag = ''; UPDATE fiches SET etag = '';")?;
         }
         self.base.pragma_update(None, "user_version", VERSION_SCHEMA)?;
         Ok(())
@@ -1801,10 +1839,11 @@ impl Magasin {
         Ok(())
     }
 
-    /// Pose les carnets d'un compte : `(adresse, nom)`. Ceux qui ont disparu
-    /// sont retirés, avec leurs fiches. Rend vrai si quelque chose a changé.
-    pub fn poser_carnets(&self, compte: i64, carnets: &[(String, String)]) -> Resultat<bool> {
-        let presents: HashSet<&str> = carnets.iter().map(|(u, _)| u.as_str()).collect();
+    /// Pose les carnets d'un compte : `(adresse, nom, écriture)`. Ceux qui ont
+    /// disparu sont retirés, avec leurs fiches. Rend vrai si quelque chose a
+    /// changé.
+    pub fn poser_carnets(&self, compte: i64, carnets: &[(String, String, bool)]) -> Resultat<bool> {
+        let presents: HashSet<&str> = carnets.iter().map(|(u, _, _)| u.as_str()).collect();
         let mut change = false;
         let anciens: Vec<(i64, String)> = {
             let mut requete = self.base.prepare("SELECT id, url FROM carnets WHERE account_id = ?1")?;
@@ -1817,11 +1856,12 @@ impl Magasin {
                 change = true;
             }
         }
-        for (url, nom) in carnets {
+        for (url, nom, ecriture) in carnets {
             let n = self.base.execute(
-                "INSERT INTO carnets (account_id, url, nom) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (account_id, url) DO UPDATE SET nom = excluded.nom WHERE nom <> excluded.nom",
-                params![compte, url, nom],
+                "INSERT INTO carnets (account_id, url, nom, ecriture) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (account_id, url) DO UPDATE SET nom = excluded.nom, ecriture = excluded.ecriture
+                 WHERE nom <> excluded.nom OR ecriture <> excluded.ecriture",
+                params![compte, url, nom, *ecriture as i32],
             )?;
             change |= n > 0;
         }
@@ -1856,15 +1896,15 @@ impl Magasin {
         Ok(())
     }
 
-    /// Range des fiches lues : `(href, etag, contact)`.
-    pub fn poser_contacts(&self, carnet: i64, fiches: &[(String, String, crate::carddav::Contact)]) -> Resultat<()> {
+    /// Range des fiches lues : `(href, etag, contact, vcard)`.
+    pub fn poser_contacts(&self, carnet: i64, fiches: &[(String, String, crate::carddav::Contact, String)]) -> Resultat<()> {
         let transaction = self.base.unchecked_transaction()?;
-        for (href, etag, c) in fiches {
+        for (href, etag, c, vcard) in fiches {
             transaction.execute(
-                "INSERT INTO fiches (carnet_id, href, etag, nom, organisation, telephones) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO fiches (carnet_id, href, etag, nom, organisation, telephones, vcard) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (carnet_id, href) DO UPDATE SET etag = excluded.etag, nom = excluded.nom,
-                     organisation = excluded.organisation, telephones = excluded.telephones",
-                params![carnet, href, etag, c.nom, c.organisation, c.telephones.join("\n")],
+                     organisation = excluded.organisation, telephones = excluded.telephones, vcard = excluded.vcard",
+                params![carnet, href, etag, c.nom, c.organisation, c.telephones.join("\n"), vcard],
             )?;
             let fiche: i64 = transaction.query_row(
                 "SELECT id FROM fiches WHERE carnet_id = ?1 AND href = ?2",
@@ -1890,7 +1930,8 @@ impl Magasin {
         let motif = format!("%{}%", filtre.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
         let mut requete = self.base.prepare(
             "SELECT f.id, f.nom, f.organisation, f.telephones, k.nom, a.adresse,
-                    (SELECT group_concat(adresse, char(10)) FROM fiches_courriels WHERE fiche_id = f.id)
+                    (SELECT group_concat(adresse, char(10)) FROM fiches_courriels WHERE fiche_id = f.id),
+                    k.id, a.id, k.ecriture
                FROM fiches f JOIN carnets k ON k.id = f.carnet_id JOIN accounts a ON a.id = k.account_id
               WHERE f.nom LIKE ?1 ESCAPE '\\' OR f.organisation LIKE ?1 ESCAPE '\\'
                  OR EXISTS (SELECT 1 FROM fiches_courriels c WHERE c.fiche_id = f.id AND c.adresse LIKE ?1 ESCAPE '\\')
@@ -1901,15 +1942,73 @@ impl Magasin {
             let telephones: String = l.get(3)?;
             let courriels: Option<String> = l.get(6)?;
             Ok(FicheLocale {
+                id: l.get(0)?,
                 nom: l.get(1)?,
                 organisation: l.get(2)?,
                 telephones: telephones.split('\n').filter(|t| !t.is_empty()).map(String::from).collect(),
                 carnet: l.get(4)?,
                 compte: l.get(5)?,
                 courriels: courriels.unwrap_or_default().split('\n').filter(|t| !t.is_empty()).map(String::from).collect(),
+                carnet_id: l.get(7)?,
+                compte_id: l.get(8)?,
+                ecriture: l.get::<_, i64>(9)? != 0,
             })
         })?;
         Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
+    /// Les carnets de tous les comptes, par boîte puis par nom.
+    pub fn carnets_locaux(&self) -> Resultat<Vec<CarnetLocal>> {
+        let mut requete = self.base.prepare(
+            "SELECT k.id, k.account_id, k.url, k.nom, k.ecriture, a.adresse
+               FROM carnets k JOIN accounts a ON a.id = k.account_id
+              ORDER BY a.adresse COLLATE NOCASE, k.nom COLLATE NOCASE",
+        )?;
+        let lignes = requete.query_map([], |l| {
+            Ok(CarnetLocal {
+                id: l.get(0)?,
+                compte: l.get(1)?,
+                adresse: l.get(2)?,
+                nom: l.get(3)?,
+                ecriture: l.get::<_, i64>(4)? != 0,
+                boite: l.get(5)?,
+            })
+        })?;
+        Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
+    /// Une fiche de l'index, avec son texte.
+    pub fn fiche_contact(&self, id: i64) -> Resultat<Option<FicheIndex>> {
+        Ok(self
+            .base
+            .query_row("SELECT id, carnet_id, href, etag, vcard FROM fiches WHERE id = ?1", params![id], |l| {
+                Ok(FicheIndex { id: l.get(0)?, carnet: l.get(1)?, href: l.get(2)?, etag: l.get(3)?, vcard: l.get(4)? })
+            })
+            .optional()?)
+    }
+
+    /// Toutes les fiches d'un carnet, avec leur texte.
+    pub fn fiches_du_carnet(&self, carnet: i64) -> Resultat<Vec<FicheIndex>> {
+        let mut requete = self.base.prepare("SELECT id, carnet_id, href, etag, vcard FROM fiches WHERE carnet_id = ?1 ORDER BY id")?;
+        let lignes = requete.query_map(params![carnet], |l| {
+            Ok(FicheIndex { id: l.get(0)?, carnet: l.get(1)?, href: l.get(2)?, etag: l.get(3)?, vcard: l.get(4)? })
+        })?;
+        Ok(lignes.collect::<Result<_, _>>()?)
+    }
+
+    /// La fiche qui porte cette adresse de courriel, s'il y en a une ; celle
+    /// d'un carnet modifiable d'abord.
+    pub fn fiche_par_adresse(&self, adresse: &str) -> Resultat<Option<i64>> {
+        Ok(self
+            .base
+            .query_row(
+                "SELECT f.id FROM fiches_courriels c JOIN fiches f ON f.id = c.fiche_id JOIN carnets k ON k.id = f.carnet_id
+                  WHERE lower(c.adresse) = lower(?1)
+                  ORDER BY k.ecriture DESC, f.id LIMIT 1",
+                params![adresse.trim()],
+                |l| l.get(0),
+            )
+            .optional()?)
     }
 
     pub fn caldav(&self, compte: i64) -> Resultat<(String, i64)> {

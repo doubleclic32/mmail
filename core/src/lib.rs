@@ -9,6 +9,7 @@ pub mod carddav;
 pub mod categories;
 pub mod configuration;
 pub mod deplacement;
+pub mod fiche;
 pub mod filtres;
 pub mod garde;
 pub mod google;
