@@ -457,9 +457,34 @@ ApplicationWindow {
             bandeau: "#0b0d2e", texteBandeau: "#ffffff", accent: "#21abe3",
             texteAccent: "#0e6f9e", rubrique: "#276e8b", alerte: "#e61e29",
             titres: ["Saira Condensed", "Segoe UI", "Noto Sans", "DejaVu Sans", "Arial"]
+        },
+        // Apparence « Pomme », reprise de la charte du Hub Double Clic : fonds
+        // gris très clairs, surfaces blanches, bleu système pour la sélection
+        // et les repères, bandeau d'en-tête anthracite.
+        // Les rubriques prennent un gris de texte secondaire, ce qui garde la
+        // distinction des objets : bleu pour un message non lu, gris pour un
+        // message lu. Le rouge d'importance descend à #d70015, le #ff3b30 des
+        // palettes système n'atteignant que 3:1 sur blanc, trop peu pour du
+        // texte.
+        // Aucune police n'est fournie : absentes, la liste retombe sur Inter,
+        // puis sur Segoe UI. Seules les couleurs portent alors l'apparence,
+        // et elles suffisent.
+        "pomme": {
+            libelle: qsTr("Pomme"),
+            fond: "#f5f5f7", texte: "#1d1d1f", base: "#ffffff",
+            bouton: "#ffffff", surbrillance: "#0071e3", texteSurbrillance: "#ffffff",
+            police: ["SF Pro Text", "SF Pro Display", "Inter",
+                     "Segoe UI Variable Text", "Segoe UI", "Noto Sans",
+                     "DejaVu Sans", "Arial"], taille: 10,
+            mono: ["SF Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"],
+            bandeau: "#161617", texteBandeau: "#f5f5f7", accent: "#0071e3",
+            texteAccent: "#0071e3", rubrique: "#6e6e73", alerte: "#d70015",
+            titres: ["SF Pro Display", "SF Pro Text", "Inter",
+                     "Segoe UI Variable Display", "Segoe UI", "Noto Sans",
+                     "DejaVu Sans", "Arial"]
         }
     })
-    readonly property var nomsApparence: ["classique", "moderne", "systeme", "mmedia"]
+    readonly property var nomsApparence: ["classique", "moderne", "systeme", "mmedia", "pomme"]
 
     // Nul pour « systeme » : c'est ce qui coupe les surcharges ci-dessous.
     readonly property var jeu: apparence === "systeme" || !jeuxApparence[apparence]
@@ -5905,6 +5930,12 @@ ApplicationWindow {
         // style, texte mis en valeur en cyan foncé…
         if (marque === null || entete.background.visible || texteAccent.toString() !== "#0e6f9e")
             return "repères de l'apparence MMEDIA non appliqués"
+        choisirApparence("pomme")
+        if (palette.window.toString() !== "#f5f5f7" || palette.highlight.toString() !== "#0071e3")
+            return "apparence Pomme non appliquée : " + palette.window
+        if (marque === null || texteAccent.toString() !== "#0071e3"
+                || couleurRubrique.toString() !== "#6e6e73")
+            return "repères de l'apparence Pomme non appliqués"
         // … et rendus en la quittant : fond du style, couleur de sélection.
         choisirApparence("moderne")
         if (marque !== null || !entete.background.visible
