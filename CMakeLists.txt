@@ -195,7 +195,8 @@ target_compile_definitions(mmail PRIVATE MMAIL_VERSION="${PROJECT_VERSION}")
 if(WIN32)
   # advapi32 : droits du profil imposé par la machine (cf. reserverProfil).
   # dxgi : cartes graphiques de la machine (cf. choisirRendu).
-  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid advapi32 dxgi)
+  # dwmapi : matériau translucide de Windows 11 (cf. fenetre::materiau).
+  target_link_libraries(mmail PRIVATE ole32 shell32 shlwapi uuid advapi32 dxgi dwmapi)
 endif()
 
 # Compteur du lanceur sous Linux (cf. cpp/pastille.h) : un signal D-Bus.

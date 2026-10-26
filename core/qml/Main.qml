@@ -523,6 +523,12 @@ ApplicationWindow {
     // transition ne s'écrit sans ce garde.
     readonly property bool anime: valeurOu("mouvement", false) === true && animationsSysteme
 
+    // Matériau demandé par l'apparence, lu par cpp/main.cpp au démarrage :
+    // « mica », « acrylique », ou rien. Le C++ ne connaît pas la table des
+    // apparences, c'est elle qui décide, comme pour tout le reste.
+    readonly property string materiauVoulu: valeurOu("materiau", "aucun") === "aucun"
+                                            ? "" : valeurOu("materiau", "aucun")
+
     // Bouton de la barre tactile (et « ‹ » de la vue compacte). Sous une
     // apparence de marque, une pastille sur le bandeau, comme les onglets du
     // site : pleine en cyan quand il est choisi, cernée pour les autres
@@ -6025,6 +6031,8 @@ ApplicationWindow {
         // rien ne s'anime, que le poste l'autorise ou non.
         if (anime)
             return "mouvement accordé à MMEDIA, qui ne le demande pas"
+        if (materiauVoulu !== "")
+            return "matériau demandé par MMEDIA : " + materiauVoulu
         if (fondBandeau.a !== 1.0)
             return "bandeau MMEDIA rendu translucide : " + fondBandeau.a
         choisirApparence("pomme")
@@ -6045,6 +6053,8 @@ ApplicationWindow {
         if (anime !== (animationsSysteme === true))
             return "garde de mouvement incohérent : anime=" + anime +
                    " système=" + animationsSysteme
+        if (materiauVoulu !== "mica")
+            return "matériau de l'apparence Pomme non lu : " + materiauVoulu
         // … et rendus en la quittant : fond du style, couleur de sélection.
         choisirApparence("moderne")
         if (marque !== null || !entete.background.visible

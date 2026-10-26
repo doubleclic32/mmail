@@ -559,6 +559,17 @@ int main(int argc, char* argv[])
   engine.load(url);
 
 #ifndef Q_OS_ANDROID
+  // Matériau de la fenêtre, demandé par l'apparence. Hors de la condition qui
+  // suit : celle-ci écarte les contrôles et les captures, or une capture doit
+  // justement montrer le matériau. Le fond de la fenêtre passe au transparent
+  // quand il est accordé, sinon il le recouvrirait.
+  if (!engine.rootObjects().isEmpty()) {
+    if (auto* principale = qobject_cast<QQuickWindow*>(engine.rootObjects().first())) {
+      const QString voulu = principale->property("materiauVoulu").toString();
+      if (!voulu.isEmpty() && fenetre::materiau(principale, voulu))
+        principale->setColor(Qt::transparent);
+    }
+  }
   // Position de la fenêtre retenue d'une session à l'autre — sauf pour les
   // contrôles, les captures et les essais à taille imposée (MMAIL_TAILLE).
   if (!smoke && capture.isEmpty() && qgetenv("MMAIL_TAILLE").isEmpty() && !engine.rootObjects().isEmpty()) {
