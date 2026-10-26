@@ -605,7 +605,10 @@ mod tests {
     fn jetons_au_coffre() {
         let client = "6f263490-3351-4167-908b-10d701fc2f1c";
         let p = partager_du_coffre(Fournisseur::Microsoft, &format!("{client} RT"));
-        assert_eq!((verrouiller(&p).client.as_str(), verrouiller(&p).rafraichissement.as_str()), (client, "RT"));
+        {
+            let j = verrouiller(&p);
+            assert_eq!((j.client.as_str(), j.rafraichissement.as_str()), (client, "RT"));
+        }
         verrouiller(&p).renouvele = true;
         assert_eq!(a_conserver(&p), Some(format!("{client} RT")), "l'application reste avec le jeton");
         let ancien = partager_du_coffre(Fournisseur::Microsoft, "RT");
