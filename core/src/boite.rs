@@ -4987,7 +4987,15 @@ impl Travail {
                 let mut echec_dossier = None;
                 for chemin in &chemins {
                     match e.client.vider(chemin) {
-                        Ok(k) => nombre += k,
+                        Ok(k) => {
+                            nombre += k;
+                            // Vide sur le serveur, vide dans l'index : la liste
+                            // affichée se vide avec lui, sans attendre la
+                            // prochaine synchronisation du dossier.
+                            if let Ok(id) = e.magasin.dossier_id(compte, chemin) {
+                                let _ = e.magasin.retirer_tout(id);
+                            }
+                        }
                         Err(err) => {
                             echec_dossier = Some((chemin.clone(), err));
                             break;

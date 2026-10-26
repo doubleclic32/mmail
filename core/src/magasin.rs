@@ -1452,6 +1452,12 @@ impl Magasin {
         self.retirer_intervalles(dossier, &intervalles)
     }
 
+    /// Retire de l'index tous les messages d'un dossier, vidé sur le serveur.
+    pub fn retirer_tout(&self, dossier: i64) -> Resultat<()> {
+        self.base.execute("DELETE FROM messages WHERE folder_id = ?1", params![dossier])?;
+        self.recompter(dossier)
+    }
+
     /// UID connus d'un dossier.
     pub fn uids(&self, dossier: i64) -> Resultat<Vec<u32>> {
         let mut requete = self.base.prepare("SELECT uid FROM messages WHERE folder_id = ?1")?;
@@ -2282,6 +2288,25 @@ mod tests {
         assert_eq!(uids, vec![5]);
         assert!(m.gardes_perimes(9_000).unwrap().is_empty());
         assert_eq!(m.gardes_perimes(9_001).unwrap(), vec![ids[0]]);
+    }
+
+    #[test]
+    fn dossier_vide_sur_le_serveur_quitte_l_index() {
+        let (m, compte, id) = boite();
+        m.poser_dossiers(compte, &[dossier("INBOX", &[]), dossier("Trash", &["\\Trash"])]).unwrap();
+        let corbeille = m.dossier_id(compte, "Trash").unwrap();
+        m.poser_messages(id, &[message(1, 100, true)]).unwrap();
+        m.poser_messages(corbeille, &[message(7, 200, false), message(8, 300, true)]).unwrap();
+        m.recompter(corbeille).unwrap();
+        let avant = m.version_dossier(corbeille).unwrap();
+        m.retirer_tout(corbeille).unwrap();
+        assert!(m.messages(corbeille).unwrap().is_empty());
+        // La liste affichée suit la version du dossier : elle doit changer.
+        assert!(m.version_dossier(corbeille).unwrap() > avant);
+        let d = m.dossier(corbeille).unwrap().unwrap();
+        assert_eq!((d.messages, d.non_lus), (0, 0));
+        // Les autres dossiers gardent leurs messages.
+        assert_eq!(m.messages(id).unwrap().len(), 1);
     }
 
     #[test]
