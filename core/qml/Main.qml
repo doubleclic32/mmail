@@ -482,6 +482,7 @@ ApplicationWindow {
             // Clés facultatives, lues par valeurOu() : aucune des quatre
             // autres apparences ne les porte, donc aucune ne bouge.
             survolBandeau: 0.18, survolBande: 0.14, filetBandeau: 1,
+            survolLigne: 0.07,
             mouvement: true, materiau: "mica", opaciteBandeau: 0.8
         }
     })
@@ -539,10 +540,23 @@ ApplicationWindow {
             anchors.topMargin: 3
             anchors.bottomMargin: 3
             radius: height / 2
+            // Le survol passe désormais par survolEntete() : MMEDIA y retrouve
+            // ses 14 % de blanc, une apparence peut en demander davantage.
             color: be.actif ? fenetre.accent
-                 : be.hovered || be.down ? Qt.rgba(1, 1, 1, 0.14) : "transparent"
+                 : be.hovered || be.down ? fenetre.survolEntete(true) : "transparent"
             border.width: be.cerne && !be.actif ? 1 : 0
             border.color: Qt.rgba(1, 1, 1, 0.35)
+            Behavior on color {
+                enabled: fenetre.anime
+                ColorAnimation { duration: 140 }
+            }
+        }
+        // Retour d'appui : sous 100 ms il se perçoit comme une réaction, au-delà
+        // comme un retard.
+        scale: be.down && fenetre.anime ? 0.97 : 1
+        Behavior on scale {
+            enabled: fenetre.anime
+            NumberAnimation { duration: 90; easing.type: Easing.OutQuad }
         }
         CompteurNonLus {
             id: compteurEntete
@@ -617,17 +631,34 @@ ApplicationWindow {
             opacity: og.checked || og.hovered ? 1 : 0.72
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+            Behavior on opacity {
+                enabled: fenetre.anime
+                NumberAnimation { duration: 140; easing.type: Easing.OutQuad }
+            }
         }
         background: Rectangle {
             color: og.hovered && !og.checked ? fenetre.survolEntete(og.sombre)
                  : og.checked && og.sombre && fenetre.marque ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+            Behavior on color {
+                enabled: fenetre.anime
+                ColorAnimation { duration: 140 }
+            }
+            // Le filet de l'onglet choisi s'ouvre depuis le centre au lieu
+            // d'apparaître, et celui qu'on quitte se referme. Ancré au centre
+            // plutôt qu'aux deux bords : l'état au repos est celui d'avant,
+            // seul le trajet est nouveau. Garde coupé, la largeur saute et le
+            // rendu redevient exactement l'ancien.
             Rectangle {
-                visible: og.checked
-                anchors.left: parent.left
-                anchors.right: parent.right
+                visible: width > 0
+                anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
+                width: og.checked ? parent.width : 0
                 height: 3
                 color: fenetre.accent
+                Behavior on width {
+                    enabled: fenetre.anime
+                    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                }
             }
         }
     }
@@ -678,6 +709,15 @@ ApplicationWindow {
             border.width: bo.principal ? 0 : 1
             border.color: bo.sombre && fenetre.marque ? Qt.rgba(1, 1, 1, 0.45)
                         : Qt.rgba(fenetre.palette.windowText.r, fenetre.palette.windowText.g, fenetre.palette.windowText.b, 0.32)
+            Behavior on color {
+                enabled: fenetre.anime
+                ColorAnimation { duration: 140 }
+            }
+        }
+        scale: bo.down && fenetre.anime ? 0.97 : 1
+        Behavior on scale {
+            enabled: fenetre.anime
+            NumberAnimation { duration: 90; easing.type: Easing.OutQuad }
         }
     }
 

@@ -26,6 +26,23 @@ ItemDelegate {
     property bool survol: false
     highlighted: estCourant
 
+    // Survol du dossier, au même titre que la ligne de message. « survol »
+    // au-dessus est celui d'un glisser-déposer, qui a son propre cadre : ici
+    // c'est le simple passage du pointeur. Sans la clé « survolLigne », le
+    // rectangle reste transparent et rien ne change.
+    Rectangle {
+        z: -1
+        anchors.fill: parent
+        color: !ligne.highlighted && ligne.hovered && fenetre.valeurOu("survolLigne", 0) > 0
+               ? Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b,
+                         fenetre.valeurOu("survolLigne", 0))
+               : "transparent"
+        Behavior on color {
+            enabled: fenetre.anime
+            ColorAnimation { duration: 120 }
+        }
+    }
+
     // Lecteurs d'écran : un élément d'arborescence, nommé comme à l'écran,
     // avec ses non-lus.
     Accessible.role: Accessible.TreeItem

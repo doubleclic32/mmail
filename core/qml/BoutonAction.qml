@@ -26,6 +26,15 @@ Button {
              : ba.hovered ? fenetre.couleurRubrique : fenetre.palette.base
         border.width: 1
         border.color: fenetre.couleurRubrique
+        Behavior on color {
+            enabled: fenetre.anime
+            ColorAnimation { duration: 140 }
+        }
+    }
+    scale: ba.down && fenetre.anime ? 0.97 : 1
+    Behavior on scale {
+        enabled: fenetre.anime
+        NumberAnimation { duration: 90; easing.type: Easing.OutQuad }
     }
     SiMarque { target: ba.background; property: "visible"; value: false }
     SiMarque {
