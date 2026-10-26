@@ -31,7 +31,10 @@ ItemDelegate {
     // c'est le simple passage du pointeur. Sans la clé « survolLigne », le
     // rectangle reste transparent et rien ne change.
     Rectangle {
-        z: -1
+        // -0,4 : au-dessus du fond du délégué (-1, opaque sous Fusion) ET du
+        // fond de la rubrique Favoris (-0,5), déclaré plus bas, qui l'aurait
+        // recouvert à z égal. Transparent au repos, il ne cache rien.
+        z: -0.25
         anchors.fill: parent
         color: !ligne.highlighted && ligne.hovered && fenetre.valeurOu("survolLigne", 0) > 0
                ? Qt.rgba(fenetre.accent.r, fenetre.accent.g, fenetre.accent.b,
@@ -39,7 +42,7 @@ ItemDelegate {
                : "transparent"
         Behavior on color {
             enabled: fenetre.anime
-            ColorAnimation { duration: 120 }
+            ColorAnimation { duration: fenetre.dureeTeinte }
         }
     }
 
