@@ -120,6 +120,8 @@ Connections {
                 scenarios.etapeScenarioGlisser()
             if (fenetre.essai.scenario === "corbeille-ligne")
                 scenarios.etapeScenarioCorbeille()
+            if (fenetre.essai.scenario === "vider-dossier")
+                scenarios.etapeScenarioViderDossier()
             if (fenetre.essai.scenario === "glisser-ligne")
                 scenarios.etapeScenarioGlisserLigne()
             if (fenetre.essai.scenario === "filtres")
@@ -266,6 +268,8 @@ Connections {
             scenarios.etapeScenarioGlisser()
         if (fenetre.essai && fenetre.essai.scenario === "corbeille-ligne")
             scenarios.etapeScenarioCorbeille()
+        if (fenetre.essai && fenetre.essai.scenario === "vider-dossier")
+            scenarios.etapeScenarioViderDossier()
         if (fenetre.essai && fenetre.essai.scenario === "glisser-ligne")
             scenarios.etapeScenarioGlisserLigne()
         if (fenetre.essai && fenetre.essai.scenario === "filtres")
@@ -674,6 +678,8 @@ Connections {
                 scenarios.etapeScenarioGlisser()
             if (fenetre.essai.scenario === "corbeille-ligne")
                 scenarios.etapeScenarioCorbeille()
+            if (fenetre.essai.scenario === "vider-dossier")
+                scenarios.etapeScenarioViderDossier()
             if (fenetre.essai.scenario === "glisser-ligne")
                 scenarios.etapeScenarioGlisserLigne()
             if (fenetre.essai.scenario === "filtres")
@@ -711,6 +717,8 @@ Connections {
             qsTr("messages effacés des corbeilles et indésirables."))
         if (fenetre.essai && fenetre.essai.scenario === "vidage")
             scenarios.bilanScenarioVidage("vidées, " + nombre + " message(s) | " + messageEtat.texte)
+        if (fenetre.essai && fenetre.essai.scenario === "vider-dossier")
+            scenarios.bilanScenarioViderDossier(nombre)
     }
 
     // Le serveur n'a pas fini de chercher dans un dossier (0.6.16) : ses

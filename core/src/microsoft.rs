@@ -112,8 +112,15 @@ const PORTEE_CODE: &str = "offline_access openid email https://outlook.office.co
 
 /// Identifiant de l'application « MMail » dans l'annuaire Entra où elle est
 /// inscrite (éditeur `mmedia.fr`). Public par nature : application sans
-/// secret, que toute page de connexion affiche.
-const MICROSOFT_CLIENT_ID: &str = "7b6c8863-79ca-42b3-8149-313df37a3993";
+/// secret, que toute page de connexion affiche. Depuis la 0.6.19, celle du
+/// tenant partenaire `mmedia67478`, à l'éditeur vérifié « MMEDIA » (MPN
+/// 3820658) : Microsoft n'avertit plus d'un éditeur non vérifié.
+const MICROSOFT_CLIENT_ID: &str = "6f263490-3351-4167-908b-10d701fc2f1c";
+
+/// L'inscription d'avant la 0.6.19, toujours en place : un compte connecté
+/// avec elle garde son jeton de rafraîchissement, que seule elle accepte.
+/// Il passe à la nouvelle à sa prochaine reconnexion.
+const MICROSOFT_CLIENT_ID_AVANT: &str = "7b6c8863-79ca-42b3-8149-313df37a3993";
 
 /// Graph, pour le compte de la personne connectée.
 const GRAPH: &str = "https://graph.microsoft.com/v1.0/me";
@@ -147,6 +154,40 @@ pub fn identifiant_client() -> String {
 
 pub fn disponible() -> bool {
     !identifiant_client().is_empty()
+}
+
+/// Application à qui demander de nouveaux jetons pour un compte :
+/// `MMAIL_MICROSOFT_CLIENT_ID` s'il est donné, sinon celle qui a délivré son
+/// jeton de rafraîchissement (`memorisee`, cf. `du_coffre`) ; aucune — compte
+/// connecté avant la 0.6.19 — c'est l'ancienne inscription.
+pub fn client_du_compte(memorisee: &str) -> String {
+    if let Some(v) = std::env::var("MMAIL_MICROSOFT_CLIENT_ID").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        return v;
+    }
+    if memorisee.is_empty() { MICROSOFT_CLIENT_ID_AVANT.to_string() } else { memorisee.to_string() }
+}
+
+/// Ce que le coffre garde d'un compte Microsoft : l'application, une espace,
+/// le jeton de rafraîchissement — un jeton ne vaut que pour l'application qui
+/// l'a délivré, et aucun ne contient d'espace.
+pub fn pour_le_coffre(client: &str, rafraichissement: &str) -> String {
+    if client.is_empty() { rafraichissement.to_string() } else { format!("{client} {rafraichissement}") }
+}
+
+/// L'inverse de `pour_le_coffre` : (application, jeton). Un jeton seul, écrit
+/// avant la 0.6.19, rend une application vide.
+pub fn du_coffre(texte: &str) -> (String, String) {
+    let texte = texte.trim();
+    match texte.split_once(' ') {
+        Some((client, jeton)) if est_identifiant(client) => (client.to_string(), jeton.trim().to_string()),
+        _ => (String::new(), texte.to_string()),
+    }
+}
+
+/// Forme d'un identifiant d'application Entra : un GUID.
+fn est_identifiant(texte: &str) -> bool {
+    let groupes: Vec<&str> = texte.split('-').collect();
+    groupes.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12]) && groupes.iter().all(|g| g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// Lien que l'administrateur d'une organisation ouvre une fois : MMail est
@@ -923,9 +964,27 @@ mod tests {
         // La variable d'environnement prime ; vide, c'est la constante.
         std::env::remove_var("MMAIL_MICROSOFT_CLIENT_ID");
         assert_eq!(identifiant_client(), MICROSOFT_CLIENT_ID);
+        assert_eq!(MICROSOFT_CLIENT_ID, "6f263490-3351-4167-908b-10d701fc2f1c", "nouvelles connexions : l'appli vérifiée");
+        // Un compte d'avant la 0.6.19 rafraîchit par l'ancienne inscription,
+        // un compte connecté depuis par celle qui a délivré son jeton.
+        assert_eq!(client_du_compte(""), "7b6c8863-79ca-42b3-8149-313df37a3993");
+        assert_eq!(client_du_compte(MICROSOFT_CLIENT_ID), MICROSOFT_CLIENT_ID);
         std::env::set_var("MMAIL_MICROSOFT_CLIENT_ID", " 11111111-2222-3333-4444-555555555555 ");
         assert_eq!(identifiant_client(), "11111111-2222-3333-4444-555555555555");
+        assert_eq!(client_du_compte(""), "11111111-2222-3333-4444-555555555555", "la variable prime");
+        assert_eq!(client_du_compte(MICROSOFT_CLIENT_ID), "11111111-2222-3333-4444-555555555555");
         assert!(disponible());
         std::env::remove_var("MMAIL_MICROSOFT_CLIENT_ID");
+    }
+
+    #[test]
+    fn jeton_au_coffre() {
+        let ecrit = pour_le_coffre(MICROSOFT_CLIENT_ID, "0.AXsA-b_c*d!e$f");
+        assert_eq!(ecrit, "6f263490-3351-4167-908b-10d701fc2f1c 0.AXsA-b_c*d!e$f");
+        assert_eq!(du_coffre(&ecrit), (MICROSOFT_CLIENT_ID.to_string(), "0.AXsA-b_c*d!e$f".to_string()));
+        // Jeton écrit avant la 0.6.19 : seul, sans application.
+        assert_eq!(du_coffre(" M.C5_BAY.0.U.-Cx*y "), (String::new(), "M.C5_BAY.0.U.-Cx*y".to_string()));
+        assert_eq!(du_coffre("pas-un-guid jeton"), (String::new(), "pas-un-guid jeton".to_string()));
+        assert_eq!(pour_le_coffre("", "RT"), "RT");
     }
 }

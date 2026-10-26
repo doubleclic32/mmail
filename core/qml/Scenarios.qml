@@ -941,6 +941,51 @@ QtObject {
         }
     }
 
+    // Scénario « vider-dossier » (0.6.19) : un message de la boîte de
+    // réception part à la corbeille ; la corbeille, ouverte, est vidée par
+    // « Vider ce dossier… », confirmé comme au clic. La liste doit être vide
+    // dès l'issue du vidage — jusqu'en 0.6.18, elle gardait les messages
+    // effacés jusqu'à la synchronisation suivante.
+    function etapeScenarioViderDossier() {
+        var a = listeComptes()[0]
+        if (!a || a.etat !== "pret")
+            return
+        if (essai.etape === 0 && boite.dossierCourant === "INBOX" && modeleMessages.count >= 1) {
+            essai.etape = 1
+            choisir(0, 0)
+            supprimerLigne(0)
+            console.log("scenario: message supprimé, en attente", deplacementsEnVol)
+        } else if (essai.etape === 1 && deplacementsEnVol === 0) {
+            essai.etape = 2
+            var corbeille = ""
+            var parcourir = function(noeuds) {
+                for (var i = 0; i < noeuds.length && !corbeille; ++i) {
+                    if (noeuds[i].compte === a.id && noeuds[i].role === "Trash")
+                        corbeille = noeuds[i].chemin
+                    else if (noeuds[i].enfants)
+                        parcourir(noeuds[i].enfants)
+                }
+            }
+            parcourir(JSON.parse(boite.arborescence(true)))
+            essai.corbeille = corbeille
+            ouvrirDossier(a.id, corbeille)
+        } else if (essai.etape === 2 && boite.dossierCourant === essai.corbeille && modeleMessages.count >= 1) {
+            essai.etape = 3
+            console.log("scenario: corbeille ouverte,", modeleMessages.count, "message(s) listé(s)")
+            dlgViderDossier.ouvrir(a.id, essai.corbeille, essai.corbeille)
+            dlgViderDossier.accept()
+        }
+    }
+
+    /// Issue du vidage du scénario « vider-dossier » : la liste telle que
+    /// l'utilisateur la voit, et la barre d'état.
+    function bilanScenarioViderDossier(nombre) {
+        console.log("scenario: vidé,", nombre, "message(s) | liste :", modeleMessages.count,
+                    modeleMessages.count === 0 ? "OK vide" : "ECHEC messages encore listés",
+                    "| état :", messageEtat.texte)
+        Qt.quit()
+    }
+
     // Scénario « filtres » (0.6.0) : un filtre incomplet refusé ; un filtre
     // sur l'objet d'un message de la boîte de réception, qui l'envoie dans
     // « Essais » quand on l'applique ; le message y est, on le ramène — et les

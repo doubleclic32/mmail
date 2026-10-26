@@ -1197,6 +1197,9 @@ fn remettre_message(id: &Identifiants, de: &str, destinataires: &[String], octet
 /// du compte, ses jetons.
 struct ConnexionOAuth {
     adresse: String,
+    /// Application de la connexion (Microsoft), qui seule acceptera ce jeton
+    /// de rafraîchissement ; vide pour Google.
+    client: String,
     rafraichissement: String,
     acces: String,
     duree: u64,
@@ -1204,7 +1207,9 @@ struct ConnexionOAuth {
 
 /// Ce que le service doit rendre à l'échange du code : l'adresse du compte
 /// (`id_token`) et un jeton de rafraîchissement.
-fn connexion_aboutie(r: crate::oauth::ReponseJeton, nom: &str) -> Result<ConnexionOAuth, crate::oauth::ErreurOAuth> {
+/// `client` : l'application qui a mené la connexion (Microsoft ; vide pour
+/// Google).
+fn connexion_aboutie(r: crate::oauth::ReponseJeton, nom: &str, client: &str) -> Result<ConnexionOAuth, crate::oauth::ErreurOAuth> {
     use crate::oauth::ErreurOAuth;
     let refus = |code: &str, description: String| ErreurOAuth::Refus { code: code.into(), description };
     let adresse = r
@@ -1216,7 +1221,7 @@ fn connexion_aboutie(r: crate::oauth::ReponseJeton, nom: &str) -> Result<Connexi
         .rafraichissement
         .clone()
         .ok_or_else(|| refus("offline_access", format!("{nom} n'a pas rendu de jeton de rafraîchissement")))?;
-    Ok(ConnexionOAuth { adresse, rafraichissement, acces: r.acces, duree: r.duree })
+    Ok(ConnexionOAuth { adresse, client: client.to_string(), rafraichissement, acces: r.acces, duree: r.duree })
 }
 
 /// Dossier cible d'un déplacement.
@@ -2242,7 +2247,7 @@ impl qobject::Boite {
         // Compte à jetons (Microsoft, Google) : ce que l'interface tient du
         // coffre est le jeton de rafraîchissement, pas un mot de passe.
         let (mot_de_passe, oauth) = match service {
-            Some(f) => (String::new(), Some(crate::oauth::partager(f, &mot_de_passe.to_string()))),
+            Some(f) => (String::new(), Some(crate::oauth::partager_du_coffre(f, &mot_de_passe.to_string()))),
             None => (mot_de_passe.to_string(), None),
         };
         {
@@ -2303,7 +2308,7 @@ impl qobject::Boite {
         let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
             let issue = ms::attendre_code(&ecoute, &etat, ms::DELAI_CONNEXION)
                 .and_then(|code| ms::echanger_code(&client, &code, &pkce.verificateur, &ecoute.redirection, &indice))
-                .and_then(|r| connexion_aboutie(r, "Microsoft"));
+                .and_then(|r| connexion_aboutie(r, "Microsoft", &client));
             let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
         });
         if let Err(e) = lance {
@@ -2332,7 +2337,7 @@ impl qobject::Boite {
         let fil = self.qt_thread();
         let lance = thread::Builder::new().name("mmail-microsoft".into()).spawn(move || {
             let issue = crate::microsoft::echanger_code(&client, &code, &verificateur, crate::microsoft::REDIRECTION_ANDROID, &adresse)
-                .and_then(|r| connexion_aboutie(r, "Microsoft"));
+                .and_then(|r| connexion_aboutie(r, "Microsoft", &client));
             let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_microsoft(issue));
         });
         lance.is_ok()
@@ -2353,7 +2358,7 @@ impl qobject::Boite {
             Ok(()) => self.as_mut().microsoft_connecte(
                 &QString::from(&c.adresse),
                 &QString::from(crate::microsoft::HOTE_IMAP),
-                &QString::from(&c.rafraichissement),
+                &QString::from(&crate::microsoft::pour_le_coffre(&c.client, &c.rafraichissement)),
             ),
             Err(message) => self.as_mut().microsoft_refuse(&QString::from(&message), false),
         }
@@ -2415,7 +2420,7 @@ impl qobject::Boite {
             let issue = g::attendre_code(&ecoute, &etat, crate::oauth::DELAI_CONNEXION)
                 .and_then(|code| g::echanger_code(&client, &secret, &code, &pkce.verificateur, &ecoute.redirection))
                 .and_then(g::verifier_portee)
-                .and_then(|r| connexion_aboutie(r, "Google"));
+                .and_then(|r| connexion_aboutie(r, "Google", ""));
             let _ = fil.queue(move |boite: Pin<&mut qobject::Boite>| boite.accueillir_google(issue));
         });
         if let Err(e) = lance {
@@ -2460,7 +2465,7 @@ impl qobject::Boite {
                     .map_err(|e| format!("index local : {e}"))?
             }
         };
-        let jetons = crate::oauth::partager(service, &c.rafraichissement);
+        let jetons = crate::oauth::partager_pour(service, &c.client, &c.rafraichissement);
         crate::oauth::retenir(&jetons, service.portee_imap(), &c.acces, c.duree);
         {
             let mut noyau = self.as_mut().rust_mut();
@@ -5518,7 +5523,15 @@ impl Travail {
                 let mut echec_dossier = None;
                 for chemin in &chemins {
                     match e.client.vider(chemin) {
-                        Ok(k) => nombre += k,
+                        Ok(k) => {
+                            nombre += k;
+                            // Vide sur le serveur, vide dans l'index : la liste
+                            // affichée se vide avec lui, sans attendre la
+                            // prochaine synchronisation du dossier.
+                            if let Ok(id) = e.magasin.dossier_id(compte, chemin) {
+                                let _ = e.magasin.retirer_tout(id);
+                            }
+                        }
                         Err(err) => {
                             echec_dossier = Some((chemin.clone(), err));
                             break;

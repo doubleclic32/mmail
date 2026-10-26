@@ -33,9 +33,11 @@ pub const HOTE_SMTP: &str = "smtp.gmail.com";
 /// Lecture et envoi : tout le courrier, IMAP comme SMTP.
 pub const PORTEE_MAIL: &str = "https://mail.google.com/";
 
-/// Ce que la connexion demande : le courrier, et `openid email` pour
-/// l'adresse du compte.
-const PORTEE_AUTORISATION: &str = "openid email https://mail.google.com/";
+/// Ce que la connexion demande : le courrier, et `openid` + `userinfo.email`
+/// pour l'adresse du compte. Écrites exactement comme dans la console Google
+/// (`email` en est l'alias court) : la vérification de l'application exige
+/// que les portées demandées soient celles déclarées (Google, 23/10/2026).
+const PORTEE_AUTORISATION: &str = "openid https://www.googleapis.com/auth/userinfo.email https://mail.google.com/";
 
 /// Client « application de bureau » de MMail chez Google (projet « MMail »).
 /// Son secret n'est pas confidentiel pour une application de bureau — il est
@@ -239,7 +241,9 @@ mod tests {
             "https://accounts.google.com/o/oauth2/v2/auth?client_id=123.apps.googleusercontent.com&response_type=code&"
         ));
         assert!(url.contains("&redirect_uri=http%3A%2F%2F127.0.0.1%3A4321&"));
-        assert!(url.contains("&scope=openid%20email%20https%3A%2F%2Fmail.google.com%2F&"));
+        assert!(url.contains(
+            "&scope=openid%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email%20https%3A%2F%2Fmail.google.com%2F&"
+        ));
         assert!(url.contains("&state=ETAT&code_challenge=DEFI&code_challenge_method=S256&"));
         assert!(url.ends_with("&access_type=offline&prompt=consent%20select_account"));
         let url = url_autorisation("c", "http://127.0.0.1:1", "d", "e", " jean@gmail.com ");
