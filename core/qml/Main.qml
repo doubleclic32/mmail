@@ -479,7 +479,7 @@ ApplicationWindow {
             mono: ["SF Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"],
             bandeau: "#161617", texteBandeau: "#f5f5f7", accent: "#0071e3",
             texteAccent: "#0071e3", rubrique: "#6e6e73", alerte: "#d70015",
-            titres: ["SF Pro Display", "SF Pro Text", "Inter",
+            titres: ["SF Pro Display", "SF Pro Text", "Inter Display", "Inter",
                      "Segoe UI Variable Display", "Segoe UI", "Noto Sans",
                      "DejaVu Sans", "Arial"]
         }
