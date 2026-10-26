@@ -72,11 +72,12 @@ impl Fournisseur {
         }
     }
 
-    /// Nouveau jeton d'accès par le jeton de rafraîchissement.
-    fn rafraichir(self, rafraichissement: &str, portee: &str) -> Result<ReponseJeton, ErreurOAuth> {
+    /// Nouveau jeton d'accès par le jeton de rafraîchissement, délivré par
+    /// l'application `client` (Microsoft ; vide : avant la 0.6.19).
+    fn rafraichir(self, client: &str, rafraichissement: &str, portee: &str) -> Result<ReponseJeton, ErreurOAuth> {
         match self {
             Fournisseur::Microsoft => {
-                let client = crate::microsoft::identifiant_client();
+                let client = crate::microsoft::client_du_compte(client);
                 if client.is_empty() {
                     return Err(ErreurOAuth::refus("client", "MMail n'a pas d'identifiant d'application Microsoft"));
                 }
@@ -437,6 +438,9 @@ pub fn xoauth2(utilisateur: &str, jeton: &str) -> String {
 /// des envois, les déplacements vers lui.
 pub struct Jetons {
     pub(crate) fournisseur: Fournisseur,
+    /// Application qui a délivré le jeton de rafraîchissement (Microsoft) ;
+    /// vide pour Google, et pour un compte Microsoft d'avant la 0.6.19.
+    pub(crate) client: String,
     pub(crate) rafraichissement: String,
     pub(crate) acces: Vec<(&'static str, String, Instant)>,
     /// Le service a rendu un nouveau jeton de rafraîchissement, pas encore
@@ -447,12 +451,38 @@ pub struct Jetons {
 pub type Partage = Arc<Mutex<Jetons>>;
 
 pub fn partager(fournisseur: Fournisseur, rafraichissement: &str) -> Partage {
+    partager_pour(fournisseur, "", rafraichissement)
+}
+
+/// Jetons d'un compte, son jeton de rafraîchissement délivré à `client`.
+pub fn partager_pour(fournisseur: Fournisseur, client: &str, rafraichissement: &str) -> Partage {
     Arc::new(Mutex::new(Jetons {
         fournisseur,
+        client: client.to_string(),
         rafraichissement: rafraichissement.to_string(),
         acces: Vec::new(),
         renouvele: false,
     }))
+}
+
+/// Jetons d'un compte tels que le coffre les rend (cf. `pour_le_coffre`).
+pub fn partager_du_coffre(fournisseur: Fournisseur, texte: &str) -> Partage {
+    match fournisseur {
+        Fournisseur::Microsoft => {
+            let (client, jeton) = crate::microsoft::du_coffre(texte);
+            partager_pour(fournisseur, &client, &jeton)
+        }
+        Fournisseur::Google => partager(fournisseur, texte),
+    }
+}
+
+/// Ce que le coffre garde des jetons d'un compte : le jeton de
+/// rafraîchissement, précédé pour Microsoft de l'application qui l'a délivré.
+pub fn pour_le_coffre(fournisseur: Fournisseur, client: &str, rafraichissement: &str) -> String {
+    match fournisseur {
+        Fournisseur::Microsoft => crate::microsoft::pour_le_coffre(client, rafraichissement),
+        Fournisseur::Google => rafraichissement.to_string(),
+    }
 }
 
 /// Le service d'un compte à jetons.
@@ -480,7 +510,7 @@ pub fn jeton_acces(p: &Partage, portee: &'static str) -> Result<String, ErreurOA
     if let Some((_, jeton, _)) = j.acces.iter().find(|(q, _, fin)| *q == portee && maintenant < *fin) {
         return Ok(jeton.clone());
     }
-    let r = j.fournisseur.rafraichir(&j.rafraichissement, portee)?;
+    let r = j.fournisseur.rafraichir(&j.client, &j.rafraichissement, portee)?;
     if let Some(neuf) = r.rafraichissement.filter(|n| !n.is_empty() && *n != j.rafraichissement) {
         j.rafraichissement = neuf;
         j.renouvele = true;
@@ -495,10 +525,11 @@ pub fn oublier(p: &Partage, portee: &str) {
     verrouiller(p).acces.retain(|(q, ..)| *q != portee);
 }
 
-/// Le jeton de rafraîchissement renouvelé, à confier au coffre — une fois.
+/// Le jeton de rafraîchissement renouvelé, à confier au coffre — une fois —
+/// sous la forme que le coffre garde (`pour_le_coffre`).
 pub fn a_conserver(p: &Partage) -> Option<String> {
     let mut j = verrouiller(p);
-    std::mem::take(&mut j.renouvele).then(|| j.rafraichissement.clone())
+    std::mem::take(&mut j.renouvele).then(|| pour_le_coffre(j.fournisseur, &j.client, &j.rafraichissement))
 }
 
 /// Échéance d'un jeton : cinq minutes avant la fin annoncée, une au moins.
@@ -568,6 +599,25 @@ mod tests {
         assert_eq!(Fournisseur::de_auth(""), None);
         assert_eq!(Fournisseur::Google.hote_imap(), "imap.gmail.com");
         assert_eq!(Fournisseur::Microsoft.hote_imap(), "outlook.office365.com");
+    }
+
+    #[test]
+    fn jetons_au_coffre() {
+        let client = "6f263490-3351-4167-908b-10d701fc2f1c";
+        let p = partager_du_coffre(Fournisseur::Microsoft, &format!("{client} RT"));
+        {
+            let j = verrouiller(&p);
+            assert_eq!((j.client.as_str(), j.rafraichissement.as_str()), (client, "RT"));
+        }
+        verrouiller(&p).renouvele = true;
+        assert_eq!(a_conserver(&p), Some(format!("{client} RT")), "l'application reste avec le jeton");
+        let ancien = partager_du_coffre(Fournisseur::Microsoft, "RT");
+        assert_eq!(verrouiller(&ancien).client, "", "compte d'avant la 0.6.19");
+        verrouiller(&ancien).renouvele = true;
+        assert_eq!(a_conserver(&ancien), Some("RT".into()), "il le reste");
+        let g = partager_du_coffre(Fournisseur::Google, "1//0g x");
+        verrouiller(&g).renouvele = true;
+        assert_eq!(a_conserver(&g), Some("1//0g x".into()), "Google : le jeton tel quel");
     }
 
     #[test]
