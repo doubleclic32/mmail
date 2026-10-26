@@ -6050,14 +6050,24 @@ ApplicationWindow {
         // La COULEUR entière, pas sa seule opacité : le survol sombre de
         // MMEDIA n'est pas blanc, et une assertion sur l'alpha laissait
         // passer un changement de teinte (trouvé par Codex, 26/10).
-        var encreSombre = encreEntete(true)
-        var attenduSombre = Qt.rgba(encreSombre.r, encreSombre.g, encreSombre.b, 0.14)
+        // Le cas CLAIR se dérive de palette.windowText, qui est une vraie
+        // couleur : l'attendu est exact et le reste.
         var encreClaire = encreEntete(false)
         var attenduClair = Qt.rgba(encreClaire.r, encreClaire.g, encreClaire.b, 0.08)
-        if (survolEntete(true).toString() !== attenduSombre.toString()
-                || survolEntete(false).toString() !== attenduClair.toString())
-            return "survol MMEDIA modifié : " + survolEntete(true) +
-                   " / " + survolEntete(false)
+        if (survolEntete(false).toString() !== attenduClair.toString())
+            return "survol clair MMEDIA modifié : " + survolEntete(false)
+        // Le cas SOMBRE ne peut pas se dériver de la même façon : son encre
+        // est marque.texteBandeau, une chaîne, et c'est justement ce que la
+        // 0.6.21 corrige (Qt.lighter(encreEntete(sombre), 1.0)). Un attendu
+        // écrit « noir à 14 % » tomberait sur la correction, et un attendu
+        // « blanc à 14 % » tombe sur la 0.6.20. Ce qu'un patch d'apparence
+        // ne doit JAMAIS changer, lui, vaut avant comme après : le survol
+        // reste l'encre du bandeau, donc une teinte NEUTRE, à 14 %. Une
+        // fuite des clés de Pomme se verrait quand même : 0,18 au lieu de
+        // 0,14 sur le bandeau, l'accent cyan au lieu du gris sur la bande.
+        var sv = survolEntete(true)
+        if (sv.a.toFixed(2) !== "0.14" || sv.r !== sv.g || sv.g !== sv.b)
+            return "survol sombre MMEDIA modifié : " + sv
         // Sur le RECTANGLE, pas sur le défaut que le test passe lui-même :
         // comparer valeurOu("filetBandeau", 3) à 3 était vrai par
         // construction et restait vert si le rectangle perdait sa hauteur.

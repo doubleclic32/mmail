@@ -4,6 +4,11 @@ Ce document a servi de plan, puis de compte rendu. **Tout ce qu'il décrit est
 écrit et fabriqué** sur la branche `theme-pomme` ; ce qui n'a pas été fait est
 dit tel quel, à la fin.
 
+La branche est posée sur la **0.6.20** (`afc0224`). Le survol du bandeau MMEDIA
+signalé ici est corrigé par l'auteur dans la 0.6.21 (`Qt.lighter(encreEntete
+(sombre), 1.0)`) : le témoin de non-régression a été réécrit pour passer sur
+les deux versions sans rien laisser filtrer (cf. chantier 1).
+
 L'apparence `pomme` reprend l'habillage d'un site connu : fonds gris très
 clairs, surfaces blanches, bleu système en sélection et en accent, bandeau
 anthracite. Un thème seul n'y suffisait pas, d'où les trois chantiers
@@ -101,20 +106,34 @@ function survolEntete(sombre) {
 existe, le défaut sinon. C'est elle qui garantit l'immobilité des quatre autres
 apparences, et il n'y a donc qu'un seul endroit où se tromper.
 
-**Épreuve.** Dans la fonction de contrôle appelée par `--smoke` (ligne 5794),
-affirmer les deux côtés du garde :
+**Épreuve.** Dans la fonction de contrôle appelée par `--smoke`, affirmer les
+deux côtés du garde. Le témoin de non-régression sur l'apparence de l'auteur
+est le seul qui compte vraiment, et il est écrit pour tenir **avant comme
+après** la correction annoncée pour la 0.6.21 :
 
 ```qml
 choisirApparence("mmedia")
-if (survolEntete(true).a.toFixed(2) !== "0.14")
-    return "survol MMEDIA modifié : " + survolEntete(true).a
+// Clair : l'encre est palette.windowText, une vraie couleur, l'attendu est exact.
+var encreClaire = encreEntete(false)
+var attenduClair = Qt.rgba(encreClaire.r, encreClaire.g, encreClaire.b, 0.08)
+if (survolEntete(false).toString() !== attenduClair.toString())
+    return "survol clair MMEDIA modifié : " + survolEntete(false)
+// Sombre : l'encre est marque.texteBandeau, une CHAÎNE. Un attendu « noir à
+// 14 % » tomberait sur la 0.6.21, un attendu « blanc à 14 % » tombe sur la
+// 0.6.20. Ce qu'un patch d'apparence ne doit pas changer vaut dans les deux
+// cas : une teinte NEUTRE, à 14 %.
+var sv = survolEntete(true)
+if (sv.a.toFixed(2) !== "0.14" || sv.r !== sv.g || sv.g !== sv.b)
+    return "survol sombre MMEDIA modifié : " + sv
 choisirApparence("pomme")
-if (survolEntete(true).a.toFixed(2) !== "0.18")
-    return "survol Pomme non appliqué : " + survolEntete(true).a
+if (survolEntete(true).toString() !== Qt.rgba(1, 1, 1, 0.18).toString())
+    return "survol de l'apparence Pomme non appliqué : " + survolEntete(true)
 ```
 
-Le premier des deux est le seul qui compte vraiment : c'est le témoin de
-non-régression sur l'apparence de l'auteur.
+Ce garde a été joué sur quatre mutants avant d'être retenu — fuite des clés de
+Pomme sur MMEDIA dans les deux versions, opacité portée à 0,20, teinte
+remplacée par l'accent cyan — et il rougit sur les quatre, tout en restant
+vert sur les deux expressions légitimes.
 
 ## Chantier 2 — le mouvement
 
