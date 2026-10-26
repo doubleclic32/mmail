@@ -513,6 +513,12 @@ ApplicationWindow {
     // repli, plus large, en reste à la taille des autres apparences.
     readonly property bool titresEtroits: marque !== null && policeTitres === marque.titres[0]
 
+    // Le mouvement demande DEUX accords : l'apparence l'autorise, et le poste
+    // ne l'interdit pas. Un « Behavior » dont « enabled » est faux ne retarde
+    // rien — la propriété saute à sa valeur, exactement comme avant. Aucune
+    // transition ne s'écrit sans ce garde.
+    readonly property bool anime: valeurOu("mouvement", false) === true && animationsSysteme
+
     // Bouton de la barre tactile (et « ‹ » de la vue compacte). Sous une
     // apparence de marque, une pastille sur le bandeau, comme les onglets du
     // site : pleine en cyan quand il est choisi, cernée pour les autres
@@ -5891,6 +5897,10 @@ ApplicationWindow {
                    " / " + survolEntete(false).a
         if (valeurOu("filetBandeau", 3) !== 3 || valeurOu("opaciteBandeau", 1.0) !== 1.0)
             return "clés facultatives non nulles sous MMEDIA"
+        // Le mouvement, deuxième des trois états : l'apparence refuse, donc
+        // rien ne s'anime, que le poste l'autorise ou non.
+        if (anime)
+            return "mouvement accordé à MMEDIA, qui ne le demande pas"
         if (fondBandeau.a !== 1.0)
             return "bandeau MMEDIA rendu translucide : " + fondBandeau.a
         choisirApparence("pomme")
@@ -5905,6 +5915,12 @@ ApplicationWindow {
                    survolEntete(true).a + " / " + survolEntete(false).a
         if (valeurOu("filetBandeau", 3) !== 1 || fondBandeau.a.toFixed(1) !== "0.8")
             return "bandeau de l'apparence Pomme non appliqué : " + fondBandeau.a
+        // Premier et TROISIÈME états du garde de mouvement. Le troisième est
+        // celui qu'on oublie : le poste refuse les animations, et alors
+        // l'apparence ne passe pas outre. MMAIL_ANIMATIONS=0 le joue.
+        if (anime !== (animationsSysteme === true))
+            return "garde de mouvement incohérent : anime=" + anime +
+                   " système=" + animationsSysteme
         // … et rendus en la quittant : fond du style, couleur de sélection.
         choisirApparence("moderne")
         if (marque !== null || !entete.background.visible
